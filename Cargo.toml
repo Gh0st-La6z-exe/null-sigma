@@ -1,0 +1,49 @@
+# =============================================================================
+# NuLLAI Sigma Rule Engine — Compiled Detection at Scale
+# =============================================================================
+# Parses Sigma detection rules (YAML), compiles conditions into an optimized
+# matcher, and evaluates events against the compiled rule set.
+#
+# Architecture:
+#   1. PARSE:    YAML → SigmaRule struct (serde_yaml)
+#   2. COMPILE:  Detection block → ConditionTree (boolean AST)
+#   3. MATCH:    Event fields → ConditionTree evaluation
+#   4. OPTIMIZE: Aho-Corasick for multi-pattern string matching
+#
+# Target: 100K events/sec × 1000 rules on a single core.
+#
+# Sigma spec reference: https://sigmahq.io/docs/basics/rules.html
+# =============================================================================
+
+[package]
+name = "null-sigma"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# PyO3 for Python bridge — exposed via pybridge crate
+pyo3 = { workspace = true }
+
+# YAML parsing — Sigma rules are YAML-based. serde_yaml is the standard
+# Rust YAML parser with full serde integration.
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Aho-Corasick — SIMD-accelerated multi-pattern matching. When a Sigma rule
+# has multiple string patterns (e.g., 10 suspicious process names), we build
+# a single automaton that checks ALL patterns in one pass over the text.
+# This is what makes 1000-rule evaluation fast — O(text_len) not O(patterns × text_len).
+aho-corasick = "1.1"
+
+# Regex for wildcard and regex modifiers in Sigma conditions.
+# Sigma supports `|re` (regex) and `*` glob wildcards in values.
+regex = "1.11"
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "sigma_bench"
+harness = false
