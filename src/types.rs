@@ -143,13 +143,13 @@ impl LogSource {
     /// Check if this logsource matches an event's metadata.
     /// None fields are treated as wildcards (match anything).
     pub fn matches(&self, event_category: Option<&str>, event_product: Option<&str>, event_service: Option<&str>) -> bool {
-        let cat_ok = self.category.as_ref().map_or(true, |c| {
+        let cat_ok = self.category.as_ref().is_none_or(|c| {
             event_category.is_some_and(|ec| ec.eq_ignore_ascii_case(c))
         });
-        let prod_ok = self.product.as_ref().map_or(true, |p| {
+        let prod_ok = self.product.as_ref().is_none_or(|p| {
             event_product.is_some_and(|ep| ep.eq_ignore_ascii_case(p))
         });
-        let svc_ok = self.service.as_ref().map_or(true, |s| {
+        let svc_ok = self.service.as_ref().is_none_or(|s| {
             event_service.is_some_and(|es| es.eq_ignore_ascii_case(s))
         });
         cat_ok && prod_ok && svc_ok
@@ -411,6 +411,9 @@ pub enum ValueModifier {
 
 impl ValueModifier {
     /// Parse a modifier string from the field name.
+    // Intentional inherent constructor (not the `FromStr` trait): returns
+    // `Option<Self>` so unknown modifiers are skipped rather than erroring.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "contains" => Some(ValueModifier::Contains),

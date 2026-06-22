@@ -296,7 +296,7 @@ impl SigmaEngine {
 
         let mut matches = Vec::new();
 
-        for (_rule_idx, compiled) in self.rules.iter().enumerate() {
+        for compiled in self.rules.iter() {
             // LogSource pre-filter: skip rules that don't apply to this event type
             if !compiled.rule.logsource.matches(
                 event_logsource.category.as_deref(),
@@ -387,7 +387,7 @@ impl SigmaEngine {
 
         let mut hits = Vec::new();
 
-        for (_field, value) in event {
+        for value in event.values() {
             for mat in ac.find_iter(value) {
                 let pattern_idx = mat.pattern().as_usize();
                 if !hits.contains(&pattern_idx) {

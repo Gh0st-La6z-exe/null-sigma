@@ -299,7 +299,7 @@ detection:
             let (_, identifiers) = parse_rule(yaml).unwrap();
             let group = &identifiers[0].groups[0];
             // Should handle integer and boolean values
-            assert!(group.conditions.len() >= 1);
+            assert!(!group.conditions.is_empty());
         }
     }
 
@@ -1516,7 +1516,7 @@ detection:
                 SeverityLevel::Critical,
             ] {
                 let score = level.to_score();
-                assert!(score >= 0.0 && score <= 1.0,
+                assert!((0.0..=1.0).contains(&score),
                     "Score {score} out of [0,1] range for {:?}", level);
             }
         }

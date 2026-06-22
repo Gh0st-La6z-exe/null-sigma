@@ -186,7 +186,7 @@ fn apply_transforms(
                             // Trim the padding artifact from the encoded string
                             let trimmed = if offset > 0 {
                                 // Skip first encoded char(s) that represent padding
-                                let skip = ((offset * 4) + 2) / 3;
+                                let skip = (offset * 4).div_ceil(3);
                                 encoded.get(skip..).unwrap_or(&encoded).to_string()
                             } else {
                                 encoded.clone()
@@ -241,7 +241,7 @@ fn apply_transforms(
 fn base64_encode(input: &str) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = input.as_bytes();
-    let mut result = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(bytes.len().div_ceil(3) * 4);
     
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;
