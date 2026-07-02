@@ -1,0 +1,45 @@
+# cargo-deny configuration for null-sigma
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+# ─── License policy ──────────────────────────────────────────────────────────
+[licenses]
+# Licenses we explicitly permit in the dependency tree.
+# All are OSI-approved permissive licenses.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "BSL-1.0",    # Business Source License — appears as OR option, Apache-2.0 is chosen
+    "Unlicense",
+]
+
+# Confidence threshold for license text detection (0.0–1.0).
+confidence-threshold = 0.9
+
+# ─── Duplicate crate bans ────────────────────────────────────────────────────
+[bans]
+# Warn on multiple versions of the same crate — doesn't block CI but surfaces
+# unnecessary bloat in the dependency tree.
+multiple-versions = "warn"
+
+# Crates we explicitly forbid for security or quality reasons.
+deny = [
+    # serde_yaml was archived; serde_yml was found unsound (RUSTSEC-2025-0068).
+    # We use serde_norway instead — deny the old crates to prevent re-introduction.
+    { name = "serde_yaml" },
+    { name = "serde_yml" },
+]
+
+# ─── Vulnerability advisories ────────────────────────────────────────────────
+[advisories]
+# Advisories are handled by the dedicated `cargo audit` CI job.
+# cargo-deny is used here for license and ban enforcement only.
+version = 2
+ignore = []
+
+# ─── Source policy ───────────────────────────────────────────────────────────
+[sources]
+# All dependencies must come from crates.io. Git and local path dependencies
+# are not permitted in published crates.
+unknown-registry = "deny"
+unknown-git      = "deny"

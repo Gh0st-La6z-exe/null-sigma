@@ -102,3 +102,18 @@ jobs:
         # Deny advisories of any severity. The advisory database is fetched
         # fresh on every run so new CVEs are caught on the next push.
         run: cargo audit --deny warnings
+
+  # ─── License and dependency policy ───────────────────────────────────────
+  deny:
+    name: Licenses & bans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: cargo deny check
+        # Enforces the license allow-list in deny.toml and bans re-introduction
+        # of serde_yaml / serde_yml (replaced by serde_norway).
+        run: cargo deny check
