@@ -1,5 +1,5 @@
 // =============================================================================
-// NuLLAI Sigma Rule Engine — Core Types
+// Sigma Rule Engine — Core Types
 // =============================================================================
 // These types represent the parsed Sigma rule structure. They closely follow
 // the Sigma specification (https://sigmahq.io/docs/basics/rules.html) while
@@ -116,17 +116,17 @@ pub struct SigmaRule {
 /// a Windows Sysmon rule should never be evaluated against Linux auditd events.
 ///
 /// Common categories:
-///   - process_creation: New process started (Sysmon EID 1)
-///   - network_connection: Outbound connection (Sysmon EID 3)
-///   - file_event: File creation/modification (Sysmon EID 11)
-///   - registry_event: Registry key/value changes (Sysmon EID 12-14)
-///   - dns_query: DNS resolution (Sysmon EID 22)
-///   - image_load: DLL/module loaded (Sysmon EID 7)
-///   - pipe_created: Named pipe created (Sysmon EID 17)
-///   - wmi_event: WMI activity (Sysmon EID 19-21)
+///   - `process_creation`: New process started (Sysmon EID 1)
+///   - `network_connection`: Outbound connection (Sysmon EID 3)
+///   - `file_event`: File creation/modification (Sysmon EID 11)
+///   - `registry_event`: Registry key/value changes (Sysmon EID 12-14)
+///   - `dns_query`: DNS resolution (Sysmon EID 22)
+///   - `image_load`: DLL/module loaded (Sysmon EID 7)
+///   - `pipe_created`: Named pipe created (Sysmon EID 17)
+///   - `wmi_event`: WMI activity (Sysmon EID 19-21)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LogSource {
-    /// Abstract log category (e.g., "process_creation", "network_connection").
+    /// Abstract log category (e.g., "`process_creation`", "`network_connection`").
     #[serde(default)]
     pub category: Option<String>,
 
@@ -142,6 +142,7 @@ pub struct LogSource {
 impl LogSource {
     /// Check if this logsource matches an event's metadata.
     /// None fields are treated as wildcards (match anything).
+    #[must_use]
     pub fn matches(&self, event_category: Option<&str>, event_product: Option<&str>, event_service: Option<&str>) -> bool {
         let cat_ok = self.category.as_ref().is_none_or(|c| {
             event_category.is_some_and(|ec| ec.eq_ignore_ascii_case(c))
@@ -203,16 +204,19 @@ pub struct Detection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ConditionExpr {
+    /// A rule with a single condition string, e.g. `condition: selection`.
     Single(String),
+    /// A rule with multiple condition strings. The rule fires if ANY condition matches.
     Multiple(Vec<String>),
 }
 
 impl ConditionExpr {
     /// Get all condition strings as a slice-compatible iterator.
+    #[must_use]
     pub fn conditions(&self) -> Vec<&str> {
         match self {
             ConditionExpr::Single(s) => vec![s.as_str()],
-            ConditionExpr::Multiple(v) => v.iter().map(|s| s.as_str()).collect(),
+            ConditionExpr::Multiple(v) => v.iter().map(String::as_str).collect(),
         }
     }
 }
@@ -251,18 +255,19 @@ pub struct SearchIdentifier {
     pub groups: Vec<FieldConditionGroup>,
 }
 
-/// A group of field conditions that are ANDed together.
-/// A SearchIdentifier with multiple groups represents an OR:
+/// A group of field conditions that are `ANDed` together.
+/// A `SearchIdentifier` with multiple groups represents an OR:
 ///   group[0] AND-internal OR group[1] AND-internal OR ...
 #[derive(Debug, Clone)]
 pub struct FieldConditionGroup {
+    /// The individual field conditions in this group, all of which must match (AND).
     pub conditions: Vec<FieldCondition>,
 }
 
 /// A single field condition: "does field X match value Y with modifier Z?"
 #[derive(Debug, Clone)]
 pub struct FieldCondition {
-    /// The field name to check (e.g., "CommandLine", "Image").
+    /// The field name to check (e.g., "`CommandLine`", "Image").
     pub field: String,
 
     /// Value(s) to match against. Multiple values are OR'd by default,
@@ -299,6 +304,7 @@ pub enum SigmaValue {
 
 impl SigmaValue {
     /// Convert to a string representation for pattern matching.
+    #[must_use]
     pub fn as_str_lossy(&self) -> String {
         match self {
             SigmaValue::String(s) => s.clone(),
@@ -310,6 +316,7 @@ impl SigmaValue {
     }
 
     /// Check if this value contains wildcards (* or ?).
+    #[must_use]
     pub fn has_wildcards(&self) -> bool {
         match self {
             SigmaValue::String(s) => s.contains('*') || s.contains('?'),
@@ -317,7 +324,8 @@ impl SigmaValue {
         }
     }
 
-    /// Parse a serde_yaml::Value into a SigmaValue.
+    /// Parse a `serde_yaml::Value` into a `SigmaValue`.
+    #[must_use]
     pub fn from_yaml(value: &serde_yaml::Value) -> Self {
         match value {
             serde_yaml::Value::String(s) => SigmaValue::String(s.clone()),
@@ -414,6 +422,7 @@ impl ValueModifier {
     // Intentional inherent constructor (not the `FromStr` trait): returns
     // `Option<Self>` so unknown modifiers are skipped rather than erroring.
     #[allow(clippy::should_implement_trait)]
+    #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "contains" => Some(ValueModifier::Contains),
@@ -436,11 +445,13 @@ impl ValueModifier {
     }
 
     /// Check if this is a transformation modifier (applied to the VALUE before matching).
+    #[must_use]
     pub fn is_transform(&self) -> bool {
         matches!(self, ValueModifier::Base64 | ValueModifier::Base64Offset | ValueModifier::Wide | ValueModifier::Windash)
     }
 
     /// Check if this is a match modifier (controls HOW the comparison works).
+    #[must_use]
     pub fn is_match_type(&self) -> bool {
         matches!(self, ValueModifier::Contains | ValueModifier::EndsWith | ValueModifier::StartsWith | ValueModifier::Regex | ValueModifier::Cidr)
     }
@@ -453,7 +464,7 @@ impl ValueModifier {
 /// Sigma rule severity level.
 ///
 /// Maps directly to incident response priority:
-///   - Critical: Immediate automated response (NuLLAI Brain autonomous action)
+///   - Critical: Immediate automated response (highest priority escalation)
 ///   - High: Alert + analyst notification within minutes
 ///   - Medium: Standard alert queue
 ///   - Low: Informational, correlation enrichment
@@ -461,16 +472,22 @@ impl ValueModifier {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SeverityLevel {
+    /// Context only — no alerting required.
     Informational,
+    /// Minor indicator; often used for telemetry or informational detections.
     Low,
+    /// Moderate threat; warrants investigation in most environments.
     #[default]
     Medium,
+    /// High-confidence threat; should be prioritised for triage.
     High,
+    /// Critically severe activity; requires immediate response.
     Critical,
 }
 
 impl SeverityLevel {
-    /// Convert to a numeric score (0.0 - 1.0) for NuLLAI threat scoring.
+    /// Convert to a numeric score (0.0–1.0) for downstream threat scoring.
+    #[must_use]
     pub fn to_score(&self) -> f64 {
         match self {
             SeverityLevel::Informational => 0.1,
@@ -481,6 +498,8 @@ impl SeverityLevel {
         }
     }
 
+    /// Return the lowercase string representation used in Sigma YAML.
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             SeverityLevel::Informational => "informational",
@@ -519,6 +538,8 @@ pub enum RuleStatus {
 }
 
 impl RuleStatus {
+    /// Return the lowercase string representation used in Sigma YAML.
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             RuleStatus::Experimental => "experimental",
@@ -541,14 +562,16 @@ impl fmt::Display for RuleStatus {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of evaluating a single event against a single rule.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RuleMatch {
     /// The rule that matched.
     pub rule_id: String,
+    /// Human-readable title of the matched rule.
     pub rule_title: String,
+    /// Severity level of the matched rule.
     pub rule_level: SeverityLevel,
 
-    /// Which condition(s) matched (index into ConditionExpr::Multiple).
+    /// Which condition(s) matched (index into `ConditionExpr::Multiple`).
     pub matched_conditions: Vec<usize>,
 
     /// Which search identifiers evaluated to true.
@@ -562,7 +585,7 @@ pub struct RuleMatch {
 }
 
 /// Result of evaluating a single event against the full rule set.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EvalResult {
     /// Index of the event in the input batch.
     pub event_index: usize,

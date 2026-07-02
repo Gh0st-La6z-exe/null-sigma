@@ -1,0 +1,32 @@
+[package]
+name = "null-sigma-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+
+[dependencies.null-sigma]
+path = ".."
+
+# fuzz_parse_rule — feeds arbitrary bytes to the YAML parser.
+# Finds panics, stack overflows, and OOM in the parsing path.
+[[bin]]
+name = "fuzz_parse_rule"
+path = "fuzz_targets/fuzz_parse_rule.rs"
+test = false
+doc = false
+bench = false
+
+# fuzz_evaluate_event — loads fixed rules then fuzzes the event map.
+# Finds panics in the AC prefilter, matcher, and condition evaluator.
+[[bin]]
+name = "fuzz_evaluate_event"
+path = "fuzz_targets/fuzz_evaluate_event.rs"
+test = false
+doc = false
+bench = false

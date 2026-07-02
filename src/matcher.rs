@@ -1,5 +1,5 @@
 // =============================================================================
-// NuLLAI Sigma Rule Engine — Event Matcher
+// Sigma Rule Engine — Event Matcher
 // =============================================================================
 // Matches event data against parsed Sigma search identifiers. This is where
 // every ValueModifier becomes real: contains, endswith, startswith, regex,
@@ -21,7 +21,9 @@
 // =============================================================================
 
 use crate::types::{FieldCondition, FieldConditionGroup, SearchIdentifier, SigmaValue, ValueModifier};
+use regex::Regex;
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::net::IpAddr;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,9 +37,10 @@ use std::net::IpAddr;
 ///
 /// This is the core matching logic that the engine calls for each identifier
 /// referenced in the condition expression.
-pub fn match_identifier(
+#[must_use]
+pub fn match_identifier<S: BuildHasher>(
     identifier: &SearchIdentifier,
-    event: &HashMap<String, String>,
+    event: &HashMap<String, String, S>,
 ) -> bool {
     // OR across groups — any group matching means the identifier matches
     identifier.groups.iter().any(|group| match_group(group, event))
@@ -45,7 +48,7 @@ pub fn match_identifier(
 
 /// Check if a field condition group matches against an event.
 /// ALL conditions in the group must match (AND logic within a group).
-fn match_group(group: &FieldConditionGroup, event: &HashMap<String, String>) -> bool {
+fn match_group<S: BuildHasher>(group: &FieldConditionGroup, event: &HashMap<String, String, S>) -> bool {
     group.conditions.iter().all(|cond| match_field_condition(cond, event))
 }
 
@@ -55,9 +58,10 @@ fn match_group(group: &FieldConditionGroup, event: &HashMap<String, String>) -> 
 /// 1. Resolve target fields (specific field or all fields for keywords)
 /// 2. Apply transform modifiers to values (base64, wide, windash)
 /// 3. Apply match modifiers against field values
-pub fn match_field_condition(
+#[must_use]
+pub fn match_field_condition<S: BuildHasher>(
     condition: &FieldCondition,
-    event: &HashMap<String, String>,
+    event: &HashMap<String, String, S>,
 ) -> bool {
     // Special case: `exists` modifier checks field presence
     if condition.modifiers.contains(&ValueModifier::Exists) {
@@ -117,7 +121,7 @@ pub fn match_field_condition(
 // Exists modifier
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn handle_exists(condition: &FieldCondition, event: &HashMap<String, String>) -> bool {
+fn handle_exists<S: BuildHasher>(condition: &FieldCondition, event: &HashMap<String, String, S>) -> bool {
     let field_lower = condition.field.to_lowercase();
     let field_present = event.keys().any(|k| k.to_lowercase() == field_lower);
 
@@ -128,13 +132,12 @@ fn handle_exists(condition: &FieldCondition, event: &HashMap<String, String>) ->
     //                    Sigma spec but some community rules use it)
     // Default behavior (no explicit true/false): field must exist
     let expect_exists = condition.values.first()
-        .map(|v| match v {
+        .is_none_or(|v| match v {
             SigmaValue::Boolean(b) => *b,
             SigmaValue::String(s) => s != "false" && s != "0",
             SigmaValue::Integer(i) => *i != 0,
             _ => true,
-        })
-        .unwrap_or(true);
+        });
 
     field_present == expect_exists
 }
@@ -162,55 +165,50 @@ fn apply_transforms(
     for modifier in modifiers {
         match modifier {
             ValueModifier::Base64 => {
+                // Base64 REPLACES the original value with its base64-encoded form.
                 result = result.into_iter().flat_map(|v| {
                     let s = v.as_str_lossy();
-                    let mut variants = vec![v];
-                    if !s.is_empty() {
-                        variants.push(SigmaValue::String(base64_encode(&s)));
+                    if s.is_empty() {
+                        vec![v]
+                    } else {
+                        vec![SigmaValue::String(base64_encode(&s))]
                     }
-                    variants
                 }).collect();
             }
 
             ValueModifier::Base64Offset => {
-                // Base64offset generates 3 variants to catch base64 at any
-                // alignment boundary. This defeats naive base64 obfuscation
-                // where the encoded string starts at different offsets.
+                // Base64Offset REPLACES the original with the 3 offset variants.
                 result = result.into_iter().flat_map(|v| {
                     let s = v.as_str_lossy();
-                    let mut variants = vec![v];
-                    if !s.is_empty() {
-                        for offset in 0..3 {
-                            let padded = " ".repeat(offset) + &s;
-                            let encoded = base64_encode(&padded);
-                            // Trim the padding artifact from the encoded string
-                            let trimmed = if offset > 0 {
-                                // Skip first encoded char(s) that represent padding
-                                let skip = (offset * 4).div_ceil(3);
-                                encoded.get(skip..).unwrap_or(&encoded).to_string()
-                            } else {
-                                encoded.clone()
-                            };
-                            variants.push(SigmaValue::String(trimmed));
-                        }
+                    if s.is_empty() {
+                        return vec![v];
                     }
-                    variants
+
+                    (0..3usize).map(|offset| {
+                        let padded = " ".repeat(offset) + &s;
+                        let encoded = base64_encode(&padded);
+                        let trimmed = if offset > 0 {
+                            let skip = (offset * 4).div_ceil(3);
+                            encoded.get(skip..).unwrap_or(&encoded).to_string()
+                        } else {
+                            encoded
+                        };
+                        SigmaValue::String(trimmed)
+                    }).collect::<Vec<_>>()
                 }).collect();
             }
 
             ValueModifier::Wide => {
-                // Wide transforms: "cmd" → "c\x00m\x00d\x00" (UTF-16LE encoding)
-                // This catches strings encoded as wide chars in memory/processes.
+                // Wide REPLACES the original with UTF-16LE null-byte interleaving.
                 result = result.into_iter().flat_map(|v| {
                     let s = v.as_str_lossy();
-                    let mut variants = vec![v];
-                    if !s.is_empty() {
-                        let wide: String = s.chars()
-                            .map(|c| format!("{c}\x00"))
-                            .collect();
-                        variants.push(SigmaValue::String(wide));
+                    if s.is_empty() {
+                        vec![v]
+                    } else {
+                        // flat_map avoids per-char String allocation from format!
+                        let wide: String = s.chars().flat_map(|c| [c, '\x00']).collect();
+                        vec![SigmaValue::String(wide)]
                     }
-                    variants
                 }).collect();
             }
 
@@ -244,9 +242,9 @@ fn base64_encode(input: &str) -> String {
     let mut result = String::with_capacity(bytes.len().div_ceil(3) * 4);
     
     for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(chunk.get(1).copied().unwrap_or(0));
+        let b2 = u32::from(chunk.get(2).copied().unwrap_or(0));
         let triple = (b0 << 16) | (b1 << 8) | b2;
 
         result.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
@@ -358,8 +356,8 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
 fn wildcard_match_impl(pattern: &[char], text: &[char]) -> bool {
     let mut pi = 0usize;
     let mut ti = 0usize;
-    let mut star_pi = usize::MAX; // Position after last '*' in pattern
-    let mut star_ti = 0usize;     // Position in text when we last matched '*'
+    let mut star_pat_idx = usize::MAX; // Position after last '*' in pattern
+    let mut star_txt_idx = 0usize;     // Position in text when we last matched '*'
 
     let plen = pattern.len();
     let tlen = text.len();
@@ -369,15 +367,15 @@ fn wildcard_match_impl(pattern: &[char], text: &[char]) -> bool {
             pi += 1;
             ti += 1;
         } else if pi < plen && pattern[pi] == '*' {
-            star_pi = pi;
-            star_ti = ti;
+            star_pat_idx = pi;
+            star_txt_idx = ti;
             pi += 1;
             // Don't advance ti — '*' can match zero chars
-        } else if star_pi != usize::MAX {
+        } else if star_pat_idx != usize::MAX {
             // Backtrack: the last '*' matches one more char
-            pi = star_pi + 1;
-            star_ti += 1;
-            ti = star_ti;
+            pi = star_pat_idx + 1;
+            star_txt_idx += 1;
+            ti = star_txt_idx;
         } else {
             return false;
         }
@@ -505,6 +503,13 @@ fn regex_matches(pattern: &str, text: &str) -> bool {
 
 /// Try numeric comparison modifiers (gt, gte, lt, lte).
 /// Returns None if no numeric modifier is present.
+// `*n as f64` in the fallback branch is only reached when `field_value` has
+// a decimal component (couldn't parse as i64). Real-world integer fields
+// that compare against Sigma Integer values are always < 2^53, so precision
+// loss cannot occur on this code path.
+// `has_gt`/`has_gte` and `has_lt`/`has_lte` are the natural names for boolean
+// modifier flags — renaming them would reduce clarity, not improve it.
+#[allow(clippy::cast_precision_loss, clippy::similar_names)]
 fn try_numeric_comparison(
     sigma_value: &SigmaValue,
     field_value: &str,
@@ -519,6 +524,23 @@ fn try_numeric_comparison(
         return None;
     }
 
+    // Integer precision guard: i64 → f64 loses precision above 2^53
+    // (f64 mantissa is 52 bits). When the Sigma value is an integer AND the
+    // field parses as a whole number, compare in the integer domain to avoid
+    // silent rounding of large counters, timestamps, or port numbers.
+    if let SigmaValue::Integer(n) = sigma_value {
+        if let Ok(field_int) = field_value.trim().parse::<i64>() {
+            let result = if has_gt       { field_int > *n }
+                         else if has_gte { field_int >= *n }
+                         else if has_lt  { field_int < *n }
+                         else            { field_int <= *n };
+            return Some(result);
+        }
+        // Field has a decimal component — fall through to f64 comparison.
+        // At this point the sigma integer is small enough that the f64 cast
+        // is exact (real-world counters compared against floats are < 2^53).
+    }
+
     let sigma_num = match sigma_value {
         SigmaValue::Integer(n) => *n as f64,
         SigmaValue::Float(f) => *f,
@@ -526,9 +548,8 @@ fn try_numeric_comparison(
         _ => return Some(false),
     };
 
-    let field_num = match field_value.parse::<f64>() {
-        Ok(n) => n,
-        Err(_) => return Some(false),
+    let Ok(field_num) = field_value.parse::<f64>() else {
+        return Some(false);
     };
 
     let result = if has_gt {
@@ -546,17 +567,83 @@ fn try_numeric_comparison(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Batch matching for Aho-Corasick optimization (used by engine.rs)
+// Cache-aware matching (used by engine.rs for |re rules)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Pre-extracted string patterns from rules for Aho-Corasick batch matching.
-/// The engine builds one AC automaton across all rules' string patterns, runs
-/// it once over each event field, and uses the results to short-circuit
-/// individual rule evaluation.
-#[derive(Debug)]
-pub struct PatternMatch {
-    /// Index into the global pattern list
-    pub pattern_index: usize,
-    /// Which event field it was found in
-    pub field_name: String,
+/// Evaluate a search identifier against an event using pre-compiled regexes.
+///
+/// Identical semantics to [`match_identifier`], but `|re` conditions use
+/// the compiled [`Regex`] objects from `regex_cache` (keyed by raw pattern
+/// string) instead of compiling the pattern fresh on every call.  This is the
+/// primary hot path for rules that contain `|re` modifiers.
+#[must_use]
+pub fn match_identifier_with_cache<S1: BuildHasher, S2: BuildHasher>(
+    identifier: &SearchIdentifier,
+    event: &HashMap<String, String, S1>,
+    regex_cache: &HashMap<String, Regex, S2>,
+) -> bool {
+    identifier.groups.iter().any(|group| {
+        group.conditions.iter().all(|cond| {
+            match_field_condition_with_cache(cond, event, regex_cache)
+        })
+    })
+}
+
+/// Like [`match_field_condition`] but uses a pre-compiled regex cache for `|re`
+/// conditions instead of compiling the pattern on each invocation.
+fn match_field_condition_with_cache<S1: BuildHasher, S2: BuildHasher>(
+    condition: &FieldCondition,
+    event: &HashMap<String, String, S1>,
+    regex_cache: &HashMap<String, Regex, S2>,
+) -> bool {
+    // `exists` never involves regex.
+    if condition.modifiers.contains(&ValueModifier::Exists) {
+        return handle_exists(condition, event);
+    }
+
+    // Resolve target fields — identical to match_field_condition.
+    let target_fields: Vec<(&str, &str)> = if condition.field.is_empty() {
+        event.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+    } else {
+        let field_lower = condition.field.to_lowercase();
+        event.iter()
+            .filter(|(k, _)| k.to_lowercase() == field_lower)
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect()
+    };
+
+    if target_fields.is_empty() {
+        return false;
+    }
+
+    let transformed_values = apply_transforms(&condition.values, &condition.modifiers);
+    let require_all = condition.modifiers.contains(&ValueModifier::All);
+    let has_regex = condition.modifiers.contains(&ValueModifier::Regex);
+
+    for (_field_name, field_value) in &target_fields {
+        let check = |val: &SigmaValue| -> bool {
+            if has_regex {
+                // Look up the pre-compiled Regex; fall back to on-demand compile
+                // only if the cache is missing the pattern (should not happen in
+                // normal operation — indicates a bug in collect_compiled_regexes).
+                let pattern = val.as_str_lossy();
+                match regex_cache.get(&pattern) {
+                    Some(re) => re.is_match(field_value),
+                    None => regex_matches(&pattern, field_value),
+                }
+            } else {
+                value_matches(val, field_value, &condition.modifiers)
+            }
+        };
+
+        if require_all {
+            if transformed_values.iter().all(check) {
+                return true;
+            }
+        } else if transformed_values.iter().any(check) {
+            return true;
+        }
+    }
+
+    false
 }

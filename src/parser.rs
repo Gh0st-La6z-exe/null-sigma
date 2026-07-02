@@ -1,5 +1,5 @@
 // =============================================================================
-// NuLLAI Sigma Rule Engine — YAML Parser
+// Sigma Rule Engine — YAML Parser
 // =============================================================================
 // Parses Sigma rule YAML into typed SigmaRule structs with full validation.
 //
@@ -14,7 +14,10 @@
 // rather than panicking. A malformed rule should NEVER crash the engine.
 // =============================================================================
 
-use crate::types::*;
+use crate::types::{
+    SigmaRule, SearchIdentifier, Detection, SigmaValue,
+    FieldConditionGroup, FieldCondition, ValueModifier, ConditionExpr,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Parse Errors
@@ -28,7 +31,12 @@ pub enum ParseError {
     /// Missing required field in the rule.
     MissingField(String),
     /// Invalid field modifier.
-    InvalidModifier { field: String, modifier: String },
+    InvalidModifier {
+        /// The field name that carries the invalid modifier.
+        field: String,
+        /// The modifier token that was not recognised (e.g. `"typo"`).
+        modifier: String,
+    },
     /// Empty detection block.
     EmptyDetection,
     /// Invalid condition expression.
@@ -61,12 +69,25 @@ impl std::error::Error for ParseError {}
 /// Parse a single Sigma rule from a YAML string.
 ///
 /// This is the main entry point for rule parsing. It:
-///   1. Deserializes the YAML into a SigmaRule
+///   1. Deserializes the YAML into a `SigmaRule`
 ///   2. Validates required fields (title, logsource, detection)
 ///   3. Generates an ID if not provided
-///   4. Parses the detection block into SearchIdentifiers
+///   4. Parses the detection block into `SearchIdentifiers`
 ///
 /// Returns the parsed rule and its extracted search identifiers.
+///
+/// # Errors
+///
+/// Returns [`ParseError::YamlError`] if `yaml` is not valid YAML.
+///
+/// Returns [`ParseError::MissingField`] if a required field (`title`,
+/// `logsource`, or `detection`) is absent.
+///
+/// Returns [`ParseError::EmptyDetection`] if the detection block contains
+/// no search identifiers.
+///
+/// Returns [`ParseError::ValidationError`] or [`ParseError::InvalidModifier`]
+/// if the rule structure is malformed.
 pub fn parse_rule(yaml: &str) -> Result<(SigmaRule, Vec<SearchIdentifier>), ParseError> {
     // Step 1: YAML → SigmaRule struct
     let mut rule: SigmaRule = serde_yaml::from_str(yaml)
@@ -93,8 +114,18 @@ pub fn parse_rule(yaml: &str) -> Result<(SigmaRule, Vec<SearchIdentifier>), Pars
 
 /// Parse multiple Sigma rules from a YAML string containing multiple documents
 /// (separated by `---`).
+#[must_use]
 pub fn parse_rules(yaml: &str) -> Vec<Result<(SigmaRule, Vec<SearchIdentifier>), ParseError>> {
-    // Split on YAML document separators
+    // Normalize Windows (\r\n) and classic Mac (\r) line endings so the
+    // document separator "\n---" reliably splits regardless of source platform.
+    let owned_buf;
+    let yaml = if yaml.contains('\r') {
+        owned_buf = yaml.replace("\r\n", "\n").replace('\r', "\n");
+        owned_buf.as_str()
+    } else {
+        yaml
+    };
+
     let documents: Vec<&str> = yaml.split("\n---").collect();
     documents
         .iter()
@@ -113,15 +144,15 @@ pub fn parse_rules(yaml: &str) -> Vec<Result<(SigmaRule, Vec<SearchIdentifier>),
 // Detection Block Parsing
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parse the detection block into a list of SearchIdentifiers.
+/// Parse the detection block into a list of `SearchIdentifiers`.
 ///
 /// The detection block contains:
 ///   - `condition`: The boolean expression (handled separately by condition.rs)
 ///   - Named identifiers (e.g., "selection", "filter"): field conditions
 ///
 /// Each named identifier can be:
-///   - A mapping: `{field: value, field2: value2}` → all conditions ANDed
-///   - A list of mappings: `[{field: val}, {field2: val2}]` → groups ORed, within each AND
+///   - A mapping: `{field: value, field2: value2}` → all conditions `ANDed`
+///   - A list of mappings: `[{field: val}, {field2: val2}]` → groups `ORed`, within each AND
 ///   - A list of values: `["val1", "val2"]` → keyword search (match against any field)
 fn parse_detection(detection: &Detection) -> Result<Vec<SearchIdentifier>, ParseError> {
     let mut identifiers = Vec::new();
@@ -147,7 +178,7 @@ fn parse_detection(detection: &Detection) -> Result<Vec<SearchIdentifier>, Parse
 ///
 /// Sigma search identifiers can have three forms:
 ///   1. Map form: `{CommandLine|contains: '-enc'}` → single group with AND
-///   2. List-of-maps form: `[{Image: 'cmd.exe'}, {Image: 'powershell.exe'}]` → ORed groups
+///   2. List-of-maps form: `[{Image: 'cmd.exe'}, {Image: 'powershell.exe'}]` → `ORed` groups
 ///   3. List-of-values form: `['keyword1', 'keyword2']` → keyword match (fieldless)
 fn parse_search_identifier(name: &str, value: &serde_yaml::Value) -> Result<SearchIdentifier, ParseError> {
     let groups = match value {
@@ -163,7 +194,7 @@ fn parse_search_identifier(name: &str, value: &serde_yaml::Value) -> Result<Sear
             }
 
             // Check if it's a list of maps (Form 2) or list of values (Form 3)
-            if seq.iter().all(|item| item.is_mapping()) {
+            if seq.iter().all(serde_yaml::Value::is_mapping) {
                 // Form 2: List of maps — each map is an OR-group
                 seq.iter()
                     .map(|item| {
@@ -207,14 +238,14 @@ fn parse_search_identifier(name: &str, value: &serde_yaml::Value) -> Result<Sear
     })
 }
 
-/// Parse a YAML mapping into a FieldConditionGroup.
+/// Parse a YAML mapping into a `FieldConditionGroup`.
 ///
 /// Each key in the map is a field name (possibly with modifiers), and the value
-/// is the pattern to match. Multiple keys in the same map are ANDed together.
+/// is the pattern to match. Multiple keys in the same map are `ANDed` together.
 ///
 /// Examples:
 ///   `{CommandLine|contains: '-enc'}` → field="CommandLine", modifier=Contains, value="-enc"
-///   `{Image|endswith: ['\cmd.exe', '\powershell.exe']}` → 2 values ORed
+///   `{Image|endswith: ['\cmd.exe', '\powershell.exe']}` → 2 values `ORed`
 ///   `{User: 'SYSTEM'}` → exact match (no modifier)
 fn parse_field_map(
     identifier_name: &str,
@@ -248,7 +279,7 @@ fn parse_field_map(
 /// Parse a field key string into the field name and modifiers.
 ///
 /// Input: "CommandLine|contains|all"
-/// Output: ("CommandLine", [Contains, All])
+/// Output: ("`CommandLine`", [Contains, All])
 fn parse_field_modifiers(
     key: &str,
     identifier_name: &str,
@@ -268,12 +299,12 @@ fn parse_field_modifiers(
     Ok((field, modifiers))
 }
 
-/// Parse a YAML value into a list of SigmaValues.
+/// Parse a YAML value into a list of `SigmaValues`.
 ///
 /// Handles:
-///   - Single scalar: `"value"` → vec![SigmaValue::String("value")]
-///   - List: `["val1", "val2"]` → vec![SigmaValue::String("val1"), SigmaValue::String("val2")]
-///   - Null: `~` → vec![SigmaValue::Null]
+///   - Single scalar: `"value"` → vec![`SigmaValue::String("value`")]
+///   - List: `["val1", "val2"]` → vec![`SigmaValue::String("val1`"), `SigmaValue::String("val2`")]
+///   - Null: `~` → vec![`SigmaValue::Null`]
 fn parse_field_values(value: &serde_yaml::Value) -> Vec<SigmaValue> {
     match value {
         serde_yaml::Value::Sequence(seq) => {
@@ -299,12 +330,23 @@ fn validate_conditions(
     let id_names: Vec<&str> = identifiers.iter().map(|id| id.name.as_str()).collect();
 
     for cond in condition.conditions() {
+        // BUG-6: Pipe aggregation (e.g., `selection | count() > 5`) is not yet
+        // supported. Fail fast with a clear error rather than allowing
+        // compile_condition to silently strip the aggregate clause — a stripped
+        // rule would fire on ANY single match, ignoring the count threshold and
+        // producing false positives for security rules that rely on thresholds.
+        if cond.contains('|') {
+            return Err(ParseError::ValidationError(format!(
+                "Pipe aggregation conditions are not yet supported: \"{cond}\". \
+                 Use a non-aggregate condition expression."
+            )));
+        }
+
         // Tokenize and check each word-like token against known identifiers.
-        // Skip keywords: and, or, not, (, ), 1, all, of, them, |, pipe tokens
         let tokens = tokenize_condition(cond);
         for token in &tokens {
             if is_identifier_token(token) && !id_names.iter().any(|name| {
-                // Support wildcard references: "selection*" matches "selection_process", "selection_cmdline"
+                // Support wildcard references: "selection*" matches "selection_process", etc.
                 if token.ends_with('*') {
                     let prefix = &token[..token.len() - 1];
                     name.starts_with(prefix)
@@ -322,19 +364,24 @@ fn validate_conditions(
     Ok(())
 }
 
-/// Quick tokenizer for condition validation — splits on whitespace and parens.
+/// Quick tokenizer for condition validation.
+/// Only collects characters that can form valid Sigma identifier names:
+/// alphanumeric, `_`, `-`, `.`, `*`. All other characters — including comparison
+/// operators (`>`, `<`, `=`, `!`), pipes (`|`), and punctuation — are treated
+/// as delimiters and discarded.
+///
+/// BUG-5 fix: prevents comparison-operator tokens like `>` and `5` from being
+/// mistaken for undefined identifier references in rules that use aggregation
+/// or other non-identifier constructs.
 fn tokenize_condition(condition: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
 
     for ch in condition.chars() {
-        if ch == '(' || ch == ')' || ch.is_whitespace() {
-            if !current.is_empty() {
-                tokens.push(std::mem::take(&mut current));
-            }
-            // Don't add parens or whitespace as tokens
-        } else {
+        if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '*' || ch == '.' {
             current.push(ch);
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
         }
     }
     if !current.is_empty() {
@@ -346,18 +393,18 @@ fn tokenize_condition(condition: &str) -> Vec<String> {
 
 /// Check if a token is an identifier reference (not a keyword or number).
 fn is_identifier_token(token: &str) -> bool {
-    // Keywords in the Sigma condition language
-    let keywords = ["and", "or", "not", "1", "all", "of", "them", "|", "count", "near", "by",
-                     "avg", "sum", "min", "max", "0"];
-    if keywords.contains(&token.to_lowercase().as_str()) {
+    // Language keywords and aggregation function names used in Sigma conditions.
+    // Note: `tokenize_condition` splits on `|` so it never produces `|` as a token;
+    // numeric literals of any value are caught by the `parse::<u64>()` check below.
+    const KEYWORDS: &[&str] = &[
+        "and", "or", "not", "all", "of", "them",
+        "count", "near", "by", "avg", "sum", "min", "max",
+    ];
+    if KEYWORDS.contains(&token.to_lowercase().as_str()) {
         return false;
     }
-    // Numbers (for "1 of" quantifiers)
+    // Covers all numeric quantifiers: 1, 2, 3, …  (`1 of`, `2 of`, …)
     if token.parse::<u64>().is_ok() {
-        return false;
-    }
-    // Pipe aggregation tokens
-    if token.starts_with('|') {
         return false;
     }
     true
@@ -367,14 +414,37 @@ fn is_identifier_token(token: &str) -> bool {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Generate a deterministic rule ID from the title.
-/// Uses a simple hash to create a UUID-like string.
+/// Generate a deterministic rule ID from the title in RFC 4122 UUID format.
+///
+/// Uses two independent FNV-1a passes (forward + reverse) to produce 128 bits
+/// of deterministic data, then formats them as UUID v4 with the standard
+/// version (4) and variant (10xx) bits set. The result is lowercase hyphenated:
+/// `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`
+///
+/// This satisfies the Sigma spec recommendation for UUID IDs and ensures
+/// compatibility with SIEM import tooling and sigmahq.io converters.
 fn generate_rule_id(title: &str) -> String {
-    // Simple FNV-1a hash for deterministic ID generation
-    let mut hash: u64 = 0xcbf29ce484222325;
+    // Forward pass — FNV-1a 64-bit
+    let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
     for b in title.bytes() {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
+        h1 ^= u64::from(b);
+        h1 = h1.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("{hash:016x}")
+    // Reverse pass — different byte order for independent 64-bit block
+    let mut h2: u64 = 0x1465_0fb0_739d_0383;
+    for b in title.bytes().rev() {
+        h2 ^= u64::from(b);
+        h2 = h2.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+
+    // UUID v4 layout: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+    // Set version bits: top nibble of field 3 = 0x4
+    // Set variant bits: top 2 bits of field 4 = 0b10
+    let hi32          = (h1 >> 32) as u32;
+    let mid16         = ((h1 >> 16) & 0xffff) as u16;
+    let ver_nibble    = ((h1 & 0x0fff) as u16) | 0x4000;          // version 4
+    let var_bits      = ((h2 >> 48) & 0x3fff) as u16 | 0x8000;    // variant 10xx
+    let tail_bits     =   h2 & 0x0000_ffff_ffff_ffff;
+
+    format!("{hi32:08x}-{mid16:04x}-{ver_nibble:04x}-{var_bits:04x}-{tail_bits:012x}")
 }

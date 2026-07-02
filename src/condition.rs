@@ -1,5 +1,5 @@
 // =============================================================================
-// NuLLAI Sigma Rule Engine — Condition Compiler
+// Sigma Rule Engine — Condition Compiler
 // =============================================================================
 // Compiles Sigma condition expressions into an evaluable boolean AST.
 //
@@ -21,6 +21,7 @@
 // =============================================================================
 
 use crate::types::SearchIdentifier;
+use std::collections::HashMap;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AST — The compiled condition tree
@@ -60,9 +61,9 @@ pub enum ConditionNode {
     /// pattern must be true. `count = 0` means "all of".
     ///
     /// Examples:
-    ///   - `1 of selection*` → OneOf { count: 1, pattern: "selection*" }
-    ///   - `all of them` → OneOf { count: 0, identifiers: [all] }
-    ///   - `all of selection*` → OneOf { count: 0, pattern: "selection*" }
+    ///   - `1 of selection*` → `OneOf` { count: 1, pattern: "selection*" }
+    ///   - `all of them` → `OneOf` { count: 0, identifiers: [all] }
+    ///   - `all of selection*` → `OneOf` { count: 0, pattern: "selection*" }
     OneOf {
         /// How many must match. 0 = all.
         count: usize,
@@ -75,7 +76,8 @@ impl ConditionNode {
     /// Evaluate this condition tree against a set of identifier match results.
     ///
     /// `results` maps identifier name → did it match the event?
-    pub fn evaluate(&self, results: &std::collections::HashMap<String, bool>) -> bool {
+    #[must_use]
+    pub fn evaluate(&self, results: &HashMap<String, bool>) -> bool {
         match self {
             ConditionNode::Identifier(name) => {
                 *results.get(name).unwrap_or(&false)
@@ -413,7 +415,7 @@ impl Parser {
     }
 
     /// Resolve a wildcard pattern against known identifiers.
-    /// "selection*" matches "selection_process", "selection_cmdline", etc.
+    /// "selection*" matches "`selection_process`", "`selection_cmdline`", etc.
     fn resolve_wildcard(&self, pattern: &str) -> Vec<String> {
         if !pattern.contains('*') {
             return vec![pattern.to_string()];
@@ -432,9 +434,17 @@ impl Parser {
 // Compile Errors
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Errors that can occur when compiling a Sigma condition string into an AST.
 #[derive(Debug, Clone)]
 pub enum CompileError {
-    UnexpectedToken { expected: String, got: String },
+    /// The condition parser encountered a token it didn't expect at this position.
+    UnexpectedToken {
+        /// Description of what the parser expected at this position.
+        expected: String,
+        /// The token that was actually encountered.
+        got: String,
+    },
+    /// The condition string was empty or contained only whitespace.
     EmptyCondition,
 }
 
@@ -459,6 +469,14 @@ impl std::error::Error for CompileError {}
 ///
 /// `identifiers` is the list of search identifiers defined in the detection
 /// block — needed to resolve "them" and wildcard patterns.
+///
+/// # Errors
+///
+/// Returns [`CompileError::EmptyCondition`] if `condition` is empty or
+/// contains only whitespace.
+///
+/// Returns [`CompileError::UnexpectedToken`] if the condition expression
+/// contains a syntax error or references an unknown construct.
 pub fn compile_condition(
     condition: &str,
     identifiers: &[SearchIdentifier],

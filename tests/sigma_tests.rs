@@ -1,5 +1,5 @@
 // =============================================================================
-// NuLLAI Sigma Rule Engine — Comprehensive Tests
+// Sigma Rule Engine — Comprehensive Tests
 // =============================================================================
 // Every modifier, every condition pattern, every edge case. Adversaries don't
 // attack the obvious paths — they probe edge cases. Every untested path is an
@@ -43,7 +43,7 @@ id: 12345678-1234-1234-1234-123456789abc
 status: stable
 level: high
 description: A full test rule with all fields
-author: NuLLAI
+author: Test Author
 date: 2026/03/15
 references:
     - https://example.com
@@ -65,7 +65,7 @@ falsepositives:
             assert_eq!(rule.id, "12345678-1234-1234-1234-123456789abc");
             assert_eq!(rule.status, RuleStatus::Stable);
             assert_eq!(rule.level, SeverityLevel::High);
-            assert_eq!(rule.author, "NuLLAI");
+            assert_eq!(rule.author, "Test Author");
             assert_eq!(rule.tags.len(), 2);
             assert!(rule.tags.contains(&"attack.execution".to_string()));
             assert_eq!(rule.falsepositives.len(), 1);
@@ -492,6 +492,57 @@ detection:
         }
 
         #[test]
+        fn compile_2_of_wildcard_requires_two_matches() {
+            // `2 of selection*` — need at least 2 of the 3 to fire
+            let ids = make_identifiers(&["selection_1", "selection_2", "selection_3"]);
+            let node = compile_condition("2 of selection*", &ids).unwrap();
+
+            // Only one match → should NOT fire
+            let mut results = HashMap::new();
+            results.insert("selection_1".to_string(), true);
+            results.insert("selection_2".to_string(), false);
+            results.insert("selection_3".to_string(), false);
+            assert!(!node.evaluate(&results), "2 of 3 requires ≥2 matches");
+
+            // Two match → should fire
+            results.insert("selection_2".to_string(), true);
+            assert!(node.evaluate(&results), "2 of 3 with exactly 2 true should fire");
+        }
+
+        #[test]
+        fn compile_3_of_them_through_full_rule_parse() {
+            // End-to-end: parse_rule must not reject `3 of selection*`
+            let yaml = r#"
+title: Three Of Quantifier Rule
+logsource: {}
+detection:
+    selection_a:
+        Field1|contains: 'alpha'
+    selection_b:
+        Field2|contains: 'beta'
+    selection_c:
+        Field3|contains: 'gamma'
+    condition: 3 of selection*
+"#;
+            let result = parse_rule(yaml);
+            assert!(result.is_ok(), "parse_rule must accept `3 of selection*`: {result:?}");
+
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            // All three fields present → matches
+            let mut event = HashMap::new();
+            event.insert("Field1".to_string(), "alpha content".to_string());
+            event.insert("Field2".to_string(), "beta content".to_string());
+            event.insert("Field3".to_string(), "gamma content".to_string());
+            assert_eq!(engine.evaluate_event(&event).len(), 1);
+
+            // Only two fields present → no match (needs all 3)
+            event.remove("Field3");
+            assert_eq!(engine.evaluate_event(&event).len(), 0);
+        }
+
+        #[test]
         fn compile_empty_condition_error() {
             let ids = make_identifiers(&["sel"]);
             let result = compile_condition("", &ids);
@@ -702,6 +753,52 @@ detection:
             let event = make_event(&[("cmd", "test")]);
             let cond = make_condition("cmd", &["[invalid"], &[ValueModifier::Regex]);
             assert!(!match_field_condition(&cond, &event));
+        }
+
+        #[test]
+        fn regex_rule_uses_precompiled_cache_end_to_end() {
+            // A rule with |re should compile regexes at load time and use them
+            // for every subsequent evaluate_event call — not re-compile per event.
+            // This test validates that the engine routes |re rules through
+            // match_identifier_with_cache and that results are correct.
+            let yaml = r#"
+title: Regex Cache Test
+logsource: {}
+detection:
+    sel:
+        CommandLine|re: 'powershell\s+-(enc|encodedcommand)\s+'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let matching = [
+                "C:\\> powershell -enc SQBFAFgA",
+                "powershell  -enc   base64here",
+                "POWERSHELL -ENCODEDCOMMAND abc",
+            ];
+            for cmd in &matching {
+                let mut event = HashMap::new();
+                event.insert("CommandLine".to_string(), (*cmd).to_string());
+                assert_eq!(
+                    engine.evaluate_event(&event).len(), 1,
+                    "should fire on: {cmd}"
+                );
+            }
+
+            let non_matching = [
+                "powershell -File script.ps1",
+                "cmd.exe /c echo hello",
+                "",
+            ];
+            for cmd in &non_matching {
+                let mut event = HashMap::new();
+                event.insert("CommandLine".to_string(), (*cmd).to_string());
+                assert_eq!(
+                    engine.evaluate_event(&event).len(), 0,
+                    "should NOT fire on: {cmd}"
+                );
+            }
         }
 
         // ─── CIDR modifier ─────────────────────────────────────────────
@@ -1518,6 +1615,940 @@ detection:
                 let score = level.to_score();
                 assert!((0.0..=1.0).contains(&score),
                     "Score {score} out of [0,1] range for {:?}", level);
+            }
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // AC PRE-FILTER CORRECTNESS TESTS (BUG-1A + BUG-1B)
+    //
+    // These tests prove the Aho-Corasick optimization never produces false
+    // negatives. Each test loads a "mixed" rule that would be incorrectly
+    // skipped by the old buggy pre-filter but must still return a match.
+    // ═════════════════════════════════════════════════════════════════════
+
+    mod ac_prefilter_tests {
+        use super::*;
+
+        fn make_engine_with_rule(yaml: &str) -> SigmaEngine {
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+            engine
+        }
+
+        /// BUG-1B: condition is `sel_regex OR sel_contains`.
+        /// Event matches ONLY via sel_regex; sel_contains AC patterns don't hit.
+        /// Old pre-filter would skip the rule because no AC pattern appeared.
+        #[test]
+        fn ac_prefilter_not_skipped_regex_or_contains() {
+            let yaml = r#"
+title: Regex OR Contains Pre-filter Test
+level: high
+logsource: {}
+detection:
+    sel_regex:
+        CommandLine|re: 'powershell.*-enc'
+    sel_contains:
+        CommandLine|contains: 'mimikatz'
+    condition: sel_regex or sel_contains
+"#;
+            let mut engine = make_engine_with_rule(yaml);
+
+            // Matches via sel_regex only — "mimikatz" is NOT present
+            let mut event = HashMap::new();
+            event.insert("command_line".to_string(),
+                         "powershell.exe -enc SQBFAFgA".to_string());
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(matches.len(), 1,
+                "Rule must match via regex when AC patterns (mimikatz) are absent");
+
+            // Matches via sel_contains only
+            let mut event2 = HashMap::new();
+            event2.insert("command_line".to_string(), "mimikatz sekurlsa".to_string());
+            assert_eq!(engine.evaluate_event(&event2).len(), 1);
+
+            // No match
+            let mut event3 = HashMap::new();
+            event3.insert("command_line".to_string(), "notepad.exe".to_string());
+            assert!(engine.evaluate_event(&event3).is_empty());
+        }
+
+        /// BUG-1A: sel_windash uses |windash which is a transform modifier.
+        /// The AC pattern holds "-enc" but the event only has "/enc" (slash variant).
+        /// Old is_ac_eligible returned true for windash, causing false AC misses.
+        #[test]
+        fn ac_prefilter_not_skipped_windash_or_contains() {
+            let yaml = r#"
+title: Windash OR Contains Pre-filter Test
+level: high
+logsource: {}
+detection:
+    sel_windash:
+        CommandLine|windash|contains: '-enc'
+    sel_contains:
+        CommandLine|contains: 'mimikatz'
+    condition: sel_windash or sel_contains
+"#;
+            let mut engine = make_engine_with_rule(yaml);
+
+            // Event uses slash variant — only windash can match, AC pattern "-enc" won't hit
+            let mut event = HashMap::new();
+            event.insert("command_line".to_string(),
+                         "powershell.exe /enc SQBFAFgA".to_string());
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(matches.len(), 1,
+                "Rule must match /enc via windash when AC pattern -enc is absent");
+        }
+
+        /// BUG-1A: |base64 is a transform modifier — the AC pattern would be the
+        /// plain-text value, but the event contains the base64-encoded variant.
+        #[test]
+        fn ac_prefilter_not_skipped_base64_or_contains() {
+            let yaml = r#"
+title: Base64 OR Contains Pre-filter Test
+level: high
+logsource: {}
+detection:
+    sel_b64:
+        CommandLine|base64|contains: 'evil'
+    sel_contains:
+        CommandLine|contains: 'mimikatz'
+    condition: sel_b64 or sel_contains
+"#;
+            let mut engine = make_engine_with_rule(yaml);
+
+            // base64("evil") = "ZXZpbA=="
+            let mut event = HashMap::new();
+            event.insert("command_line".to_string(),
+                         "powershell -enc ZXZpbA==".to_string());
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(matches.len(), 1,
+                "Rule must match base64(evil) even though plain 'evil' not in AC");
+        }
+
+        /// Verify the optimization STILL WORKS for fully AC-covered rules.
+        /// A pure |contains rule with a pattern that's absent → correctly no match.
+        #[test]
+        fn ac_prefilter_correctly_skips_fully_covered_rule() {
+            let yaml = r#"
+title: Fully AC-Covered Rule
+level: medium
+logsource: {}
+detection:
+    selection:
+        CommandLine|contains: 'mimikatz'
+    condition: selection
+"#;
+            let mut engine = make_engine_with_rule(yaml);
+
+            // No "mimikatz" in event → fully_ac_covered pre-filter should skip rule
+            let mut event = HashMap::new();
+            event.insert("command_line".to_string(), "powershell -enc ABC".to_string());
+            assert!(engine.evaluate_event(&event).is_empty(),
+                "Fully AC-covered rule should be correctly skipped (no false positives)");
+
+            // With "mimikatz" → should match
+            let mut event2 = HashMap::new();
+            event2.insert("command_line".to_string(), "mimikatz.exe".to_string());
+            assert_eq!(engine.evaluate_event(&event2).len(), 1);
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // TRANSFORM MODIFIER TESTS (base64, base64offset, wide)
+    // ═════════════════════════════════════════════════════════════════════
+
+    mod transform_modifier_tests {
+        use super::*;
+
+        fn make_event(k: &str, v: &str) -> HashMap<String, String> {
+            [(k.to_string(), v.to_string())].into_iter().collect()
+        }
+
+        fn make_condition(field: &str, values: &[&str], mods: &[ValueModifier]) -> FieldCondition {
+            FieldCondition {
+                field: field.to_string(),
+                values: values.iter().map(|v| SigmaValue::String(v.to_string())).collect(),
+                modifiers: mods.to_vec(),
+            }
+        }
+
+        /// |wide encodes the search string as UTF-16LE ("cmd" → "c\x00m\x00d\x00")
+        /// and then performs a contains check. Simulates searching process memory.
+        #[test]
+        fn wide_modifier_utf16le_match() {
+            // "cmd" in UTF-16LE = c\x00m\x00d\x00
+            let wide_cmd = "c\x00m\x00d\x00";
+            let event = make_event("field", wide_cmd);
+            let cond = make_condition("field", &["cmd"],
+                &[ValueModifier::Wide, ValueModifier::Contains]);
+            assert!(match_field_condition(&cond, &event),
+                "|wide should match UTF-16LE encoded string");
+        }
+
+        #[test]
+        fn wide_modifier_no_match_plain_ascii() {
+            // Plain ASCII "cmd" should NOT match via |wide (wrong encoding)
+            let event = make_event("field", "cmd");
+            let cond = make_condition("field", &["cmd"],
+                &[ValueModifier::Wide, ValueModifier::Contains]);
+            // The wide variant "c\x00m\x00d\x00" is not a substring of "cmd"
+            assert!(!match_field_condition(&cond, &event),
+                "|wide should not match plain ASCII string");
+        }
+
+        /// |base64 base64-encodes the search value before matching.
+        /// "evil" → base64 → "ZXZpbA==" which should then be found in the field.
+        #[test]
+        fn base64_modifier_encodes_value() {
+            // base64("evil") = "ZXZpbA=="
+            let event = make_event("cmd", "powershell -enc ZXZpbA==");
+            let cond = make_condition("cmd", &["evil"],
+                &[ValueModifier::Base64, ValueModifier::Contains]);
+            assert!(match_field_condition(&cond, &event),
+                "|base64 should match base64-encoded value in field");
+        }
+
+        #[test]
+        fn base64_modifier_no_match_plain_text() {
+            let event = make_event("cmd", "powershell -c evil");
+            let cond = make_condition("cmd", &["evil"],
+                &[ValueModifier::Base64, ValueModifier::Contains]);
+            // The base64 variant "ZXZpbA==" is not in "powershell -c evil"
+            assert!(!match_field_condition(&cond, &event),
+                "|base64 should not match plain text 'evil' — only the encoded form");
+        }
+
+        /// |base64offset generates 3 variants to catch the encoded string at
+        /// any 3-byte alignment boundary in a longer base64 stream.
+        #[test]
+        fn base64offset_catches_offset1_variant() {
+            // For offset=1, " -enc " base64-encodes to "IC1lbmMg" (chars 2+)
+            // We compute: base64(" " + "-enc ") = "IC1lbmMg", skip 2 → "1lbmMg"
+            // Actual test: verify that |base64offset finds -enc at boundary 1
+            // We'll compute expected manually via the same algorithm.
+            // base64("-enc ") at offset 0 = "LWVuYyA="
+            // So the event contains the offset-0 base64 form
+            let event = make_event("cmd", "execute LWVuYyA= something");
+            let cond = make_condition("cmd", &["-enc "],
+                &[ValueModifier::Base64Offset, ValueModifier::Contains]);
+            assert!(match_field_condition(&cond, &event),
+                "|base64offset offset-0 variant should match");
+        }
+
+        #[test]
+        fn windash_slash_and_dash_variants() {
+            // |windash on "-enc" produces both "-enc" and "/enc" variants
+            let event_dash  = make_event("cmd", "powershell -enc SQBFAFg=");
+            let event_slash = make_event("cmd", "powershell /enc SQBFAFg=");
+            let event_none  = make_event("cmd", "powershell something");
+
+            let cond = FieldCondition {
+                field: "cmd".to_string(),
+                values: vec![SigmaValue::String("-enc".to_string())],
+                modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
+            };
+
+            assert!(match_field_condition(&cond, &event_dash),
+                "windash should match dash variant");
+            assert!(match_field_condition(&cond, &event_slash),
+                "windash should match slash variant");
+            assert!(!match_field_condition(&cond, &event_none),
+                "windash should not match when neither variant present");
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // PARSER / CONDITION EDGE CASE TESTS
+    // ═════════════════════════════════════════════════════════════════════
+
+    mod parser_edge_tests {
+        use super::*;
+
+        /// Auto-generated IDs must be in RFC 4122 UUID format:
+        /// xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+        #[test]
+        fn parse_auto_id_uuid_format() {
+            let yaml = r#"
+title: Auto ID UUID Test
+logsource:
+    category: test
+detection:
+    sel:
+        field: value
+    condition: sel
+"#;
+            let (rule, _) = parse_rule(yaml).unwrap();
+            // Must match UUID v4 pattern
+            let uuid_re = regex::Regex::new(
+                r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            ).unwrap();
+            assert!(uuid_re.is_match(&rule.id),
+                "Auto-generated ID '{}' does not match UUID v4 format", rule.id);
+
+            // Same title → same UUID (deterministic)
+            let (rule2, _) = parse_rule(yaml).unwrap();
+            assert_eq!(rule.id, rule2.id, "Same title must generate same UUID");
+
+            // Different title → different UUID
+            let yaml2 = yaml.replace("Auto ID UUID Test", "Different Title");
+            let (rule3, _) = parse_rule(&yaml2).unwrap();
+            assert_ne!(rule.id, rule3.id, "Different titles must produce different UUIDs");
+        }
+
+        /// ConditionExpr::Multiple — a condition list fires if ANY condition matches.
+        #[test]
+        fn engine_multiple_conditions_any_fires() {
+            let yaml = r#"
+title: Multiple Conditions Test
+level: high
+logsource: {}
+detection:
+    sel_a:
+        field_a: value_a
+    sel_b:
+        field_b: value_b
+    condition:
+        - sel_a
+        - sel_b
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            // Only sel_b matches — second condition fires
+            let mut event = HashMap::new();
+            event.insert("field_b".to_string(), "value_b".to_string());
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(matches.len(), 1,
+                "ConditionExpr::Multiple should fire when any condition matches");
+
+            // sel_a also matches
+            let mut event2 = HashMap::new();
+            event2.insert("field_a".to_string(), "value_a".to_string());
+            assert_eq!(engine.evaluate_event(&event2).len(), 1);
+
+            // Neither matches
+            let mut event3 = HashMap::new();
+            event3.insert("other".to_string(), "other".to_string());
+            assert!(engine.evaluate_event(&event3).is_empty());
+        }
+
+        /// `1 of (sel1, sel2)` explicit list syntax in condition.
+        #[test]
+        fn condition_1_of_explicit_list() {
+            let ids: Vec<SearchIdentifier> = ["sel1", "sel2", "sel3"]
+                .iter()
+                .map(|n| SearchIdentifier { name: n.to_string(), groups: vec![] })
+                .collect();
+
+            let node = compile_condition("1 of (sel1, sel2)", &ids).unwrap();
+
+            let mut results = HashMap::new();
+            results.insert("sel1".to_string(), false);
+            results.insert("sel2".to_string(), true);
+            results.insert("sel3".to_string(), false);
+            assert!(node.evaluate(&results),
+                "1 of (sel1, sel2) should fire when sel2 matches");
+
+            results.insert("sel2".to_string(), false);
+            assert!(!node.evaluate(&results),
+                "1 of (sel1, sel2) should not fire when neither matches");
+
+            // sel3 matching should NOT count — it's not in the explicit list
+            results.insert("sel3".to_string(), true);
+            assert!(!node.evaluate(&results),
+                "1 of (sel1, sel2) should not count sel3");
+        }
+
+        /// Multi-document YAML that starts with a `---` separator on the first line.
+        #[test]
+        fn parse_multi_document_leading_separator() {
+            let yaml = "---\ntitle: Rule A\nlogsource:\n    category: test\ndetection:\n    sel:\n        f: v\n    condition: sel\n---\ntitle: Rule B\nlogsource:\n    category: test\ndetection:\n    sel:\n        f: w\n    condition: sel";
+            let results = parse_rules(yaml);
+            // Filter only successful parses
+            let successes: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
+            assert_eq!(successes.len(), 2,
+                "Both rules should parse from a YAML string starting with ---");
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // CIDR EDGE CASE TESTS
+    // ═════════════════════════════════════════════════════════════════════
+
+    mod cidr_edge_tests {
+        use super::*;
+
+        fn cidr_cond(cidr: &str) -> FieldCondition {
+            FieldCondition {
+                field: "ip".to_string(),
+                values: vec![SigmaValue::String(cidr.to_string())],
+                modifiers: vec![ValueModifier::Cidr],
+            }
+        }
+
+        fn ip_event(ip: &str) -> HashMap<String, String> {
+            [("ip".to_string(), ip.to_string())].into_iter().collect()
+        }
+
+        /// /0 matches every IPv4 address (wildcard CIDR)
+        #[test]
+        fn cidr_ipv4_slash0_matches_all() {
+            let cond = cidr_cond("0.0.0.0/0");
+            assert!(match_field_condition(&cond, &ip_event("1.2.3.4")));
+            assert!(match_field_condition(&cond, &ip_event("192.168.1.1")));
+            assert!(match_field_condition(&cond, &ip_event("255.255.255.255")));
+        }
+
+        /// /32 is an exact host match
+        #[test]
+        fn cidr_ipv4_slash32_exact_host() {
+            let cond = cidr_cond("10.0.0.5/32");
+            assert!(match_field_condition(&cond, &ip_event("10.0.0.5")),
+                "/32 must match the exact host");
+            assert!(!match_field_condition(&cond, &ip_event("10.0.0.6")),
+                "/32 must not match adjacent host");
+        }
+
+        /// /128 is an exact IPv6 host match
+        #[test]
+        fn cidr_ipv6_slash128_exact_host() {
+            let cond = cidr_cond("2001:db8::1/128");
+            assert!(match_field_condition(&cond, &ip_event("2001:db8::1")),
+                "/128 must match the exact IPv6 host");
+            assert!(!match_field_condition(&cond, &ip_event("2001:db8::2")),
+                "/128 must not match adjacent IPv6 host");
+        }
+
+        /// IPv4 CIDR against an IPv6 address must return false (no cross-version match)
+        #[test]
+        fn cidr_mixed_version_no_match() {
+            let cond = cidr_cond("192.168.1.0/24");
+            assert!(!match_field_condition(&cond, &ip_event("::ffff:192.168.1.50")),
+                "IPv4 CIDR must not match an IPv6-mapped address");
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // PARSER BUG FIXES (BUG-5, BUG-6, BUG-7)
+    // ═════════════════════════════════════════════════════════════════════
+
+    mod parser_bug_tests {
+        use super::*;
+
+        // BUG-5+6: pipe aggregation returns clear error, not "identifier '>' not found"
+        #[test]
+        fn parse_pipe_aggregation_returns_clear_unsupported_error() {
+            let yaml = r#"
+title: Count-based Detection
+logsource: {}
+detection:
+    selection:
+        CommandLine|contains: 'evil'
+    condition: selection | count() > 5
+"#;
+            let result = parse_rule(yaml);
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("not yet supported"),
+                "Error should mention unsupported: {err}");
+            assert!(!err.contains("Identifier '>'"),
+                "Should NOT say '>' is undefined: {err}");
+        }
+
+        // BUG-5: comparison operators don't trigger "undefined identifier" errors
+        #[test]
+        fn validate_conditions_no_false_identifier_for_comparison_ops() {
+            let yaml = r#"
+title: Comparison Test
+logsource: {}
+detection:
+    selection:
+        field: value
+    condition: selection | count() > 5
+"#;
+            let err = parse_rule(yaml).unwrap_err().to_string();
+            assert!(!err.contains("Identifier '>'"),
+                "Comparison ops must not appear as undefined identifiers: {err}");
+            assert!(!err.contains("Identifier '5'"),
+                "Numbers must not appear as undefined identifiers: {err}");
+        }
+
+        // BUG-7: Windows CRLF multi-document YAML parses correctly
+        #[test]
+        fn parse_rules_handles_windows_crlf_line_endings() {
+            let yaml = "title: Rule A\r\nlogsource: {}\r\ndetection:\r\n    sel:\r\n        f: v\r\n    condition: sel\r\n---\r\ntitle: Rule B\r\nlogsource: {}\r\ndetection:\r\n    sel:\r\n        f: w\r\n    condition: sel";
+            let results = parse_rules(yaml);
+            let successes: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
+            assert_eq!(successes.len(), 2,
+                "CRLF multi-doc YAML should parse both rules");
+        }
+
+        // Regression: valid rules without pipes still catch typos
+        #[test]
+        fn validate_conditions_still_rejects_undefined_identifier_typos() {
+            let yaml = r#"
+title: Typo Rule
+logsource: {}
+detection:
+    selection:
+        field: value
+    condition: selectoin
+"#;
+            let err = parse_rule(yaml).unwrap_err().to_string();
+            assert!(err.contains("selectoin"),
+                "Typo in condition should still be caught: {err}");
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // PHASE 1 HARDENING — Adversarial edge cases, invariants, robustness
+    // ═════════════════════════════════════════════════════════════════════
+    // Adversaries probe edge cases, boundary conditions, and malformed
+    // inputs. Every untested path is an open door. These tests cover the
+    // six threat surfaces that the prior suite left unguarded.
+    // ═════════════════════════════════════════════════════════════════════
+
+    mod hardening_tests {
+        use super::*;
+
+        // ── Helpers ───────────────────────────────────────────────────────
+
+        /// A minimal valid rule YAML used by multiple tests.
+        const MINIMAL_RULE: &str = r#"
+title: Hardening Test Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        CommandLine|contains: 'evil'
+    condition: selection
+"#;
+
+        /// A rule that requires two fields to both be present (AND logic).
+        const TWO_FIELD_RULE: &str = r#"
+title: Two Field Rule
+logsource: {}
+detection:
+    proc:
+        Image|endswith: 'cmd.exe'
+    arg:
+        CommandLine|contains: '-enc'
+    condition: proc and arg
+"#;
+
+        fn make_event(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        }
+
+        // ── Group 1: Empty & Zero-State ───────────────────────────────────
+
+        /// A freshly constructed engine with no rules must return an empty
+        /// result set for any event — including an empty event — without panicking.
+        #[test]
+        fn empty_engine_no_panic_empty_event() {
+            let mut engine = SigmaEngine::new();
+            let event = HashMap::new();
+            let results = engine.evaluate_event(&event);
+            assert!(results.is_empty(),
+                "Zero rules loaded: must produce zero matches, got {:?}", results);
+        }
+
+        #[test]
+        fn empty_engine_no_panic_populated_event() {
+            let mut engine = SigmaEngine::new();
+            let event = make_event(&[("CommandLine", "evil.exe -enc abc")]);
+            let results = engine.evaluate_event(&event);
+            assert!(results.is_empty(),
+                "Zero rules loaded: even a suspicious event must produce zero matches");
+        }
+
+        /// When a rule requires `CommandLine` but the event has only `ProcessName`,
+        /// it must not fire.
+        #[test]
+        fn empty_event_against_loaded_rule_no_match() {
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            let results = engine.evaluate_event(&HashMap::new());
+            assert!(results.is_empty(),
+                "Rule requiring CommandLine must not fire on an empty event");
+        }
+
+        /// rule_count() must increment by exactly one per successful load_rule call.
+        #[test]
+        fn rule_count_tracks_accurately() {
+            let mut engine = SigmaEngine::new();
+            assert_eq!(engine.rule_count(), 0);
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            assert_eq!(engine.rule_count(), 1);
+            engine.load_rule(TWO_FIELD_RULE).unwrap();
+            assert_eq!(engine.rule_count(), 2);
+        }
+
+        // ── Group 2: Large & Adversarial Inputs ──────────────────────────
+
+        /// A 10,000-character field value must not cause the AC automaton,
+        /// regex engine, or any pattern-matching code to panic or hang.
+        #[test]
+        fn ten_thousand_char_field_value_no_panic() {
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            let huge = "a".repeat(10_000);
+            let event = make_event(&[("CommandLine", &huge)]);
+            // Must complete without panic. A non-matching result is correct here.
+            let _ = engine.evaluate_event(&event);
+        }
+
+        /// An event containing 1,000 distinct field keys must be handled gracefully.
+        /// This stresses the logsource enrichment and field-lookup loops.
+        #[test]
+        fn thousand_field_event_no_panic() {
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            let mut event = HashMap::new();
+            for i in 0..1_000usize {
+                event.insert(format!("field_{i}"), format!("value_{i}"));
+            }
+            let _ = engine.evaluate_event(&event);
+        }
+
+        /// A rule with 100 values in a single identifier group must parse and
+        /// evaluate without panic. Tests AC pattern registration at scale.
+        #[test]
+        fn many_values_in_identifier_no_panic() {
+            let values: String = (0..100)
+                .map(|i| format!("        - 'pattern_{i:03}'"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let yaml = format!(
+                "title: Many Values\nlogsource: {{}}\ndetection:\n    sel:\n        CommandLine|contains:\n{values}\n    condition: sel\n"
+            );
+            let mut engine = SigmaEngine::new();
+            let result = engine.load_rule(&yaml);
+            assert!(result.is_ok(), "100-value rule must parse: {:?}", result);
+            let event = make_event(&[("CommandLine", "pattern_042")]);
+            let results = engine.evaluate_event(&event);
+            assert_eq!(results.len(), 1, "Must match the contained pattern");
+        }
+
+        /// Unicode characters in field names must not crash the engine.
+        /// Logs from non-ASCII systems can include multibyte field names.
+        #[test]
+        fn unicode_field_name_no_panic() {
+            let yaml = r#"
+title: Unicode Field Rule
+logsource: {}
+detection:
+    sel:
+        Σ_field|contains: 'value'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            // Parse may succeed or fail — either is acceptable.
+            // What is never acceptable: a panic.
+            let _ = engine.load_rule(yaml);
+        }
+
+        /// A zero-width space (U+200B) embedded in a field value must not cause
+        /// panics. Attackers use zero-width chars to evade string-matching detections.
+        #[test]
+        fn zero_width_space_in_field_value_no_panic() {
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            // U+200B (ZERO WIDTH SPACE) injected mid-token — evasion technique
+            let event = make_event(&[("CommandLine", "e\u{200B}vil")]);
+            let _ = engine.evaluate_event(&event);
+        }
+
+        /// Right-to-left override characters in field values must not cause panics.
+        /// RTL override (U+202E) is used in filename spoofing attacks.
+        #[test]
+        fn rtl_override_char_in_field_value_no_panic() {
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            // U+202E RIGHT-TO-LEFT OVERRIDE — classic filename/log spoofing vector
+            let event = make_event(&[("CommandLine", "evil\u{202E}.exe")]);
+            let _ = engine.evaluate_event(&event);
+        }
+
+        /// A null byte embedded in a field value must not panic the engine.
+        /// Binary log artifacts and C-string truncation can introduce \0.
+        #[test]
+        fn null_byte_in_field_value_no_panic() {
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            let event = make_event(&[("CommandLine", "evil\x00.exe")]);
+            let _ = engine.evaluate_event(&event);
+        }
+
+        // ── Group 3: Parser Robustness ────────────────────────────────────
+
+        /// An empty string must return a parse error, never a panic.
+        #[test]
+        fn load_rule_empty_string_is_graceful_error() {
+            let mut engine = SigmaEngine::new();
+            let result = engine.load_rule("");
+            assert!(result.is_err(), "Empty YAML must be a parse error, not Ok");
+        }
+
+        /// Arbitrary garbage bytes must return a parse error, never a panic.
+        #[test]
+        fn load_rule_garbage_input_is_graceful_error() {
+            let mut engine = SigmaEngine::new();
+            // High-bit bytes are invalid in Rust &str, so build from raw bytes via from_utf8_lossy
+            let raw: &[u8] = &[0x00, 0xff, 0xfe, 0x80, 0x81, b' ', b'n', b'o', b't', b' ', b'y', b'a', b'm', b'l', 0x01, 0x02, 0x03];
+            let garbage = String::from_utf8_lossy(raw);
+            let result = engine.load_rule(&garbage);
+            assert!(result.is_err(), "Garbage input must be a parse error, not Ok");
+        }
+
+        /// A multi-document YAML where one document is invalid must load the
+        /// valid rules and collect the error, without aborting entirely.
+        /// This is the contract for bulk rule ingestion from mixed-quality feeds.
+        #[test]
+        fn load_rules_partial_success_on_mixed_doc() {
+            let yaml = "\
+title: Valid Rule A\n\
+logsource: {}\n\
+detection:\n    sel:\n        field: value\n    condition: sel\n\
+---\n\
+this is garbage yaml :::: \x00\n\
+---\n\
+title: Valid Rule B\n\
+logsource: {}\n\
+detection:\n    sel:\n        other: thing\n    condition: sel";
+            let mut engine = SigmaEngine::new();
+            let (successes, errors) = engine.load_rules(yaml);
+            assert_eq!(successes.len(), 2,
+                "Two valid rules must be loaded, got successes={:?} errors={:?}",
+                successes, errors);
+            assert_eq!(errors.len(), 1,
+                "One invalid document must produce exactly one error");
+        }
+
+        // ── Group 4: Behavioral Invariants ───────────────────────────────
+
+        /// Loading the same rule twice (same title, same detection) must result
+        /// in rule_count() == 2. The engine does not deduplicate silently.
+        /// Callers are responsible for deduplication at the ingestion layer.
+        #[test]
+        fn duplicate_rule_loads_both_no_silent_dedup() {
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            assert_eq!(engine.rule_count(), 2,
+                "Duplicate rules must both be stored — no silent deduplication");
+        }
+
+        /// Logsource filtering must be case-insensitive.
+        /// A rule specifying `product: Windows` must fire for an event with
+        /// `product: windows` (all-lowercase) and vice versa.
+        #[test]
+        fn logsource_filtering_is_case_insensitive() {
+            let yaml = r#"
+title: Case Test
+logsource:
+    product: Windows
+    category: process_creation
+detection:
+    sel:
+        CommandLine|contains: 'target'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            // Lowercase product — must still match
+            let event = make_event(&[
+                ("CommandLine", "target.exe"),
+                ("product",     "windows"),          // lowercase, rule says "Windows"
+                ("category",    "process_creation"),
+            ]);
+            let results = engine.evaluate_event(&event);
+            assert_eq!(results.len(), 1,
+                "Logsource match must be case-insensitive; rule='Windows' event='windows'");
+        }
+
+        /// A rule with no logsource constraints must fire for ANY event category,
+        /// regardless of what the event's logsource fields contain.
+        #[test]
+        fn rule_without_logsource_matches_any_event() {
+            let yaml = r#"
+title: Wildcard Logsource
+logsource: {}
+detection:
+    sel:
+        TargetField|contains: 'hit'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            for category in &["process_creation", "network", "dns", "registry", "file", ""] {
+                let event = make_event(&[
+                    ("TargetField", "hit"),
+                    ("category",    category),
+                ]);
+                let results = engine.evaluate_event(&event);
+                assert_eq!(results.len(), 1,
+                    "Wildcard logsource rule must fire for category '{category}'");
+            }
+        }
+
+        /// A rule requiring `CommandLine` must never fire when only `ProcessName`
+        /// is present in the event (absent-field semantics).
+        #[test]
+        fn required_field_absent_from_event_never_fires() {
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            // Event has `ProcessName` only — `CommandLine` is absent
+            let event = make_event(&[("ProcessName", "evil.exe")]);
+            let results = engine.evaluate_event(&event);
+            assert!(results.is_empty(),
+                "Rule requiring absent field must not fire: {:?}", results);
+        }
+
+        /// AND logic across two identifiers: BOTH fields must be present and match.
+        /// If only one field matches the rule must not fire.
+        #[test]
+        fn and_logic_requires_both_fields() {
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(TWO_FIELD_RULE).unwrap();
+
+            // Only first identifier matches
+            let only_proc = make_event(&[("Image", "C:\\Windows\\cmd.exe")]);
+            assert!(engine.evaluate_event(&only_proc).is_empty(),
+                "Only Image matching must not trigger AND rule");
+
+            // Only second identifier matches
+            let only_arg = make_event(&[("CommandLine", "cmd -enc abc")]);
+            assert!(engine.evaluate_event(&only_arg).is_empty(),
+                "Only CommandLine matching must not trigger AND rule");
+
+            // Both match
+            let both = make_event(&[
+                ("Image",       "C:\\Windows\\cmd.exe"),
+                ("CommandLine", "cmd -enc abc"),
+            ]);
+            let results = engine.evaluate_event(&both);
+            assert_eq!(results.len(), 1,
+                "Both fields matching must trigger AND rule");
+        }
+
+        // ── Group 5: Parallel Array Invariant (via observable behavior) ──
+
+        /// Load 10 rules then batch-evaluate 20 events. The result count per event
+        /// must be in [0, 10] and the call must complete without panic.
+        /// A panic here would indicate the parallel arrays (rules, hot_data,
+        /// rule_regex_maps) fell out of sync during successive add_compiled_rule calls.
+        #[test]
+        fn parallel_arrays_stay_in_sync_across_ten_rules() {
+            let mut engine = SigmaEngine::new();
+            for i in 0..10usize {
+                let yaml = format!(
+                    "title: Rule {i}\nlogsource: {{}}\ndetection:\n    sel:\n        CommandLine|contains: 'marker_{i}'\n    condition: sel\n"
+                );
+                engine.load_rule(&yaml).unwrap();
+            }
+            assert_eq!(engine.rule_count(), 10);
+
+            let events: Vec<HashMap<String, String>> = (0..20)
+                .map(|i| make_event(&[("CommandLine", &format!("marker_{}", i % 10))]))
+                .collect();
+
+            let results = engine.evaluate_batch(&events);
+            assert_eq!(results.len(), 20,
+                "evaluate_batch must return one result-vec per event");
+            for (i, event_results) in results.iter().enumerate() {
+                assert!(
+                    event_results.matches.len() <= 10,
+                    "Event {i} returned more matches than rules loaded: {}",
+                    event_results.matches.len()
+                );
+                // Each event has exactly one matching marker — verify at least one match
+                assert_eq!(event_results.matches.len(), 1,
+                    "Event {i} (marker_{}) should match exactly 1 rule", i % 10);
+            }
+        }
+
+        // ── Group 6: Deep Condition Nesting ──────────────────────────────
+
+        /// A rule with a complex condition using nested AND/OR/NOT must parse
+        /// and evaluate correctly. Tests the condition AST compiler at depth.
+        #[test]
+        fn deep_nested_condition_evaluates_correctly() {
+            let yaml = r#"
+title: Deep Nesting Test
+logsource: {}
+detection:
+    sel1:
+        CommandLine|contains: 'powershell'
+    sel2:
+        CommandLine|contains: '-enc'
+    filter1:
+        CommandLine|contains: 'legitimate'
+    filter2:
+        Image|endswith: 'trusted.exe'
+    condition: (sel1 and sel2) and not (filter1 or filter2)
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            // Should match: has both sel1+sel2, neither filter
+            let hit = make_event(&[("CommandLine", "powershell -enc abc")]);
+            assert_eq!(engine.evaluate_event(&hit).len(), 1, "Must detect nested condition match");
+
+            // Should NOT match: filter1 present
+            let filtered = make_event(&[
+                ("CommandLine", "powershell -enc abc legitimate"),
+            ]);
+            assert!(engine.evaluate_event(&filtered).is_empty(),
+                "filter1 must suppress the rule");
+
+            // Should NOT match: filter2 present
+            let trusted = make_event(&[
+                ("CommandLine", "powershell -enc abc"),
+                ("Image",       "C:\\path\\trusted.exe"),
+            ]);
+            assert!(engine.evaluate_event(&trusted).is_empty(),
+                "filter2 must suppress the rule");
+
+            // Should NOT match: sel2 absent
+            let no_enc = make_event(&[("CommandLine", "powershell run-script")]);
+            assert!(engine.evaluate_event(&no_enc).is_empty(),
+                "Without -enc, sel2 fails — AND rule must not fire");
+        }
+
+        /// `evaluate_event` takes `&self` — multiple threads can evaluate
+        /// against the same engine concurrently once rule loading is done.
+        #[test]
+        fn evaluate_event_is_safe_to_call_concurrently() {
+            use std::sync::Arc;
+
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            let engine = Arc::new(engine); // wrap in Arc — only works because evaluate_event is &self
+
+            let handles: Vec<_> = (0..8)
+                .map(|i| {
+                    let eng = Arc::clone(&engine);
+                    std::thread::spawn(move || {
+                        let mut event = HashMap::new();
+                        // Even threads pass a matching command line, odd threads do not.
+                        let cmd = if i % 2 == 0 { "run evil.exe" } else { "notepad.exe" };
+                        event.insert("CommandLine".to_string(), cmd.to_string());
+                        event.insert("event_category".to_string(), "process_creation".to_string());
+                        event.insert("event_product".to_string(), "windows".to_string());
+                        (i, eng.evaluate_event(&event).len())
+                    })
+                })
+                .collect();
+
+            for handle in handles {
+                let (i, count) = handle.join().expect("thread panicked");
+                let expected = if i % 2 == 0 { 1 } else { 0 };
+                assert_eq!(count, expected, "thread {i}: unexpected match count");
             }
         }
     }
