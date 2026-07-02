@@ -1684,7 +1684,7 @@ detection:
         CommandLine|contains: 'mimikatz'
     condition: sel_regex or sel_contains
 "#;
-            let mut engine = make_engine_with_rule(yaml);
+            let engine = make_engine_with_rule(yaml);
 
             // Matches via sel_regex only — "mimikatz" is NOT present
             let mut event = HashMap::new();
@@ -1727,7 +1727,7 @@ detection:
         CommandLine|contains: 'mimikatz'
     condition: sel_windash or sel_contains
 "#;
-            let mut engine = make_engine_with_rule(yaml);
+            let engine = make_engine_with_rule(yaml);
 
             // Event uses slash variant — only windash can match, AC pattern "-enc" won't hit
             let mut event = HashMap::new();
@@ -1759,7 +1759,7 @@ detection:
         CommandLine|contains: 'mimikatz'
     condition: sel_b64 or sel_contains
 "#;
-            let mut engine = make_engine_with_rule(yaml);
+            let engine = make_engine_with_rule(yaml);
 
             // base64("evil") = "ZXZpbA=="
             let mut event = HashMap::new();
@@ -1788,7 +1788,7 @@ detection:
         CommandLine|contains: 'mimikatz'
     condition: selection
 "#;
-            let mut engine = make_engine_with_rule(yaml);
+            let engine = make_engine_with_rule(yaml);
 
             // No "mimikatz" in event → fully_ac_covered pre-filter should skip rule
             let mut event = HashMap::new();
@@ -2286,7 +2286,7 @@ detection:
         /// result set for any event — including an empty event — without panicking.
         #[test]
         fn empty_engine_no_panic_empty_event() {
-            let mut engine = SigmaEngine::new();
+            let engine = SigmaEngine::new();
             let event = HashMap::new();
             let results = engine.evaluate_event(&event);
             assert!(
@@ -2298,7 +2298,7 @@ detection:
 
         #[test]
         fn empty_engine_no_panic_populated_event() {
-            let mut engine = SigmaEngine::new();
+            let engine = SigmaEngine::new();
             let event = make_event(&[("CommandLine", "evil.exe -enc abc")]);
             let results = engine.evaluate_event(&event);
             assert!(

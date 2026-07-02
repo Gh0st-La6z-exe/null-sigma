@@ -128,7 +128,7 @@ proptest! {
     /// A freshly constructed engine (zero rules) must never panic for any event.
     #[test]
     fn p1_no_panic_empty_engine_arbitrary_event(event in arb_event()) {
-        let mut engine = SigmaEngine::new();
+        let engine = SigmaEngine::new();
         let results = engine.evaluate_event(&event);
         prop_assert!(results.is_empty(),
             "Zero rules: must always return empty results");
