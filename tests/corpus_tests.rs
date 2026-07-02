@@ -140,55 +140,88 @@ detection:
     #[test]
     fn corpus_parse_minimal_succeeds() {
         let result = parse_rule(CORPUS_MINIMAL);
-        assert!(result.is_ok(), "Minimal corpus seed must parse: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Minimal corpus seed must parse: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn corpus_parse_full_succeeds() {
         let result = parse_rule(CORPUS_FULL);
-        assert!(result.is_ok(), "Full corpus seed must parse: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Full corpus seed must parse: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn corpus_parse_regex_cidr_succeeds() {
         let result = parse_rule(CORPUS_REGEX_CIDR);
-        assert!(result.is_ok(), "Regex/CIDR corpus seed must parse: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Regex/CIDR corpus seed must parse: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn corpus_parse_multi_doc_both_succeed() {
         let results = parse_rules(CORPUS_MULTI_DOC);
         let ok_count = results.iter().filter(|r| r.is_ok()).count();
-        assert_eq!(ok_count, 2, "Multi-doc corpus must yield 2 successful rules, got {ok_count}");
+        assert_eq!(
+            ok_count, 2,
+            "Multi-doc corpus must yield 2 successful rules, got {ok_count}"
+        );
     }
 
     #[test]
     fn corpus_parse_empty_is_graceful_error() {
-        assert!(parse_rule(CORPUS_EMPTY).is_err(), "Empty corpus seed must be an error, not Ok");
+        assert!(
+            parse_rule(CORPUS_EMPTY).is_err(),
+            "Empty corpus seed must be an error, not Ok"
+        );
     }
 
     #[test]
     fn corpus_parse_invalid_is_graceful_error() {
-        assert!(parse_rule(CORPUS_INVALID).is_err(), "Invalid YAML seed must be an error, not Ok");
+        assert!(
+            parse_rule(CORPUS_INVALID).is_err(),
+            "Invalid YAML seed must be an error, not Ok"
+        );
     }
 
     #[test]
     fn corpus_parse_crlf_succeeds() {
         let result = parse_rule(CORPUS_CRLF);
-        assert!(result.is_ok(), "CRLF line endings must parse correctly: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "CRLF line endings must parse correctly: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn corpus_parse_deep_condition_succeeds() {
         let result = parse_rule(CORPUS_DEEP_CONDITION);
-        assert!(result.is_ok(), "Deep condition corpus seed must parse: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Deep condition corpus seed must parse: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn corpus_parse_many_values_succeeds() {
         let yaml = corpus_many_values();
         let result = parse_rule(&yaml);
-        assert!(result.is_ok(), "50-value corpus seed must parse: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "50-value corpus seed must parse: {:?}",
+            result.err()
+        );
     }
 
     // ── Evaluate safety: no panic on any corpus-derived event ────────────────
@@ -201,40 +234,68 @@ detection:
 
         // Load every valid corpus seed
         let valid_rules = [
-            CORPUS_MINIMAL, CORPUS_FULL, CORPUS_REGEX_CIDR, CORPUS_DEEP_CONDITION,
+            CORPUS_MINIMAL,
+            CORPUS_FULL,
+            CORPUS_REGEX_CIDR,
+            CORPUS_DEEP_CONDITION,
         ];
         for rule in &valid_rules {
             let _ = engine.load_rule(rule); // partial load is acceptable
         }
         let (_, errors) = engine.load_rules(CORPUS_MULTI_DOC);
-        assert!(errors.is_empty(), "Multi-doc corpus must load cleanly: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "Multi-doc corpus must load cleanly: {:?}",
+            errors
+        );
 
-        assert!(engine.rule_count() >= 6, "At least 6 corpus rules must load");
+        assert!(
+            engine.rule_count() >= 6,
+            "At least 6 corpus rules must load"
+        );
 
         // Corpus-derived events: a representative sample of matching and
         // non-matching events drawn from the field values in the corpus rules.
         let events: Vec<HashMap<String, String>> = vec![
             // Matching: contains 'value'
-            [("field", "value")].iter().map(|(k,v)| (k.to_string(), v.to_string())).collect(),
+            [("field", "value")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             // Matching: multi-doc rule B
-            [("a", "b")].iter().map(|(k,v)| (k.to_string(), v.to_string())).collect(),
+            [("a", "b")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             // Matching: deep condition hit (a + c, not trusted.exe)
             [("CommandLine", "a c run"), ("Image", "cmd.exe")]
-                .iter().map(|(k,v)| (k.to_string(), v.to_string())).collect(),
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             // Non-matching: deep condition filtered (trusted.exe)
             [("CommandLine", "a c run"), ("Image", "trusted.exe")]
-                .iter().map(|(k,v)| (k.to_string(), v.to_string())).collect(),
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             // Matching: CRLF rule
-            [("f", "v")].iter().map(|(k,v)| (k.to_string(), v.to_string())).collect(),
+            [("f", "v")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             // Empty event
             HashMap::new(),
             // Event with 50 arbitrary fields
-            (0..50usize).map(|i| (format!("field_{i}"), format!("val_{i}"))).collect(),
+            (0..50usize)
+                .map(|i| (format!("field_{i}"), format!("val_{i}")))
+                .collect(),
         ];
 
         let results = engine.evaluate_batch(&events);
-        assert_eq!(results.len(), events.len(),
-            "evaluate_batch must return one result per event");
+        assert_eq!(
+            results.len(),
+            events.len(),
+            "evaluate_batch must return one result per event"
+        );
         // Must complete without panic — results are not asserted on correctness here
     }
 }

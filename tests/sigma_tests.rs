@@ -69,7 +69,10 @@ falsepositives:
             assert_eq!(rule.tags.len(), 2);
             assert!(rule.tags.contains(&"attack.execution".to_string()));
             assert_eq!(rule.falsepositives.len(), 1);
-            assert_eq!(rule.logsource.category, Some("process_creation".to_string()));
+            assert_eq!(
+                rule.logsource.category,
+                Some("process_creation".to_string())
+            );
             assert_eq!(rule.logsource.product, Some("windows".to_string()));
             assert_eq!(rule.logsource.service, Some("sysmon".to_string()));
         }
@@ -131,7 +134,10 @@ detection:
             let kw = &identifiers[0];
             assert_eq!(kw.name, "keywords");
             // Keywords should have empty field names (match any field)
-            assert!(kw.groups.iter().all(|g| g.conditions.iter().all(|c| c.field.is_empty())));
+            assert!(kw
+                .groups
+                .iter()
+                .all(|g| g.conditions.iter().all(|c| c.field.is_empty())));
         }
 
         #[test]
@@ -311,10 +317,13 @@ detection:
         use super::*;
 
         fn make_identifiers(names: &[&str]) -> Vec<SearchIdentifier> {
-            names.iter().map(|n| SearchIdentifier {
-                name: n.to_string(),
-                groups: vec![],
-            }).collect()
+            names
+                .iter()
+                .map(|n| SearchIdentifier {
+                    name: n.to_string(),
+                    groups: vec![],
+                })
+                .collect()
         }
 
         #[test]
@@ -389,9 +398,7 @@ detection:
         #[test]
         fn compile_parenthesized_or_and_not() {
             let ids = make_identifiers(&["sel_a", "sel_b", "filter"]);
-            let node = compile_condition(
-                "(sel_a or sel_b) and not filter", &ids
-            ).unwrap();
+            let node = compile_condition("(sel_a or sel_b) and not filter", &ids).unwrap();
 
             let mut results = HashMap::new();
             results.insert("sel_a".to_string(), false);
@@ -480,9 +487,7 @@ detection:
         #[test]
         fn compile_complex_condition_with_quantifier() {
             let ids = make_identifiers(&["selection_1", "selection_2", "filter"]);
-            let node = compile_condition(
-                "1 of selection* and not filter", &ids
-            ).unwrap();
+            let node = compile_condition("1 of selection* and not filter", &ids).unwrap();
 
             let mut results = HashMap::new();
             results.insert("selection_1".to_string(), true);
@@ -506,7 +511,10 @@ detection:
 
             // Two match → should fire
             results.insert("selection_2".to_string(), true);
-            assert!(node.evaluate(&results), "2 of 3 with exactly 2 true should fire");
+            assert!(
+                node.evaluate(&results),
+                "2 of 3 with exactly 2 true should fire"
+            );
         }
 
         #[test]
@@ -525,7 +533,10 @@ detection:
     condition: 3 of selection*
 "#;
             let result = parse_rule(yaml);
-            assert!(result.is_ok(), "parse_rule must accept `3 of selection*`: {result:?}");
+            assert!(
+                result.is_ok(),
+                "parse_rule must accept `3 of selection*`: {result:?}"
+            );
 
             let mut engine = SigmaEngine::new();
             engine.load_rule(yaml).unwrap();
@@ -593,13 +604,19 @@ detection:
         use super::*;
 
         fn make_event(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
         }
 
         fn make_condition(field: &str, values: &[&str], mods: &[ValueModifier]) -> FieldCondition {
             FieldCondition {
                 field: field.to_string(),
-                values: values.iter().map(|v| SigmaValue::String(v.to_string())).collect(),
+                values: values
+                    .iter()
+                    .map(|v| SigmaValue::String(v.to_string()))
+                    .collect(),
                 modifiers: mods.to_vec(),
             }
         }
@@ -677,7 +694,8 @@ detection:
         fn contains_all_modifier() {
             let event = make_event(&[("cmd", "powershell -enc -nop -sta")]);
             let cond = make_condition(
-                "cmd", &["-enc", "-nop"],
+                "cmd",
+                &["-enc", "-nop"],
                 &[ValueModifier::Contains, ValueModifier::All],
             );
             assert!(match_field_condition(&cond, &event));
@@ -687,7 +705,8 @@ detection:
         fn contains_all_modifier_partial_match() {
             let event = make_event(&[("cmd", "powershell -enc something")]);
             let cond = make_condition(
-                "cmd", &["-enc", "-nop"],
+                "cmd",
+                &["-enc", "-nop"],
                 &[ValueModifier::Contains, ValueModifier::All],
             );
             assert!(!match_field_condition(&cond, &event));
@@ -781,21 +800,19 @@ detection:
                 let mut event = HashMap::new();
                 event.insert("CommandLine".to_string(), (*cmd).to_string());
                 assert_eq!(
-                    engine.evaluate_event(&event).len(), 1,
+                    engine.evaluate_event(&event).len(),
+                    1,
                     "should fire on: {cmd}"
                 );
             }
 
-            let non_matching = [
-                "powershell -File script.ps1",
-                "cmd.exe /c echo hello",
-                "",
-            ];
+            let non_matching = ["powershell -File script.ps1", "cmd.exe /c echo hello", ""];
             for cmd in &non_matching {
                 let mut event = HashMap::new();
                 event.insert("CommandLine".to_string(), (*cmd).to_string());
                 assert_eq!(
-                    engine.evaluate_event(&event).len(), 0,
+                    engine.evaluate_event(&event).len(),
+                    0,
                     "should NOT fire on: {cmd}"
                 );
             }
@@ -940,7 +957,11 @@ detection:
         fn windash_modifier() {
             let event = make_event(&[("cmd", "cmd /c whoami")]);
             // Rule uses `-c` but windash adds `/c` variant
-            let cond = make_condition("cmd", &["-c"], &[ValueModifier::Windash, ValueModifier::Contains]);
+            let cond = make_condition(
+                "cmd",
+                &["-c"],
+                &[ValueModifier::Windash, ValueModifier::Contains],
+            );
             assert!(match_field_condition(&cond, &event));
         }
 
@@ -958,10 +979,7 @@ detection:
 
         #[test]
         fn keyword_search_no_match() {
-            let event = make_event(&[
-                ("field1", "normal value"),
-                ("field2", "another normal"),
-            ]);
+            let event = make_event(&[("field1", "normal value"), ("field2", "another normal")]);
             let cond = make_condition("", &["suspicious"], &[ValueModifier::Contains]);
             assert!(!match_field_condition(&cond, &event));
         }
@@ -1003,14 +1021,14 @@ detection:
 
         #[test]
         fn identifier_and_logic_across_conditions() {
-            let event = make_event(&[
-                ("cmd", "powershell -enc AAAA"),
-                ("user", "admin"),
-            ]);
-            let id = make_identifier("sel", vec![
-                make_condition("cmd", &["-enc"], &[ValueModifier::Contains]),
-                make_condition("user", &["admin"], &[]),
-            ]);
+            let event = make_event(&[("cmd", "powershell -enc AAAA"), ("user", "admin")]);
+            let id = make_identifier(
+                "sel",
+                vec![
+                    make_condition("cmd", &["-enc"], &[ValueModifier::Contains]),
+                    make_condition("user", &["admin"], &[]),
+                ],
+            );
             // Both conditions must match (AND within group)
             assert!(match_identifier(&id, &event));
         }
@@ -1193,10 +1211,7 @@ detection:
             assert_eq!(engine.evaluate_event(&event1).len(), 1);
 
             // Should NOT match: whoami via cmd.exe (filtered out)
-            let event2 = process_event(
-                "whoami /priv",
-                "C:\\Windows\\System32\\cmd.exe",
-            );
+            let event2 = process_event("whoami /priv", "C:\\Windows\\System32\\cmd.exe");
             assert!(engine.evaluate_event(&event2).is_empty());
         }
 
@@ -1261,7 +1276,10 @@ detection:
             assert_eq!(engine.rule_count(), 2);
 
             // Event matches only Rule A
-            let event = process_event("mimikatz.exe sekurlsa::logonpasswords", "C:\\temp\\mimikatz.exe");
+            let event = process_event(
+                "mimikatz.exe sekurlsa::logonpasswords",
+                "C:\\temp\\mimikatz.exe",
+            );
             let matches = engine.evaluate_event(&event);
             assert_eq!(matches.len(), 1);
             assert_eq!(matches[0].rule_title, "Rule A");
@@ -1502,8 +1520,10 @@ detection:
 
             // Long subdomain (potential DNS tunneling)
             let mut event = HashMap::new();
-            event.insert("queryname".to_string(),
-                "aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkaGVsbG93b3JsZA.evil.com".to_string());
+            event.insert(
+                "queryname".to_string(),
+                "aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkaGVsbG93b3JsZA.evil.com".to_string(),
+            );
             event.insert("event_category".to_string(), "dns_query".to_string());
             event.insert("event_product".to_string(), "windows".to_string());
             assert_eq!(engine.evaluate_event(&event).len(), 1);
@@ -1570,7 +1590,10 @@ detection:
 
         #[test]
         fn wildcard_multiple_stars() {
-            assert!(check_wildcard("*\\*\\powershell.exe", "C:\\Windows\\System32\\powershell.exe"));
+            assert!(check_wildcard(
+                "*\\*\\powershell.exe",
+                "C:\\Windows\\System32\\powershell.exe"
+            ));
         }
 
         #[test]
@@ -1595,11 +1618,16 @@ detection:
                 SeverityLevel::Medium,
                 SeverityLevel::High,
                 SeverityLevel::Critical,
-            ].iter().map(|s| s.to_score()).collect();
+            ]
+            .iter()
+            .map(|s| s.to_score())
+            .collect();
 
             for i in 1..scores.len() {
-                assert!(scores[i] > scores[i - 1],
-                    "Severity scores not monotonically increasing");
+                assert!(
+                    scores[i] > scores[i - 1],
+                    "Severity scores not monotonically increasing"
+                );
             }
         }
 
@@ -1613,18 +1641,22 @@ detection:
                 SeverityLevel::Critical,
             ] {
                 let score = level.to_score();
-                assert!((0.0..=1.0).contains(&score),
-                    "Score {score} out of [0,1] range for {:?}", level);
+                assert!(
+                    (0.0..=1.0).contains(&score),
+                    "Score {score} out of [0,1] range for {:?}",
+                    level
+                );
             }
         }
     }
 
     // ═════════════════════════════════════════════════════════════════════
-    // AC PRE-FILTER CORRECTNESS TESTS (BUG-1A + BUG-1B)
+    // AC PRE-FILTER CORRECTNESS TESTS
     //
-    // These tests prove the Aho-Corasick optimization never produces false
-    // negatives. Each test loads a "mixed" rule that would be incorrectly
-    // skipped by the old buggy pre-filter but must still return a match.
+    // These tests prove the Aho-Corasick optimisation never produces false
+    // negatives. Each test loads a rule that mixes AC-eligible and
+    // non-AC-eligible conditions, then verifies the engine still fires on
+    // events that only satisfy the non-AC conditions.
     // ═════════════════════════════════════════════════════════════════════
 
     mod ac_prefilter_tests {
@@ -1636,9 +1668,9 @@ detection:
             engine
         }
 
-        /// BUG-1B: condition is `sel_regex OR sel_contains`.
-        /// Event matches ONLY via sel_regex; sel_contains AC patterns don't hit.
-        /// Old pre-filter would skip the rule because no AC pattern appeared.
+        /// `sel_regex OR sel_contains` condition: event matches via the regex identifier
+        /// only — no AC-eligible pattern from sel_contains appears in the event.
+        /// The pre-filter must not skip the rule; both identifiers must be evaluated.
         #[test]
         fn ac_prefilter_not_skipped_regex_or_contains() {
             let yaml = r#"
@@ -1656,11 +1688,16 @@ detection:
 
             // Matches via sel_regex only — "mimikatz" is NOT present
             let mut event = HashMap::new();
-            event.insert("command_line".to_string(),
-                         "powershell.exe -enc SQBFAFgA".to_string());
+            event.insert(
+                "command_line".to_string(),
+                "powershell.exe -enc SQBFAFgA".to_string(),
+            );
             let matches = engine.evaluate_event(&event);
-            assert_eq!(matches.len(), 1,
-                "Rule must match via regex when AC patterns (mimikatz) are absent");
+            assert_eq!(
+                matches.len(),
+                1,
+                "Rule must match via regex when AC patterns (mimikatz) are absent"
+            );
 
             // Matches via sel_contains only
             let mut event2 = HashMap::new();
@@ -1673,9 +1710,10 @@ detection:
             assert!(engine.evaluate_event(&event3).is_empty());
         }
 
-        /// BUG-1A: sel_windash uses |windash which is a transform modifier.
-        /// The AC pattern holds "-enc" but the event only has "/enc" (slash variant).
-        /// Old is_ac_eligible returned true for windash, causing false AC misses.
+        /// `|windash` is a transform modifier — the AC automaton holds the literal
+        /// pattern `"-enc"` but the event contains the slash variant `"/enc"`.
+        /// `is_ac_eligible` must exclude windash conditions from AC coverage so the
+        /// rule is not incorrectly skipped when the dash variant is absent.
         #[test]
         fn ac_prefilter_not_skipped_windash_or_contains() {
             let yaml = r#"
@@ -1693,15 +1731,21 @@ detection:
 
             // Event uses slash variant — only windash can match, AC pattern "-enc" won't hit
             let mut event = HashMap::new();
-            event.insert("command_line".to_string(),
-                         "powershell.exe /enc SQBFAFgA".to_string());
+            event.insert(
+                "command_line".to_string(),
+                "powershell.exe /enc SQBFAFgA".to_string(),
+            );
             let matches = engine.evaluate_event(&event);
-            assert_eq!(matches.len(), 1,
-                "Rule must match /enc via windash when AC pattern -enc is absent");
+            assert_eq!(
+                matches.len(),
+                1,
+                "Rule must match /enc via windash when AC pattern -enc is absent"
+            );
         }
 
-        /// BUG-1A: |base64 is a transform modifier — the AC pattern would be the
-        /// plain-text value, but the event contains the base64-encoded variant.
+        /// `|base64` is a transform modifier — the AC automaton holds the plain-text
+        /// value, but the event field contains the base64-encoded form. The rule
+        /// must not be pre-filter-skipped when only the plain-text AC pattern is absent.
         #[test]
         fn ac_prefilter_not_skipped_base64_or_contains() {
             let yaml = r#"
@@ -1719,11 +1763,16 @@ detection:
 
             // base64("evil") = "ZXZpbA=="
             let mut event = HashMap::new();
-            event.insert("command_line".to_string(),
-                         "powershell -enc ZXZpbA==".to_string());
+            event.insert(
+                "command_line".to_string(),
+                "powershell -enc ZXZpbA==".to_string(),
+            );
             let matches = engine.evaluate_event(&event);
-            assert_eq!(matches.len(), 1,
-                "Rule must match base64(evil) even though plain 'evil' not in AC");
+            assert_eq!(
+                matches.len(),
+                1,
+                "Rule must match base64(evil) even though plain 'evil' not in AC"
+            );
         }
 
         /// Verify the optimization STILL WORKS for fully AC-covered rules.
@@ -1743,9 +1792,14 @@ detection:
 
             // No "mimikatz" in event → fully_ac_covered pre-filter should skip rule
             let mut event = HashMap::new();
-            event.insert("command_line".to_string(), "powershell -enc ABC".to_string());
-            assert!(engine.evaluate_event(&event).is_empty(),
-                "Fully AC-covered rule should be correctly skipped (no false positives)");
+            event.insert(
+                "command_line".to_string(),
+                "powershell -enc ABC".to_string(),
+            );
+            assert!(
+                engine.evaluate_event(&event).is_empty(),
+                "Fully AC-covered rule should be correctly skipped (no false positives)"
+            );
 
             // With "mimikatz" → should match
             let mut event2 = HashMap::new();
@@ -1768,7 +1822,10 @@ detection:
         fn make_condition(field: &str, values: &[&str], mods: &[ValueModifier]) -> FieldCondition {
             FieldCondition {
                 field: field.to_string(),
-                values: values.iter().map(|v| SigmaValue::String(v.to_string())).collect(),
+                values: values
+                    .iter()
+                    .map(|v| SigmaValue::String(v.to_string()))
+                    .collect(),
                 modifiers: mods.to_vec(),
             }
         }
@@ -1780,21 +1837,31 @@ detection:
             // "cmd" in UTF-16LE = c\x00m\x00d\x00
             let wide_cmd = "c\x00m\x00d\x00";
             let event = make_event("field", wide_cmd);
-            let cond = make_condition("field", &["cmd"],
-                &[ValueModifier::Wide, ValueModifier::Contains]);
-            assert!(match_field_condition(&cond, &event),
-                "|wide should match UTF-16LE encoded string");
+            let cond = make_condition(
+                "field",
+                &["cmd"],
+                &[ValueModifier::Wide, ValueModifier::Contains],
+            );
+            assert!(
+                match_field_condition(&cond, &event),
+                "|wide should match UTF-16LE encoded string"
+            );
         }
 
         #[test]
         fn wide_modifier_no_match_plain_ascii() {
             // Plain ASCII "cmd" should NOT match via |wide (wrong encoding)
             let event = make_event("field", "cmd");
-            let cond = make_condition("field", &["cmd"],
-                &[ValueModifier::Wide, ValueModifier::Contains]);
+            let cond = make_condition(
+                "field",
+                &["cmd"],
+                &[ValueModifier::Wide, ValueModifier::Contains],
+            );
             // The wide variant "c\x00m\x00d\x00" is not a substring of "cmd"
-            assert!(!match_field_condition(&cond, &event),
-                "|wide should not match plain ASCII string");
+            assert!(
+                !match_field_condition(&cond, &event),
+                "|wide should not match plain ASCII string"
+            );
         }
 
         /// |base64 base64-encodes the search value before matching.
@@ -1803,20 +1870,30 @@ detection:
         fn base64_modifier_encodes_value() {
             // base64("evil") = "ZXZpbA=="
             let event = make_event("cmd", "powershell -enc ZXZpbA==");
-            let cond = make_condition("cmd", &["evil"],
-                &[ValueModifier::Base64, ValueModifier::Contains]);
-            assert!(match_field_condition(&cond, &event),
-                "|base64 should match base64-encoded value in field");
+            let cond = make_condition(
+                "cmd",
+                &["evil"],
+                &[ValueModifier::Base64, ValueModifier::Contains],
+            );
+            assert!(
+                match_field_condition(&cond, &event),
+                "|base64 should match base64-encoded value in field"
+            );
         }
 
         #[test]
         fn base64_modifier_no_match_plain_text() {
             let event = make_event("cmd", "powershell -c evil");
-            let cond = make_condition("cmd", &["evil"],
-                &[ValueModifier::Base64, ValueModifier::Contains]);
+            let cond = make_condition(
+                "cmd",
+                &["evil"],
+                &[ValueModifier::Base64, ValueModifier::Contains],
+            );
             // The base64 variant "ZXZpbA==" is not in "powershell -c evil"
-            assert!(!match_field_condition(&cond, &event),
-                "|base64 should not match plain text 'evil' — only the encoded form");
+            assert!(
+                !match_field_condition(&cond, &event),
+                "|base64 should not match plain text 'evil' — only the encoded form"
+            );
         }
 
         /// |base64offset generates 3 variants to catch the encoded string at
@@ -1830,18 +1907,23 @@ detection:
             // base64("-enc ") at offset 0 = "LWVuYyA="
             // So the event contains the offset-0 base64 form
             let event = make_event("cmd", "execute LWVuYyA= something");
-            let cond = make_condition("cmd", &["-enc "],
-                &[ValueModifier::Base64Offset, ValueModifier::Contains]);
-            assert!(match_field_condition(&cond, &event),
-                "|base64offset offset-0 variant should match");
+            let cond = make_condition(
+                "cmd",
+                &["-enc "],
+                &[ValueModifier::Base64Offset, ValueModifier::Contains],
+            );
+            assert!(
+                match_field_condition(&cond, &event),
+                "|base64offset offset-0 variant should match"
+            );
         }
 
         #[test]
         fn windash_slash_and_dash_variants() {
             // |windash on "-enc" produces both "-enc" and "/enc" variants
-            let event_dash  = make_event("cmd", "powershell -enc SQBFAFg=");
+            let event_dash = make_event("cmd", "powershell -enc SQBFAFg=");
             let event_slash = make_event("cmd", "powershell /enc SQBFAFg=");
-            let event_none  = make_event("cmd", "powershell something");
+            let event_none = make_event("cmd", "powershell something");
 
             let cond = FieldCondition {
                 field: "cmd".to_string(),
@@ -1849,12 +1931,18 @@ detection:
                 modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
             };
 
-            assert!(match_field_condition(&cond, &event_dash),
-                "windash should match dash variant");
-            assert!(match_field_condition(&cond, &event_slash),
-                "windash should match slash variant");
-            assert!(!match_field_condition(&cond, &event_none),
-                "windash should not match when neither variant present");
+            assert!(
+                match_field_condition(&cond, &event_dash),
+                "windash should match dash variant"
+            );
+            assert!(
+                match_field_condition(&cond, &event_slash),
+                "windash should match slash variant"
+            );
+            assert!(
+                !match_field_condition(&cond, &event_none),
+                "windash should not match when neither variant present"
+            );
         }
     }
 
@@ -1881,10 +1969,14 @@ detection:
             let (rule, _) = parse_rule(yaml).unwrap();
             // Must match UUID v4 pattern
             let uuid_re = regex::Regex::new(
-                r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-            ).unwrap();
-            assert!(uuid_re.is_match(&rule.id),
-                "Auto-generated ID '{}' does not match UUID v4 format", rule.id);
+                r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            )
+            .unwrap();
+            assert!(
+                uuid_re.is_match(&rule.id),
+                "Auto-generated ID '{}' does not match UUID v4 format",
+                rule.id
+            );
 
             // Same title → same UUID (deterministic)
             let (rule2, _) = parse_rule(yaml).unwrap();
@@ -1893,7 +1985,10 @@ detection:
             // Different title → different UUID
             let yaml2 = yaml.replace("Auto ID UUID Test", "Different Title");
             let (rule3, _) = parse_rule(&yaml2).unwrap();
-            assert_ne!(rule.id, rule3.id, "Different titles must produce different UUIDs");
+            assert_ne!(
+                rule.id, rule3.id,
+                "Different titles must produce different UUIDs"
+            );
         }
 
         /// ConditionExpr::Multiple — a condition list fires if ANY condition matches.
@@ -1919,8 +2014,11 @@ detection:
             let mut event = HashMap::new();
             event.insert("field_b".to_string(), "value_b".to_string());
             let matches = engine.evaluate_event(&event);
-            assert_eq!(matches.len(), 1,
-                "ConditionExpr::Multiple should fire when any condition matches");
+            assert_eq!(
+                matches.len(),
+                1,
+                "ConditionExpr::Multiple should fire when any condition matches"
+            );
 
             // sel_a also matches
             let mut event2 = HashMap::new();
@@ -1938,7 +2036,10 @@ detection:
         fn condition_1_of_explicit_list() {
             let ids: Vec<SearchIdentifier> = ["sel1", "sel2", "sel3"]
                 .iter()
-                .map(|n| SearchIdentifier { name: n.to_string(), groups: vec![] })
+                .map(|n| SearchIdentifier {
+                    name: n.to_string(),
+                    groups: vec![],
+                })
                 .collect();
 
             let node = compile_condition("1 of (sel1, sel2)", &ids).unwrap();
@@ -1947,17 +2048,23 @@ detection:
             results.insert("sel1".to_string(), false);
             results.insert("sel2".to_string(), true);
             results.insert("sel3".to_string(), false);
-            assert!(node.evaluate(&results),
-                "1 of (sel1, sel2) should fire when sel2 matches");
+            assert!(
+                node.evaluate(&results),
+                "1 of (sel1, sel2) should fire when sel2 matches"
+            );
 
             results.insert("sel2".to_string(), false);
-            assert!(!node.evaluate(&results),
-                "1 of (sel1, sel2) should not fire when neither matches");
+            assert!(
+                !node.evaluate(&results),
+                "1 of (sel1, sel2) should not fire when neither matches"
+            );
 
             // sel3 matching should NOT count — it's not in the explicit list
             results.insert("sel3".to_string(), true);
-            assert!(!node.evaluate(&results),
-                "1 of (sel1, sel2) should not count sel3");
+            assert!(
+                !node.evaluate(&results),
+                "1 of (sel1, sel2) should not count sel3"
+            );
         }
 
         /// Multi-document YAML that starts with a `---` separator on the first line.
@@ -1967,8 +2074,11 @@ detection:
             let results = parse_rules(yaml);
             // Filter only successful parses
             let successes: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
-            assert_eq!(successes.len(), 2,
-                "Both rules should parse from a YAML string starting with ---");
+            assert_eq!(
+                successes.len(),
+                2,
+                "Both rules should parse from a YAML string starting with ---"
+            );
         }
     }
 
@@ -2004,39 +2114,50 @@ detection:
         #[test]
         fn cidr_ipv4_slash32_exact_host() {
             let cond = cidr_cond("10.0.0.5/32");
-            assert!(match_field_condition(&cond, &ip_event("10.0.0.5")),
-                "/32 must match the exact host");
-            assert!(!match_field_condition(&cond, &ip_event("10.0.0.6")),
-                "/32 must not match adjacent host");
+            assert!(
+                match_field_condition(&cond, &ip_event("10.0.0.5")),
+                "/32 must match the exact host"
+            );
+            assert!(
+                !match_field_condition(&cond, &ip_event("10.0.0.6")),
+                "/32 must not match adjacent host"
+            );
         }
 
         /// /128 is an exact IPv6 host match
         #[test]
         fn cidr_ipv6_slash128_exact_host() {
             let cond = cidr_cond("2001:db8::1/128");
-            assert!(match_field_condition(&cond, &ip_event("2001:db8::1")),
-                "/128 must match the exact IPv6 host");
-            assert!(!match_field_condition(&cond, &ip_event("2001:db8::2")),
-                "/128 must not match adjacent IPv6 host");
+            assert!(
+                match_field_condition(&cond, &ip_event("2001:db8::1")),
+                "/128 must match the exact IPv6 host"
+            );
+            assert!(
+                !match_field_condition(&cond, &ip_event("2001:db8::2")),
+                "/128 must not match adjacent IPv6 host"
+            );
         }
 
         /// IPv4 CIDR against an IPv6 address must return false (no cross-version match)
         #[test]
         fn cidr_mixed_version_no_match() {
             let cond = cidr_cond("192.168.1.0/24");
-            assert!(!match_field_condition(&cond, &ip_event("::ffff:192.168.1.50")),
-                "IPv4 CIDR must not match an IPv6-mapped address");
+            assert!(
+                !match_field_condition(&cond, &ip_event("::ffff:192.168.1.50")),
+                "IPv4 CIDR must not match an IPv6-mapped address"
+            );
         }
     }
 
     // ═════════════════════════════════════════════════════════════════════
-    // PARSER BUG FIXES (BUG-5, BUG-6, BUG-7)
+    // PARSER EDGE CASE TESTS
     // ═════════════════════════════════════════════════════════════════════
 
     mod parser_bug_tests {
         use super::*;
 
-        // BUG-5+6: pipe aggregation returns clear error, not "identifier '>' not found"
+        // Pipe aggregation must return a clear unsupported error, not a confusing
+        // "identifier '>' not found" message from the condition validator.
         #[test]
         fn parse_pipe_aggregation_returns_clear_unsupported_error() {
             let yaml = r#"
@@ -2050,13 +2171,18 @@ detection:
             let result = parse_rule(yaml);
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
-            assert!(err.contains("not yet supported"),
-                "Error should mention unsupported: {err}");
-            assert!(!err.contains("Identifier '>'"),
-                "Should NOT say '>' is undefined: {err}");
+            assert!(
+                err.contains("not yet supported"),
+                "Error should mention unsupported: {err}"
+            );
+            assert!(
+                !err.contains("Identifier '>'"),
+                "Should NOT say '>' is undefined: {err}"
+            );
         }
 
-        // BUG-5: comparison operators don't trigger "undefined identifier" errors
+        // The condition tokenizer must treat comparison operators (`>`, `<`, `=`)
+        // and numeric literals as delimiters, not identifier tokens.
         #[test]
         fn validate_conditions_no_false_identifier_for_comparison_ops() {
             let yaml = r#"
@@ -2068,20 +2194,27 @@ detection:
     condition: selection | count() > 5
 "#;
             let err = parse_rule(yaml).unwrap_err().to_string();
-            assert!(!err.contains("Identifier '>'"),
-                "Comparison ops must not appear as undefined identifiers: {err}");
-            assert!(!err.contains("Identifier '5'"),
-                "Numbers must not appear as undefined identifiers: {err}");
+            assert!(
+                !err.contains("Identifier '>'"),
+                "Comparison ops must not appear as undefined identifiers: {err}"
+            );
+            assert!(
+                !err.contains("Identifier '5'"),
+                "Numbers must not appear as undefined identifiers: {err}"
+            );
         }
 
-        // BUG-7: Windows CRLF multi-document YAML parses correctly
+        // Windows-style CRLF line endings must not break multi-document YAML splitting.
         #[test]
         fn parse_rules_handles_windows_crlf_line_endings() {
             let yaml = "title: Rule A\r\nlogsource: {}\r\ndetection:\r\n    sel:\r\n        f: v\r\n    condition: sel\r\n---\r\ntitle: Rule B\r\nlogsource: {}\r\ndetection:\r\n    sel:\r\n        f: w\r\n    condition: sel";
             let results = parse_rules(yaml);
             let successes: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
-            assert_eq!(successes.len(), 2,
-                "CRLF multi-doc YAML should parse both rules");
+            assert_eq!(
+                successes.len(),
+                2,
+                "CRLF multi-doc YAML should parse both rules"
+            );
         }
 
         // Regression: valid rules without pipes still catch typos
@@ -2096,8 +2229,10 @@ detection:
     condition: selectoin
 "#;
             let err = parse_rule(yaml).unwrap_err().to_string();
-            assert!(err.contains("selectoin"),
-                "Typo in condition should still be caught: {err}");
+            assert!(
+                err.contains("selectoin"),
+                "Typo in condition should still be caught: {err}"
+            );
         }
     }
 
@@ -2139,7 +2274,10 @@ detection:
 "#;
 
         fn make_event(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
         }
 
         // ── Group 1: Empty & Zero-State ───────────────────────────────────
@@ -2151,8 +2289,11 @@ detection:
             let mut engine = SigmaEngine::new();
             let event = HashMap::new();
             let results = engine.evaluate_event(&event);
-            assert!(results.is_empty(),
-                "Zero rules loaded: must produce zero matches, got {:?}", results);
+            assert!(
+                results.is_empty(),
+                "Zero rules loaded: must produce zero matches, got {:?}",
+                results
+            );
         }
 
         #[test]
@@ -2160,8 +2301,10 @@ detection:
             let mut engine = SigmaEngine::new();
             let event = make_event(&[("CommandLine", "evil.exe -enc abc")]);
             let results = engine.evaluate_event(&event);
-            assert!(results.is_empty(),
-                "Zero rules loaded: even a suspicious event must produce zero matches");
+            assert!(
+                results.is_empty(),
+                "Zero rules loaded: even a suspicious event must produce zero matches"
+            );
         }
 
         /// When a rule requires `CommandLine` but the event has only `ProcessName`,
@@ -2171,8 +2314,10 @@ detection:
             let mut engine = SigmaEngine::new();
             engine.load_rule(MINIMAL_RULE).unwrap();
             let results = engine.evaluate_event(&HashMap::new());
-            assert!(results.is_empty(),
-                "Rule requiring CommandLine must not fire on an empty event");
+            assert!(
+                results.is_empty(),
+                "Rule requiring CommandLine must not fire on an empty event"
+            );
         }
 
         /// rule_count() must increment by exactly one per successful load_rule call.
@@ -2297,10 +2442,16 @@ detection:
         fn load_rule_garbage_input_is_graceful_error() {
             let mut engine = SigmaEngine::new();
             // High-bit bytes are invalid in Rust &str, so build from raw bytes via from_utf8_lossy
-            let raw: &[u8] = &[0x00, 0xff, 0xfe, 0x80, 0x81, b' ', b'n', b'o', b't', b' ', b'y', b'a', b'm', b'l', 0x01, 0x02, 0x03];
+            let raw: &[u8] = &[
+                0x00, 0xff, 0xfe, 0x80, 0x81, b' ', b'n', b'o', b't', b' ', b'y', b'a', b'm', b'l',
+                0x01, 0x02, 0x03,
+            ];
             let garbage = String::from_utf8_lossy(raw);
             let result = engine.load_rule(&garbage);
-            assert!(result.is_err(), "Garbage input must be a parse error, not Ok");
+            assert!(
+                result.is_err(),
+                "Garbage input must be a parse error, not Ok"
+            );
         }
 
         /// A multi-document YAML where one document is invalid must load the
@@ -2320,11 +2471,18 @@ logsource: {}\n\
 detection:\n    sel:\n        other: thing\n    condition: sel";
             let mut engine = SigmaEngine::new();
             let (successes, errors) = engine.load_rules(yaml);
-            assert_eq!(successes.len(), 2,
+            assert_eq!(
+                successes.len(),
+                2,
                 "Two valid rules must be loaded, got successes={:?} errors={:?}",
-                successes, errors);
-            assert_eq!(errors.len(), 1,
-                "One invalid document must produce exactly one error");
+                successes,
+                errors
+            );
+            assert_eq!(
+                errors.len(),
+                1,
+                "One invalid document must produce exactly one error"
+            );
         }
 
         // ── Group 4: Behavioral Invariants ───────────────────────────────
@@ -2337,8 +2495,11 @@ detection:\n    sel:\n        other: thing\n    condition: sel";
             let mut engine = SigmaEngine::new();
             engine.load_rule(MINIMAL_RULE).unwrap();
             engine.load_rule(MINIMAL_RULE).unwrap();
-            assert_eq!(engine.rule_count(), 2,
-                "Duplicate rules must both be stored — no silent deduplication");
+            assert_eq!(
+                engine.rule_count(),
+                2,
+                "Duplicate rules must both be stored — no silent deduplication"
+            );
         }
 
         /// Logsource filtering must be case-insensitive.
@@ -2362,12 +2523,15 @@ detection:
             // Lowercase product — must still match
             let event = make_event(&[
                 ("CommandLine", "target.exe"),
-                ("product",     "windows"),          // lowercase, rule says "Windows"
-                ("category",    "process_creation"),
+                ("product", "windows"), // lowercase, rule says "Windows"
+                ("category", "process_creation"),
             ]);
             let results = engine.evaluate_event(&event);
-            assert_eq!(results.len(), 1,
-                "Logsource match must be case-insensitive; rule='Windows' event='windows'");
+            assert_eq!(
+                results.len(),
+                1,
+                "Logsource match must be case-insensitive; rule='Windows' event='windows'"
+            );
         }
 
         /// A rule with no logsource constraints must fire for ANY event category,
@@ -2386,13 +2550,13 @@ detection:
             engine.load_rule(yaml).unwrap();
 
             for category in &["process_creation", "network", "dns", "registry", "file", ""] {
-                let event = make_event(&[
-                    ("TargetField", "hit"),
-                    ("category",    category),
-                ]);
+                let event = make_event(&[("TargetField", "hit"), ("category", category)]);
                 let results = engine.evaluate_event(&event);
-                assert_eq!(results.len(), 1,
-                    "Wildcard logsource rule must fire for category '{category}'");
+                assert_eq!(
+                    results.len(),
+                    1,
+                    "Wildcard logsource rule must fire for category '{category}'"
+                );
             }
         }
 
@@ -2405,8 +2569,11 @@ detection:
             // Event has `ProcessName` only — `CommandLine` is absent
             let event = make_event(&[("ProcessName", "evil.exe")]);
             let results = engine.evaluate_event(&event);
-            assert!(results.is_empty(),
-                "Rule requiring absent field must not fire: {:?}", results);
+            assert!(
+                results.is_empty(),
+                "Rule requiring absent field must not fire: {:?}",
+                results
+            );
         }
 
         /// AND logic across two identifiers: BOTH fields must be present and match.
@@ -2418,22 +2585,29 @@ detection:
 
             // Only first identifier matches
             let only_proc = make_event(&[("Image", "C:\\Windows\\cmd.exe")]);
-            assert!(engine.evaluate_event(&only_proc).is_empty(),
-                "Only Image matching must not trigger AND rule");
+            assert!(
+                engine.evaluate_event(&only_proc).is_empty(),
+                "Only Image matching must not trigger AND rule"
+            );
 
             // Only second identifier matches
             let only_arg = make_event(&[("CommandLine", "cmd -enc abc")]);
-            assert!(engine.evaluate_event(&only_arg).is_empty(),
-                "Only CommandLine matching must not trigger AND rule");
+            assert!(
+                engine.evaluate_event(&only_arg).is_empty(),
+                "Only CommandLine matching must not trigger AND rule"
+            );
 
             // Both match
             let both = make_event(&[
-                ("Image",       "C:\\Windows\\cmd.exe"),
+                ("Image", "C:\\Windows\\cmd.exe"),
                 ("CommandLine", "cmd -enc abc"),
             ]);
             let results = engine.evaluate_event(&both);
-            assert_eq!(results.len(), 1,
-                "Both fields matching must trigger AND rule");
+            assert_eq!(
+                results.len(),
+                1,
+                "Both fields matching must trigger AND rule"
+            );
         }
 
         // ── Group 5: Parallel Array Invariant (via observable behavior) ──
@@ -2458,8 +2632,11 @@ detection:
                 .collect();
 
             let results = engine.evaluate_batch(&events);
-            assert_eq!(results.len(), 20,
-                "evaluate_batch must return one result-vec per event");
+            assert_eq!(
+                results.len(),
+                20,
+                "evaluate_batch must return one result-vec per event"
+            );
             for (i, event_results) in results.iter().enumerate() {
                 assert!(
                     event_results.matches.len() <= 10,
@@ -2467,8 +2644,12 @@ detection:
                     event_results.matches.len()
                 );
                 // Each event has exactly one matching marker — verify at least one match
-                assert_eq!(event_results.matches.len(), 1,
-                    "Event {i} (marker_{}) should match exactly 1 rule", i % 10);
+                assert_eq!(
+                    event_results.matches.len(),
+                    1,
+                    "Event {i} (marker_{}) should match exactly 1 rule",
+                    i % 10
+                );
             }
         }
 
@@ -2497,27 +2678,35 @@ detection:
 
             // Should match: has both sel1+sel2, neither filter
             let hit = make_event(&[("CommandLine", "powershell -enc abc")]);
-            assert_eq!(engine.evaluate_event(&hit).len(), 1, "Must detect nested condition match");
+            assert_eq!(
+                engine.evaluate_event(&hit).len(),
+                1,
+                "Must detect nested condition match"
+            );
 
             // Should NOT match: filter1 present
-            let filtered = make_event(&[
-                ("CommandLine", "powershell -enc abc legitimate"),
-            ]);
-            assert!(engine.evaluate_event(&filtered).is_empty(),
-                "filter1 must suppress the rule");
+            let filtered = make_event(&[("CommandLine", "powershell -enc abc legitimate")]);
+            assert!(
+                engine.evaluate_event(&filtered).is_empty(),
+                "filter1 must suppress the rule"
+            );
 
             // Should NOT match: filter2 present
             let trusted = make_event(&[
                 ("CommandLine", "powershell -enc abc"),
-                ("Image",       "C:\\path\\trusted.exe"),
+                ("Image", "C:\\path\\trusted.exe"),
             ]);
-            assert!(engine.evaluate_event(&trusted).is_empty(),
-                "filter2 must suppress the rule");
+            assert!(
+                engine.evaluate_event(&trusted).is_empty(),
+                "filter2 must suppress the rule"
+            );
 
             // Should NOT match: sel2 absent
             let no_enc = make_event(&[("CommandLine", "powershell run-script")]);
-            assert!(engine.evaluate_event(&no_enc).is_empty(),
-                "Without -enc, sel2 fails — AND rule must not fire");
+            assert!(
+                engine.evaluate_event(&no_enc).is_empty(),
+                "Without -enc, sel2 fails — AND rule must not fire"
+            );
         }
 
         /// `evaluate_event` takes `&self` — multiple threads can evaluate
@@ -2536,7 +2725,11 @@ detection:
                     std::thread::spawn(move || {
                         let mut event = HashMap::new();
                         // Even threads pass a matching command line, odd threads do not.
-                        let cmd = if i % 2 == 0 { "run evil.exe" } else { "notepad.exe" };
+                        let cmd = if i % 2 == 0 {
+                            "run evil.exe"
+                        } else {
+                            "notepad.exe"
+                        };
                         event.insert("CommandLine".to_string(), cmd.to_string());
                         event.insert("event_category".to_string(), "process_creation".to_string());
                         event.insert("event_product".to_string(), "windows".to_string());

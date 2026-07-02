@@ -37,125 +37,125 @@ pub struct FieldMapping {
 /// all field name translations and can be extended without touching `new()`.
 const SIGMA_FIELD_PAIRS: &[(&str, &str)] = &[
     // Sysmon Process Events (EID 1, 5, 6, 7, 8, 9, 10, 25)
-    ("CommandLine",         "command_line"),
-    ("Image",               "image"),
-    ("ParentImage",         "parent_image"),
-    ("ParentCommandLine",   "parent_command_line"),
-    ("OriginalFileName",    "original_file_name"),
-    ("CurrentDirectory",    "current_directory"),
-    ("User",                "user"),
-    ("LogonId",             "logon_id"),
-    ("IntegrityLevel",      "integrity_level"),
-    ("Hashes",              "hashes"),
-    ("ProcessId",           "process_id"),
-    ("ParentProcessId",     "parent_process_id"),
-    ("ProcessGuid",         "process_guid"),
-    ("ParentProcessGuid",   "parent_process_guid"),
-    ("Company",             "company"),
-    ("Product",             "product"),
-    ("Description",         "description"),
-    ("FileVersion",         "file_version"),
-    ("UtcTime",             "utc_time"),
+    ("CommandLine", "command_line"),
+    ("Image", "image"),
+    ("ParentImage", "parent_image"),
+    ("ParentCommandLine", "parent_command_line"),
+    ("OriginalFileName", "original_file_name"),
+    ("CurrentDirectory", "current_directory"),
+    ("User", "user"),
+    ("LogonId", "logon_id"),
+    ("IntegrityLevel", "integrity_level"),
+    ("Hashes", "hashes"),
+    ("ProcessId", "process_id"),
+    ("ParentProcessId", "parent_process_id"),
+    ("ProcessGuid", "process_guid"),
+    ("ParentProcessGuid", "parent_process_guid"),
+    ("Company", "company"),
+    ("Product", "product"),
+    ("Description", "description"),
+    ("FileVersion", "file_version"),
+    ("UtcTime", "utc_time"),
     // Sysmon Network Events (EID 3)
-    ("DestinationIp",       "destination_ip"),
-    ("DestinationPort",     "destination_port"),
+    ("DestinationIp", "destination_ip"),
+    ("DestinationPort", "destination_port"),
     ("DestinationHostname", "destination_hostname"),
-    ("SourceIp",            "source_ip"),
-    ("SourcePort",          "source_port"),
-    ("Protocol",            "protocol"),
-    ("Initiated",           "initiated"),
-    ("SourceIsIpv6",        "source_is_ipv6"),
-    ("DestinationIsIpv6",   "destination_is_ipv6"),
+    ("SourceIp", "source_ip"),
+    ("SourcePort", "source_port"),
+    ("Protocol", "protocol"),
+    ("Initiated", "initiated"),
+    ("SourceIsIpv6", "source_is_ipv6"),
+    ("DestinationIsIpv6", "destination_is_ipv6"),
     // Sysmon File Events (EID 11, 15, 23, 26)
-    ("TargetFilename",      "target_filename"),
-    ("CreationUtcTime",     "creation_utc_time"),
+    ("TargetFilename", "target_filename"),
+    ("CreationUtcTime", "creation_utc_time"),
     // Sysmon Registry Events (EID 12, 13, 14)
-    ("TargetObject",        "target_object"),
-    ("EventType",           "event_type"),
-    ("Details",             "details"),
+    ("TargetObject", "target_object"),
+    ("EventType", "event_type"),
+    ("Details", "details"),
     // Sysmon DNS Events (EID 22)
-    ("QueryName",           "query_name"),
-    ("QueryStatus",         "query_status"),
-    ("QueryResults",        "query_results"),
+    ("QueryName", "query_name"),
+    ("QueryStatus", "query_status"),
+    ("QueryResults", "query_results"),
     // Sysmon Pipe Events (EID 17, 18)
-    ("PipeName",            "pipe_name"),
+    ("PipeName", "pipe_name"),
     // Sysmon WMI Events (EID 19, 20, 21)
-    ("EventNamespace",      "event_namespace"),
-    ("Name",                "name"),
-    ("Destination",         "destination"),
-    ("Consumer",            "consumer"),
-    ("Filter",              "filter"),
+    ("EventNamespace", "event_namespace"),
+    ("Name", "name"),
+    ("Destination", "destination"),
+    ("Consumer", "consumer"),
+    ("Filter", "filter"),
     // Sysmon Driver/Image Load (EID 6, 7)
-    ("ImageLoaded",         "image_loaded"),
-    ("SignatureStatus",     "signature_status"),
-    ("Signature",           "signature"),
-    ("Signed",              "signed"),
+    ("ImageLoaded", "image_loaded"),
+    ("SignatureStatus", "signature_status"),
+    ("Signature", "signature"),
+    ("Signed", "signed"),
     // Sysmon LSASS/Process Access (EID 10)
-    ("SourceImage",         "source_image"),
-    ("TargetImage",         "target_image"),
-    ("GrantedAccess",       "granted_access"),
-    ("CallTrace",           "call_trace"),
+    ("SourceImage", "source_image"),
+    ("TargetImage", "target_image"),
+    ("GrantedAccess", "granted_access"),
+    ("CallTrace", "call_trace"),
     // Sysmon Clipboard (EID 24)
-    ("ClientInfo",          "client_info"),
+    ("ClientInfo", "client_info"),
     // Sysmon FileDelete (EID 23, 26)
-    ("IsExecutable",        "is_executable"),
-    ("Archived",            "archived"),
+    ("IsExecutable", "is_executable"),
+    ("Archived", "archived"),
     // Windows Security Log
-    ("TargetUserName",              "target_user_name"),
-    ("TargetDomainName",            "target_domain_name"),
-    ("SubjectUserName",             "subject_user_name"),
-    ("SubjectDomainName",           "subject_domain_name"),
-    ("LogonType",                   "logon_type"),
-    ("IpAddress",                   "ip_address"),
-    ("IpPort",                      "ip_port"),
-    ("WorkstationName",             "workstation_name"),
-    ("AuthenticationPackageName",   "authentication_package_name"),
-    ("Status",                      "status"),
-    ("SubStatus",                   "sub_status"),
-    ("FailureReason",               "failure_reason"),
-    ("TargetLogonId",               "target_logon_id"),
-    ("SubjectLogonId",              "subject_logon_id"),
-    ("PrivilegeList",               "privilege_list"),
-    ("ServiceName",                 "service_name"),
-    ("ServiceFileName",             "service_file_name"),
-    ("ServiceType",                 "service_type"),
-    ("ServiceStartType",            "service_start_type"),
-    ("ObjectName",                  "object_name"),
-    ("ObjectType",                  "object_type"),
-    ("AccessMask",                  "access_mask"),
-    ("TaskName",                    "task_name"),
-    ("TaskContent",                 "task_content"),
+    ("TargetUserName", "target_user_name"),
+    ("TargetDomainName", "target_domain_name"),
+    ("SubjectUserName", "subject_user_name"),
+    ("SubjectDomainName", "subject_domain_name"),
+    ("LogonType", "logon_type"),
+    ("IpAddress", "ip_address"),
+    ("IpPort", "ip_port"),
+    ("WorkstationName", "workstation_name"),
+    ("AuthenticationPackageName", "authentication_package_name"),
+    ("Status", "status"),
+    ("SubStatus", "sub_status"),
+    ("FailureReason", "failure_reason"),
+    ("TargetLogonId", "target_logon_id"),
+    ("SubjectLogonId", "subject_logon_id"),
+    ("PrivilegeList", "privilege_list"),
+    ("ServiceName", "service_name"),
+    ("ServiceFileName", "service_file_name"),
+    ("ServiceType", "service_type"),
+    ("ServiceStartType", "service_start_type"),
+    ("ObjectName", "object_name"),
+    ("ObjectType", "object_type"),
+    ("AccessMask", "access_mask"),
+    ("TaskName", "task_name"),
+    ("TaskContent", "task_content"),
     // Windows PowerShell / Script Block Logging
-    ("ScriptBlockText",  "script_block_text"),
-    ("ScriptBlockId",    "script_block_id"),
-    ("Path",             "path"),
+    ("ScriptBlockText", "script_block_text"),
+    ("ScriptBlockId", "script_block_id"),
+    ("Path", "path"),
     ("HostApplication", "host_application"),
-    ("HostName",         "host_name"),
+    ("HostName", "host_name"),
     // Windows Defender / AV
-    ("ThreatName",  "threat_name"),
-    ("NewValue",    "new_value"),
-    ("OldValue",    "old_value"),
+    ("ThreatName", "threat_name"),
+    ("NewValue", "new_value"),
+    ("OldValue", "old_value"),
     // Linux auditd / syslog
-    ("comm",       "comm"),
-    ("exe",        "exe"),
-    ("key",        "key"),
-    ("syscall",    "syscall"),
-    ("type",       "audit_type"),
-    ("uid",        "uid"),
-    ("gid",        "gid"),
-    ("euid",       "euid"),
-    ("pid",        "pid"),
-    ("ppid",       "ppid"),
-    ("a0",         "a0"),
-    ("a1",         "a1"),
-    ("a2",         "a2"),
-    ("a3",         "a3"),
-    ("cwd",        "cwd"),
-    ("proctitle",  "proctitle"),
+    ("comm", "comm"),
+    ("exe", "exe"),
+    ("key", "key"),
+    ("syscall", "syscall"),
+    ("type", "audit_type"),
+    ("uid", "uid"),
+    ("gid", "gid"),
+    ("euid", "euid"),
+    ("pid", "pid"),
+    ("ppid", "ppid"),
+    ("a0", "a0"),
+    ("a1", "a1"),
+    ("a2", "a2"),
+    ("a3", "a3"),
+    ("cwd", "cwd"),
+    ("proctitle", "proctitle"),
     // Generic / Cross-Platform
-    ("md5",     "md5"),
-    ("sha1",    "sha1"),
-    ("sha256",  "sha256"),
+    ("md5", "md5"),
+    ("sha1", "sha1"),
+    ("sha256", "sha256"),
     ("imphash", "imphash"),
 ];
 
@@ -165,11 +165,13 @@ impl FieldMapping {
     #[must_use]
     pub fn new() -> Self {
         let mut mappings = HashMap::with_capacity(SIGMA_FIELD_PAIRS.len());
-        let mut reverse  = HashMap::with_capacity(SIGMA_FIELD_PAIRS.len());
+        let mut reverse = HashMap::with_capacity(SIGMA_FIELD_PAIRS.len());
         for &(sigma, canonical) in SIGMA_FIELD_PAIRS {
-            let sigma_lower    = sigma.to_lowercase();
+            let sigma_lower = sigma.to_lowercase();
             let canonical_lower = canonical.to_lowercase();
-            reverse.entry(canonical_lower).or_insert_with(|| sigma_lower.clone());
+            reverse
+                .entry(canonical_lower)
+                .or_insert_with(|| sigma_lower.clone());
             add(&mut mappings, sigma, canonical);
         }
         FieldMapping { mappings, reverse }
@@ -178,23 +180,31 @@ impl FieldMapping {
     /// Create an empty mapping (for testing or when no translation is wanted).
     #[must_use]
     pub fn empty() -> Self {
-        FieldMapping { mappings: HashMap::new(), reverse: HashMap::new() }
+        FieldMapping {
+            mappings: HashMap::new(),
+            reverse: HashMap::new(),
+        }
     }
 
     /// Add a custom field mapping.
     pub fn add_mapping(&mut self, sigma_name: &str, canonical_name: &str) {
-        let sigma_lower     = sigma_name.to_lowercase();
+        let sigma_lower = sigma_name.to_lowercase();
         let canonical_lower = canonical_name.to_lowercase();
-        self.reverse.entry(canonical_lower).or_insert_with(|| sigma_lower.clone());
-        self.mappings.insert(sigma_lower, canonical_name.to_string());
+        self.reverse
+            .entry(canonical_lower)
+            .or_insert_with(|| sigma_lower.clone());
+        self.mappings
+            .insert(sigma_lower, canonical_name.to_string());
     }
 
     /// Add multiple custom mappings at once.
     pub fn add_mappings(&mut self, map: &HashMap<String, String>) {
         for (k, v) in map {
-            let sigma_lower     = k.to_lowercase();
+            let sigma_lower = k.to_lowercase();
             let canonical_lower = v.to_lowercase();
-            self.reverse.entry(canonical_lower).or_insert_with(|| sigma_lower.clone());
+            self.reverse
+                .entry(canonical_lower)
+                .or_insert_with(|| sigma_lower.clone());
             self.mappings.insert(sigma_lower, v.clone());
         }
     }
@@ -222,7 +232,10 @@ impl FieldMapping {
     ///
     /// [`enrich_event_cow`]: FieldMapping::enrich_event_cow
     #[must_use]
-    pub fn enrich_event(&self, event: &std::collections::HashMap<String, String>) -> std::collections::HashMap<String, String> {
+    pub fn enrich_event(
+        &self,
+        event: &std::collections::HashMap<String, String>,
+    ) -> std::collections::HashMap<String, String> {
         self.enrich_event_cow(event).into_owned()
     }
 

@@ -50,11 +50,7 @@ fn printable_ascii(min: usize, max: usize) -> impl Strategy<Value = String> {
 
 /// Generate a random event: 0–15 fields, each with a printable ASCII key and value.
 fn arb_event() -> impl Strategy<Value = HashMap<String, String>> {
-    proptest::collection::hash_map(
-        printable_ascii(1, 20),
-        printable_ascii(0, 64),
-        0..=15,
-    )
+    proptest::collection::hash_map(printable_ascii(1, 20), printable_ascii(0, 64), 0..=15)
 }
 
 /// Generate a random field name (printable ASCII, 1–20 chars).

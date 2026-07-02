@@ -1,6 +1,6 @@
-use criterion::{criterion_group, criterion_main, Criterion, black_box};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use null_sigma::{FieldMapping, SigmaEngine};
 use std::collections::HashMap;
-use null_sigma::{SigmaEngine, FieldMapping};
 
 fn bench_single_rule_single_event(c: &mut Criterion) {
     let rule_yaml = r#"
@@ -24,8 +24,14 @@ detection:
     engine.load_rule(rule_yaml).unwrap();
 
     let mut event: HashMap<String, String> = HashMap::new();
-    event.insert("commandline".to_string(), "powershell.exe -enc SQBFAFgA".to_string());
-    event.insert("image".to_string(), "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string());
+    event.insert(
+        "commandline".to_string(),
+        "powershell.exe -enc SQBFAFgA".to_string(),
+    );
+    event.insert(
+        "image".to_string(),
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+    );
     event.insert("event_category".to_string(), "process_creation".to_string());
     event.insert("event_product".to_string(), "windows".to_string());
 
@@ -59,7 +65,10 @@ detection:
     }
 
     let mut event: HashMap<String, String> = HashMap::new();
-    event.insert("commandline".to_string(), "cmd.exe /c pattern_42 something".to_string());
+    event.insert(
+        "commandline".to_string(),
+        "cmd.exe /c pattern_42 something".to_string(),
+    );
     event.insert("event_category".to_string(), "process_creation".to_string());
     event.insert("event_product".to_string(), "windows".to_string());
 
@@ -92,7 +101,10 @@ detection:
     }
 
     let mut event: HashMap<String, String> = HashMap::new();
-    event.insert("commandline".to_string(), "cmd.exe /c pattern_500 something".to_string());
+    event.insert(
+        "commandline".to_string(),
+        "cmd.exe /c pattern_500 something".to_string(),
+    );
     event.insert("event_category".to_string(), "process_creation".to_string());
     event.insert("event_product".to_string(), "windows".to_string());
 
@@ -139,7 +151,10 @@ detection:
         .join(" ");
 
     let mut event: HashMap<String, String> = HashMap::new();
-    event.insert("commandline".to_string(), "cmd.exe /c pattern_500 something".to_string());
+    event.insert(
+        "commandline".to_string(),
+        "cmd.exe /c pattern_500 something".to_string(),
+    );
     event.insert(
         "image".to_string(),
         "C:\\Windows\\System32\\notepad.exe".to_string(),
@@ -341,7 +356,8 @@ detection:
     let mut event: HashMap<String, String> = HashMap::new();
     event.insert(
         "commandline".to_string(),
-        "powershell.exe -encodedcommand SQBFAFgAKABOAGUAdAAgACcAaAB0AHQAcAA6AC8ALwBiAGEAZAA".to_string(),
+        "powershell.exe -encodedcommand SQBFAFgAKABOAGUAdAAgACcAaAB0AHQAcAA6AC8ALwBiAGEAZAA"
+            .to_string(),
     );
     event.insert("event_category".to_string(), "process_creation".to_string());
     event.insert("event_product".to_string(), "windows".to_string());
@@ -364,12 +380,21 @@ fn bench_enrich_event_sigma_keys(c: &mut Criterion) {
     let mapping = FieldMapping::new();
 
     let mut event: HashMap<String, String> = HashMap::new();
-    event.insert("commandline".to_string(),    "powershell.exe -enc SQBFAFgA".to_string());
-    event.insert("image".to_string(),          "C:\\Windows\\System32\\powershell.exe".to_string());
-    event.insert("parentimage".to_string(),    "C:\\Windows\\explorer.exe".to_string());
-    event.insert("user".to_string(),           "DESKTOP\\user".to_string());
+    event.insert(
+        "commandline".to_string(),
+        "powershell.exe -enc SQBFAFgA".to_string(),
+    );
+    event.insert(
+        "image".to_string(),
+        "C:\\Windows\\System32\\powershell.exe".to_string(),
+    );
+    event.insert(
+        "parentimage".to_string(),
+        "C:\\Windows\\explorer.exe".to_string(),
+    );
+    event.insert("user".to_string(), "DESKTOP\\user".to_string());
     event.insert("event_category".to_string(), "process_creation".to_string());
-    event.insert("event_product".to_string(),  "windows".to_string());
+    event.insert("event_product".to_string(), "windows".to_string());
 
     c.bench_function("enrich_event_cow_sigma_keys_borrowed", |b| {
         b.iter(|| {
@@ -385,12 +410,21 @@ fn bench_enrich_event_canonical_keys(c: &mut Criterion) {
     let mapping = FieldMapping::new();
 
     let mut event: HashMap<String, String> = HashMap::new();
-    event.insert("command_line".to_string(),   "powershell.exe -enc SQBFAFgA".to_string());
-    event.insert("image".to_string(),          "C:\\Windows\\System32\\powershell.exe".to_string());
-    event.insert("parent_image".to_string(),   "C:\\Windows\\explorer.exe".to_string());
-    event.insert("user".to_string(),           "DESKTOP\\user".to_string());
+    event.insert(
+        "command_line".to_string(),
+        "powershell.exe -enc SQBFAFgA".to_string(),
+    );
+    event.insert(
+        "image".to_string(),
+        "C:\\Windows\\System32\\powershell.exe".to_string(),
+    );
+    event.insert(
+        "parent_image".to_string(),
+        "C:\\Windows\\explorer.exe".to_string(),
+    );
+    event.insert("user".to_string(), "DESKTOP\\user".to_string());
     event.insert("event_category".to_string(), "process_creation".to_string());
-    event.insert("event_product".to_string(),  "windows".to_string());
+    event.insert("event_product".to_string(), "windows".to_string());
 
     c.bench_function("enrich_event_cow_canonical_keys_owned", |b| {
         b.iter(|| {

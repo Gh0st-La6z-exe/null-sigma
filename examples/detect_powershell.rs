@@ -59,7 +59,10 @@ fn main() {
     // flat HashMap<String, String> by the backend ingestion pipeline.
     let event: HashMap<String, String> = [
         ("CommandLine", "powershell.exe -EncodedCommand SQBFAFgA..."),
-        ("Image", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+        (
+            "Image",
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        ),
         ("User", "CORP\\jsmith"),
         ("ParentImage", "C:\\Windows\\explorer.exe"),
         ("category", "process_creation"),

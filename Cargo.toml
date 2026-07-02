@@ -8,7 +8,7 @@ version.workspace = true
 edition.workspace = true
 authors = ["Gh0st-La6z-exe"]
 license = "Apache-2.0"
-description = "High-performance Sigma rule engine — compile detection rules to Aho-Corasick + regex AST, evaluate events at 455K+/sec per core against 1000 rules (Apple M4, release)"
+description = "High-performance Sigma rule engine — compile detection rules to Aho-Corasick + regex AST, evaluate events at 449K+/sec per core against 1000 rules (Apple M4, release)"
 repository = "https://github.com/Gh0st-La6z-exe/null-sigma"
 readme = "README.md"
 keywords = ["sigma", "detection", "siem", "security", "aho-corasick"]
@@ -16,10 +16,11 @@ categories = ["parsing", "algorithms"]
 rust-version = "1.82"
 
 [dependencies]
-# YAML parsing — Sigma rules are YAML-based. serde_yaml is the standard
-# Rust YAML parser with full serde integration.
+# Serialisation framework — required by serde_norway and for deriving Serialize/Deserialize.
 serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9"
+# YAML parsing — serde_norway is the actively maintained, RustSec-recommended
+# fork of serde_yaml (see RUSTSEC-2025-0068). Uses pure-Rust unsafe-libyaml-norway.
+serde_norway = "0.9"
 
 # Aho-Corasick — SIMD-accelerated multi-pattern matching. When a Sigma rule
 # has multiple string patterns (e.g., 10 suspicious process names), we build

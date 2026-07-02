@@ -4,7 +4,7 @@
 // Parses Sigma rule YAML into typed SigmaRule structs with full validation.
 //
 // The parser handles:
-//   1. Standard YAML deserialization via serde_yaml
+//   1. Standard YAML deserialization via serde_norway
 //   2. Detection block parsing: named identifiers → FieldConditions
 //   3. Field modifier extraction (CommandLine|contains|all → field + modifiers)
 //   4. Value normalization (YAML strings, ints, floats, bools, null, lists)
@@ -15,8 +15,8 @@
 // =============================================================================
 
 use crate::types::{
-    SigmaRule, SearchIdentifier, Detection, SigmaValue,
-    FieldConditionGroup, FieldCondition, ValueModifier, ConditionExpr,
+    ConditionExpr, Detection, FieldCondition, FieldConditionGroup, SearchIdentifier, SigmaRule,
+    SigmaValue, ValueModifier,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,8 +90,8 @@ impl std::error::Error for ParseError {}
 /// if the rule structure is malformed.
 pub fn parse_rule(yaml: &str) -> Result<(SigmaRule, Vec<SearchIdentifier>), ParseError> {
     // Step 1: YAML → SigmaRule struct
-    let mut rule: SigmaRule = serde_yaml::from_str(yaml)
-        .map_err(|e| ParseError::YamlError(e.to_string()))?;
+    let mut rule: SigmaRule =
+        serde_norway::from_str(yaml).map_err(|e| ParseError::YamlError(e.to_string()))?;
 
     // Step 2: Validate required fields
     if rule.title.is_empty() {
@@ -180,36 +180,38 @@ fn parse_detection(detection: &Detection) -> Result<Vec<SearchIdentifier>, Parse
 ///   1. Map form: `{CommandLine|contains: '-enc'}` → single group with AND
 ///   2. List-of-maps form: `[{Image: 'cmd.exe'}, {Image: 'powershell.exe'}]` → `ORed` groups
 ///   3. List-of-values form: `['keyword1', 'keyword2']` → keyword match (fieldless)
-fn parse_search_identifier(name: &str, value: &serde_yaml::Value) -> Result<SearchIdentifier, ParseError> {
+fn parse_search_identifier(
+    name: &str,
+    value: &serde_norway::Value,
+) -> Result<SearchIdentifier, ParseError> {
     let groups = match value {
         // Form 1: Single map — one AND-group
-        serde_yaml::Value::Mapping(map) => {
+        serde_norway::Value::Mapping(map) => {
             vec![parse_field_map(name, map)?]
         }
 
         // Form 2 or 3: List
-        serde_yaml::Value::Sequence(seq) => {
+        serde_norway::Value::Sequence(seq) => {
             if seq.is_empty() {
                 return Err(ParseError::EmptyDetection);
             }
 
             // Check if it's a list of maps (Form 2) or list of values (Form 3)
-            if seq.iter().all(serde_yaml::Value::is_mapping) {
+            if seq.iter().all(serde_norway::Value::is_mapping) {
                 // Form 2: List of maps — each map is an OR-group
                 seq.iter()
                     .map(|item| {
-                        let map = item.as_mapping()
-                            .ok_or_else(|| ParseError::ValidationError(
-                                format!("Expected mapping in list for identifier '{name}'")
-                            ))?;
+                        let map = item.as_mapping().ok_or_else(|| {
+                            ParseError::ValidationError(format!(
+                                "Expected mapping in list for identifier '{name}'"
+                            ))
+                        })?;
                         parse_field_map(name, map)
                     })
                     .collect::<Result<Vec<_>, _>>()?
             } else {
                 // Form 3: List of values — keyword search (no specific field)
-                let values: Vec<SigmaValue> = seq.iter()
-                    .map(SigmaValue::from_yaml)
-                    .collect();
+                let values: Vec<SigmaValue> = seq.iter().map(SigmaValue::from_yaml).collect();
                 vec![FieldConditionGroup {
                     conditions: vec![FieldCondition {
                         field: String::new(), // Empty field = keyword match (match any field)
@@ -249,15 +251,13 @@ fn parse_search_identifier(name: &str, value: &serde_yaml::Value) -> Result<Sear
 ///   `{User: 'SYSTEM'}` → exact match (no modifier)
 fn parse_field_map(
     identifier_name: &str,
-    map: &serde_yaml::Mapping,
+    map: &serde_norway::Mapping,
 ) -> Result<FieldConditionGroup, ParseError> {
     let mut conditions = Vec::with_capacity(map.len());
 
     for (key, value) in map {
         let key_str = key.as_str().ok_or_else(|| {
-            ParseError::ValidationError(format!(
-                "Non-string key in identifier '{identifier_name}'"
-            ))
+            ParseError::ValidationError(format!("Non-string key in identifier '{identifier_name}'"))
         })?;
 
         // Parse field name and modifiers: "CommandLine|contains|all" → ("CommandLine", [Contains, All])
@@ -289,10 +289,11 @@ fn parse_field_modifiers(
     let mut modifiers = Vec::new();
 
     for &part in &parts[1..] {
-        let modifier = ValueModifier::from_str(part).ok_or_else(|| ParseError::InvalidModifier {
-            field: format!("{identifier_name}.{field}"),
-            modifier: part.to_string(),
-        })?;
+        let modifier =
+            ValueModifier::from_str(part).ok_or_else(|| ParseError::InvalidModifier {
+                field: format!("{identifier_name}.{field}"),
+                modifier: part.to_string(),
+            })?;
         modifiers.push(modifier);
     }
 
@@ -305,11 +306,9 @@ fn parse_field_modifiers(
 ///   - Single scalar: `"value"` → vec![`SigmaValue::String("value`")]
 ///   - List: `["val1", "val2"]` → vec![`SigmaValue::String("val1`"), `SigmaValue::String("val2`")]
 ///   - Null: `~` → vec![`SigmaValue::Null`]
-fn parse_field_values(value: &serde_yaml::Value) -> Vec<SigmaValue> {
+fn parse_field_values(value: &serde_norway::Value) -> Vec<SigmaValue> {
     match value {
-        serde_yaml::Value::Sequence(seq) => {
-            seq.iter().map(SigmaValue::from_yaml).collect()
-        }
+        serde_norway::Value::Sequence(seq) => seq.iter().map(SigmaValue::from_yaml).collect(),
         _ => vec![SigmaValue::from_yaml(value)],
     }
 }
@@ -330,11 +329,11 @@ fn validate_conditions(
     let id_names: Vec<&str> = identifiers.iter().map(|id| id.name.as_str()).collect();
 
     for cond in condition.conditions() {
-        // BUG-6: Pipe aggregation (e.g., `selection | count() > 5`) is not yet
-        // supported. Fail fast with a clear error rather than allowing
-        // compile_condition to silently strip the aggregate clause — a stripped
-        // rule would fire on ANY single match, ignoring the count threshold and
-        // producing false positives for security rules that rely on thresholds.
+        // Pipe aggregation (e.g., `selection | count() > 5`) is not supported.
+        // Fail fast with a clear error rather than allowing compile_condition to
+        // silently strip the aggregate clause — a stripped rule would fire on ANY
+        // single match, ignoring the count threshold and producing false positives
+        // for security rules that rely on event-count thresholds.
         if cond.contains('|') {
             return Err(ParseError::ValidationError(format!(
                 "Pipe aggregation conditions are not yet supported: \"{cond}\". \
@@ -345,15 +344,17 @@ fn validate_conditions(
         // Tokenize and check each word-like token against known identifiers.
         let tokens = tokenize_condition(cond);
         for token in &tokens {
-            if is_identifier_token(token) && !id_names.iter().any(|name| {
-                // Support wildcard references: "selection*" matches "selection_process", etc.
-                if token.ends_with('*') {
-                    let prefix = &token[..token.len() - 1];
-                    name.starts_with(prefix)
-                } else {
-                    *name == *token
-                }
-            }) {
+            if is_identifier_token(token)
+                && !id_names.iter().any(|name| {
+                    // Support wildcard references: "selection*" matches "selection_process", etc.
+                    if token.ends_with('*') {
+                        let prefix = &token[..token.len() - 1];
+                        name.starts_with(prefix)
+                    } else {
+                        *name == *token
+                    }
+                })
+            {
                 return Err(ParseError::InvalidCondition(format!(
                     "Identifier '{token}' referenced in condition but not defined in detection block"
                 )));
@@ -370,9 +371,9 @@ fn validate_conditions(
 /// operators (`>`, `<`, `=`, `!`), pipes (`|`), and punctuation — are treated
 /// as delimiters and discarded.
 ///
-/// BUG-5 fix: prevents comparison-operator tokens like `>` and `5` from being
-/// mistaken for undefined identifier references in rules that use aggregation
-/// or other non-identifier constructs.
+/// This prevents comparison-operator tokens like `>` and numeric literals like
+/// `5` from being mistaken for undefined identifier references in conditions
+/// that use aggregation or non-identifier constructs.
 fn tokenize_condition(condition: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -397,8 +398,7 @@ fn is_identifier_token(token: &str) -> bool {
     // Note: `tokenize_condition` splits on `|` so it never produces `|` as a token;
     // numeric literals of any value are caught by the `parse::<u64>()` check below.
     const KEYWORDS: &[&str] = &[
-        "and", "or", "not", "all", "of", "them",
-        "count", "near", "by", "avg", "sum", "min", "max",
+        "and", "or", "not", "all", "of", "them", "count", "near", "by", "avg", "sum", "min", "max",
     ];
     if KEYWORDS.contains(&token.to_lowercase().as_str()) {
         return false;
@@ -440,11 +440,11 @@ fn generate_rule_id(title: &str) -> String {
     // UUID v4 layout: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
     // Set version bits: top nibble of field 3 = 0x4
     // Set variant bits: top 2 bits of field 4 = 0b10
-    let hi32          = (h1 >> 32) as u32;
-    let mid16         = ((h1 >> 16) & 0xffff) as u16;
-    let ver_nibble    = ((h1 & 0x0fff) as u16) | 0x4000;          // version 4
-    let var_bits      = ((h2 >> 48) & 0x3fff) as u16 | 0x8000;    // variant 10xx
-    let tail_bits     =   h2 & 0x0000_ffff_ffff_ffff;
+    let hi32 = (h1 >> 32) as u32;
+    let mid16 = ((h1 >> 16) & 0xffff) as u16;
+    let ver_nibble = ((h1 & 0x0fff) as u16) | 0x4000; // version 4
+    let var_bits = ((h2 >> 48) & 0x3fff) as u16 | 0x8000; // variant 10xx
+    let tail_bits = h2 & 0x0000_ffff_ffff_ffff;
 
     format!("{hi32:08x}-{mid16:04x}-{ver_nibble:04x}-{var_bits:04x}-{tail_bits:012x}")
 }

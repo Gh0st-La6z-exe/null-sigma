@@ -32,7 +32,7 @@ bypassed by unrelated-field pattern matches) was the worst-case real-world scena
 
 Every optimization attempt was subject to a strict two-gate policy before acceptance:
 
-1. **Test gate:** `cargo test -p null-sigma` must report `120 passed; 0 failed; 0 ignored`.
+1. **Test gate:** `cargo test` must report `166 passed; 0 failed; 0 ignored`.
    - No test deleted, modified, or skipped to make a change pass.
    - The suite covers all 15 Sigma modifiers, condition AST semantics, AC prefilter
      correctness, transform modifier semantics (base64/wide REPLACE, not expand),

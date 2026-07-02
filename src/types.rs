@@ -102,7 +102,7 @@ pub struct SigmaRule {
     /// Custom fields that don't map to standard Sigma fields.
     /// Preserved for round-tripping and custom metadata.
     #[serde(flatten)]
-    pub custom_fields: HashMap<String, serde_yaml::Value>,
+    pub custom_fields: HashMap<String, serde_norway::Value>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -143,16 +143,24 @@ impl LogSource {
     /// Check if this logsource matches an event's metadata.
     /// None fields are treated as wildcards (match anything).
     #[must_use]
-    pub fn matches(&self, event_category: Option<&str>, event_product: Option<&str>, event_service: Option<&str>) -> bool {
-        let cat_ok = self.category.as_ref().is_none_or(|c| {
-            event_category.is_some_and(|ec| ec.eq_ignore_ascii_case(c))
-        });
-        let prod_ok = self.product.as_ref().is_none_or(|p| {
-            event_product.is_some_and(|ep| ep.eq_ignore_ascii_case(p))
-        });
-        let svc_ok = self.service.as_ref().is_none_or(|s| {
-            event_service.is_some_and(|es| es.eq_ignore_ascii_case(s))
-        });
+    pub fn matches(
+        &self,
+        event_category: Option<&str>,
+        event_product: Option<&str>,
+        event_service: Option<&str>,
+    ) -> bool {
+        let cat_ok = self
+            .category
+            .as_ref()
+            .is_none_or(|c| event_category.is_some_and(|ec| ec.eq_ignore_ascii_case(c)));
+        let prod_ok = self
+            .product
+            .as_ref()
+            .is_none_or(|p| event_product.is_some_and(|ep| ep.eq_ignore_ascii_case(p)));
+        let svc_ok = self
+            .service
+            .as_ref()
+            .is_none_or(|s| event_service.is_some_and(|es| es.eq_ignore_ascii_case(s)));
         cat_ok && prod_ok && svc_ok
     }
 }
@@ -171,7 +179,8 @@ impl LogSource {
 ///   - Boolean operators: `and`, `or`, `not`
 ///   - Grouping: `( ... )`
 ///   - Quantifiers: `1 of selection*`, `all of them`, `1 of them`
-///   - Pipe aggregation: `| count() > 5` (future)
+///   - Pipe aggregation (`| count() > 5`) is **not supported** — the parser
+///     returns a clear error on rules that use it
 ///
 /// Example detection block:
 /// ```yaml
@@ -195,7 +204,7 @@ pub struct Detection {
     /// Keys are identifier names (e.g., "selection", "filter").
     /// Values are lists of field matchers (OR within a list item, AND across fields).
     #[serde(flatten)]
-    pub identifiers: HashMap<String, serde_yaml::Value>,
+    pub identifiers: HashMap<String, serde_norway::Value>,
 }
 
 /// Condition can be a single string or a list of strings (multiple conditions).
@@ -257,7 +266,7 @@ pub struct SearchIdentifier {
 
 /// A group of field conditions that are `ANDed` together.
 /// A `SearchIdentifier` with multiple groups represents an OR:
-///   group[0] AND-internal OR group[1] AND-internal OR ...
+///   group\[0\] AND-internal OR group\[1\] AND-internal OR ...
 #[derive(Debug, Clone)]
 pub struct FieldConditionGroup {
     /// The individual field conditions in this group, all of which must match (AND).
@@ -324,12 +333,12 @@ impl SigmaValue {
         }
     }
 
-    /// Parse a `serde_yaml::Value` into a `SigmaValue`.
+    /// Parse a `serde_norway::Value` into a `SigmaValue`.
     #[must_use]
-    pub fn from_yaml(value: &serde_yaml::Value) -> Self {
+    pub fn from_yaml(value: &serde_norway::Value) -> Self {
         match value {
-            serde_yaml::Value::String(s) => SigmaValue::String(s.clone()),
-            serde_yaml::Value::Number(n) => {
+            serde_norway::Value::String(s) => SigmaValue::String(s.clone()),
+            serde_norway::Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     SigmaValue::Integer(i)
                 } else if let Some(f) = n.as_f64() {
@@ -338,8 +347,8 @@ impl SigmaValue {
                     SigmaValue::String(n.to_string())
                 }
             }
-            serde_yaml::Value::Bool(b) => SigmaValue::Boolean(*b),
-            serde_yaml::Value::Null => SigmaValue::Null,
+            serde_norway::Value::Bool(b) => SigmaValue::Boolean(*b),
+            serde_norway::Value::Null => SigmaValue::Null,
             // Sequences and mappings shouldn't appear as leaf values,
             // but handle gracefully
             _ => SigmaValue::String(format!("{value:?}")),
@@ -447,13 +456,26 @@ impl ValueModifier {
     /// Check if this is a transformation modifier (applied to the VALUE before matching).
     #[must_use]
     pub fn is_transform(&self) -> bool {
-        matches!(self, ValueModifier::Base64 | ValueModifier::Base64Offset | ValueModifier::Wide | ValueModifier::Windash)
+        matches!(
+            self,
+            ValueModifier::Base64
+                | ValueModifier::Base64Offset
+                | ValueModifier::Wide
+                | ValueModifier::Windash
+        )
     }
 
     /// Check if this is a match modifier (controls HOW the comparison works).
     #[must_use]
     pub fn is_match_type(&self) -> bool {
-        matches!(self, ValueModifier::Contains | ValueModifier::EndsWith | ValueModifier::StartsWith | ValueModifier::Regex | ValueModifier::Cidr)
+        matches!(
+            self,
+            ValueModifier::Contains
+                | ValueModifier::EndsWith
+                | ValueModifier::StartsWith
+                | ValueModifier::Regex
+                | ValueModifier::Cidr
+        )
     }
 }
 

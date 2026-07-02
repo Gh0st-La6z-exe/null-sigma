@@ -2,8 +2,9 @@
 //!
 //! Parse Sigma rules from YAML once, compile them into an optimised internal
 //! representation, then evaluate streams of security events against the full
-//! rule set at **455 000+ events/second × 1 000 rules on a single core**
+//! rule set at **449 000+ events/second × 1 000 rules on a single core**
 //! (Apple M4, release, Criterion-measured).
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
 //!
 //! # Quick Start
@@ -43,31 +44,45 @@
 //! | [`fieldmap`] | Sigma field-name translation |
 //! | [`engine`] | Multi-rule evaluation with Aho-Corasick optimisation |
 
-/// Core type system: `SigmaRule`, `SeverityLevel`, `ValueModifier`, and all
-/// supporting data types used throughout the crate.
-pub mod types;
-/// YAML → [`types::SigmaRule`] parsing with full Sigma spec validation.
-pub mod parser;
 /// Condition expression compiler: Sigma condition strings → boolean AST
 /// ([`condition::ConditionNode`]).
 pub mod condition;
-/// Event field matching — implements all 15 Sigma value modifiers (`contains`,
-/// `startswith`, `endswith`, `re`, `cidr`, `base64`, `wide`, `windash`, …).
-pub mod matcher;
-/// Sigma field-name translation and enrichment.
-pub mod fieldmap;
 /// Multi-rule evaluation engine with Aho-Corasick batch prefilter and
 /// cache-friendly hot/cold struct split.
 pub mod engine;
+/// Sigma field-name translation and enrichment.
+pub mod fieldmap;
+/// Event field matching — implements all 15 Sigma value modifiers (`contains`,
+/// `startswith`, `endswith`, `re`, `cidr`, `base64`, `wide`, `windash`, …).
+pub mod matcher;
+/// YAML → [`types::SigmaRule`] parsing with full Sigma spec validation.
+pub mod parser;
+/// Core type system: `SigmaRule`, `SeverityLevel`, `ValueModifier`, and all
+/// supporting data types used throughout the crate.
+pub mod types;
 
 // Re-export the primary public API
+pub use condition::{compile_condition, CompileError, ConditionNode};
 pub use engine::SigmaEngine;
-pub use types::{
-    SigmaRule, LogSource, Detection, SearchIdentifier, FieldConditionGroup,
-    FieldCondition, SigmaValue, ValueModifier, SeverityLevel, RuleStatus,
-    RuleMatch, EvalResult, ConditionExpr,
-};
-pub use parser::{parse_rule, parse_rules, ParseError};
-pub use condition::{compile_condition, ConditionNode, CompileError};
-pub use matcher::{match_identifier, match_field_condition};
 pub use fieldmap::FieldMapping;
+pub use matcher::{match_field_condition, match_identifier};
+pub use parser::{parse_rule, parse_rules, ParseError};
+pub use types::{
+    ConditionExpr, Detection, EvalResult, FieldCondition, FieldConditionGroup, LogSource,
+    RuleMatch, RuleStatus, SearchIdentifier, SeverityLevel, SigmaRule, SigmaValue, ValueModifier,
+};
+
+// ── Compile-time thread-safety proof ─────────────────────────────────────────
+// `evaluate_event` takes `&self`, and the README documents `Arc<SigmaEngine>`
+// as the recommended concurrent usage pattern. These assertions guarantee that
+// the compiler will catch any future change that accidentally makes the engine
+// non-Send or non-Sync before it reaches users.
+const _: () = {
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    fn check() {
+        assert_send::<SigmaEngine>();
+        assert_sync::<SigmaEngine>();
+    }
+    let _ = check;
+};

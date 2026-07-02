@@ -21,8 +21,8 @@ use crate::fieldmap::FieldMapping;
 use crate::matcher::{match_identifier, match_identifier_with_cache};
 use crate::parser::{parse_rule, parse_rules, ParseError};
 use crate::types::{
-    ConditionExpr, EvalResult, RuleMatch, SearchIdentifier,
-    SigmaRule, FieldCondition, ValueModifier,
+    ConditionExpr, EvalResult, FieldCondition, RuleMatch, SearchIdentifier, SigmaRule,
+    ValueModifier,
 };
 
 use aho_corasick::AhoCorasick;
@@ -128,7 +128,11 @@ fn hash_logsource(s: &str) -> u32 {
         h = h.wrapping_mul(16_777_619);
     }
     // Reserve 0 for "no constraint"; real values are remapped away from it.
-    if h == 0 { 1 } else { h }
+    if h == 0 {
+        1
+    } else {
+        h
+    }
 }
 
 /// Check a single logsource field in the hot loop.
@@ -347,18 +351,20 @@ impl SigmaEngine {
         // transform conditions, those could match even when no AC string pattern
         // appears in the event — pre-filtering would produce false negatives.
         let fully_ac_covered = identifiers.iter().all(|ident| {
-            ident.groups.iter().all(|group| {
-                group.conditions.iter().all(is_ac_eligible)
-            })
+            ident
+                .groups
+                .iter()
+                .all(|group| group.conditions.iter().all(is_ac_eligible))
         });
 
         // Determine if any identifier uses |re (regex) so evaluate_event knows
         // whether to look up the side-table regex map for this rule.
         let has_regex = identifiers.iter().any(|ident| {
             ident.groups.iter().any(|group| {
-                group.conditions.iter().any(|cond| {
-                    cond.modifiers.contains(&ValueModifier::Regex)
-                })
+                group
+                    .conditions
+                    .iter()
+                    .any(|cond| cond.modifiers.contains(&ValueModifier::Regex))
             })
         });
 
@@ -382,17 +388,28 @@ impl SigmaEngine {
         // Build hot data entry: pre-hash logsource fields + flatten AC indices.
         // rule has already been moved into CompiledRule above; access via rules.last().
         let last_rule = &self.rules.last().unwrap().rule;
-        let cat_hash  = last_rule.logsource.category.as_deref().map_or(0, hash_logsource);
-        let prod_hash = last_rule.logsource.product.as_deref().map_or(0, hash_logsource);
-        let svc_hash  = last_rule.logsource.service.as_deref().map_or(0, hash_logsource);
+        let cat_hash = last_rule
+            .logsource
+            .category
+            .as_deref()
+            .map_or(0, hash_logsource);
+        let prod_hash = last_rule
+            .logsource
+            .product
+            .as_deref()
+            .map_or(0, hash_logsource);
+        let svc_hash = last_rule
+            .logsource
+            .service
+            .as_deref()
+            .map_or(0, hash_logsource);
 
         let ac_start = u32::try_from(self.flat_ac_indices.len())
             .expect("flat_ac_indices exceeded u32::MAX (> 4 billion AC patterns)");
         let last_compiled = self.rules.last().unwrap();
         for &idx in &last_compiled.ac_pattern_indices {
-            self.flat_ac_indices.push(
-                u32::try_from(idx).expect("AC pattern index exceeded u32::MAX"),
-            );
+            self.flat_ac_indices
+                .push(u32::try_from(idx).expect("AC pattern index exceeded u32::MAX"));
         }
         let ac_len = u32::try_from(last_compiled.ac_pattern_indices.len())
             .expect("ac_pattern_indices exceeded u32::MAX");
@@ -446,7 +463,6 @@ impl SigmaEngine {
     /// build the Aho-Corasick automaton eagerly so evaluation is always ready.
     #[must_use = "returns all threat detections — discarding them silently suppresses security alerts"]
     pub fn evaluate_event(&self, event: &HashMap<String, String>) -> Vec<RuleMatch> {
-
         // Enrich the event with Sigma-canonical field names so rules can
         // match regardless of naming convention.
         // `enrich_event_cow` returns `Borrowed` (zero allocation) when the
@@ -456,13 +472,16 @@ impl SigmaEngine {
 
         // Pre-compute event logsource hashes for O(1) integer comparison in the hot loop.
         // hash == 0 means "field absent in event" — fails any non-wildcard rule check.
-        let event_cat_hash = enriched.get("event_category")
+        let event_cat_hash = enriched
+            .get("event_category")
             .or_else(|| enriched.get("category"))
             .map_or(0, |s| hash_logsource(s));
-        let event_prod_hash = enriched.get("event_product")
+        let event_prod_hash = enriched
+            .get("event_product")
             .or_else(|| enriched.get("product"))
             .map_or(0, |s| hash_logsource(s));
-        let event_svc_hash = enriched.get("event_service")
+        let event_svc_hash = enriched
+            .get("event_service")
             .or_else(|| enriched.get("service"))
             .map_or(0, |s| hash_logsource(s));
 
@@ -489,7 +508,7 @@ impl SigmaEngine {
             // AC prefilter: flat contiguous slice — no pointer-chase into Vec heap
             if hot.fully_ac_covered && hot.ac_len > 0 {
                 let start = hot.ac_start as usize;
-                let end   = start + hot.ac_len as usize;
+                let end = start + hot.ac_len as usize;
                 if !self.flat_ac_indices[start..end]
                     .iter()
                     .any(|&idx| ac_hits[idx as usize])
@@ -504,12 +523,11 @@ impl SigmaEngine {
             // Full evaluation: check each identifier against the event.
             // Hot path: rules without |re use match_identifier directly (no HashMap lookup).
             // Regex path: rules with |re use the pre-compiled cache from the side-table.
-            let mut id_results: HashMap<String, bool> = HashMap::with_capacity(compiled.identifiers.len());
+            let mut id_results: HashMap<String, bool> =
+                HashMap::with_capacity(compiled.identifiers.len());
             for ident in &compiled.identifiers {
                 let id_eval = if compiled.has_regex {
-                    match_identifier_with_cache(
-                        ident, &enriched, &self.rule_regex_maps[rule_idx]
-                    )
+                    match_identifier_with_cache(ident, &enriched, &self.rule_regex_maps[rule_idx])
                 } else {
                     match_identifier(ident, &enriched)
                 };
@@ -554,10 +572,7 @@ impl SigmaEngine {
     /// Takes `&self` — safe to call concurrently from multiple threads once
     /// rule loading is complete.
     #[must_use = "returns all threat detections — discarding them silently suppresses security alerts"]
-    pub fn evaluate_batch(
-        &self,
-        events: &[HashMap<String, String>],
-    ) -> Vec<EvalResult> {
+    pub fn evaluate_batch(&self, events: &[HashMap<String, String>]) -> Vec<EvalResult> {
         events
             .iter()
             .enumerate()
@@ -627,7 +642,10 @@ fn is_ac_eligible(condition: &FieldCondition) -> bool {
     let has_regex = condition.modifiers.contains(&ValueModifier::Regex);
     let has_cidr = condition.modifiers.contains(&ValueModifier::Cidr);
     let has_numeric = condition.modifiers.iter().any(|m| {
-        matches!(m, ValueModifier::Gt | ValueModifier::Gte | ValueModifier::Lt | ValueModifier::Lte)
+        matches!(
+            m,
+            ValueModifier::Gt | ValueModifier::Gte | ValueModifier::Lt | ValueModifier::Lte
+        )
     });
     let has_exists = condition.modifiers.contains(&ValueModifier::Exists);
     // Transform modifiers change the effective search value — the original plain

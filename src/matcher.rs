@@ -20,7 +20,9 @@
 //   - CIDR matching uses our existing ioc_matcher crate (via direct implementation)
 // =============================================================================
 
-use crate::types::{FieldCondition, FieldConditionGroup, SearchIdentifier, SigmaValue, ValueModifier};
+use crate::types::{
+    FieldCondition, FieldConditionGroup, SearchIdentifier, SigmaValue, ValueModifier,
+};
 use regex::Regex;
 use std::collections::HashMap;
 use std::hash::BuildHasher;
@@ -43,13 +45,22 @@ pub fn match_identifier<S: BuildHasher>(
     event: &HashMap<String, String, S>,
 ) -> bool {
     // OR across groups — any group matching means the identifier matches
-    identifier.groups.iter().any(|group| match_group(group, event))
+    identifier
+        .groups
+        .iter()
+        .any(|group| match_group(group, event))
 }
 
 /// Check if a field condition group matches against an event.
 /// ALL conditions in the group must match (AND logic within a group).
-fn match_group<S: BuildHasher>(group: &FieldConditionGroup, event: &HashMap<String, String, S>) -> bool {
-    group.conditions.iter().all(|cond| match_field_condition(cond, event))
+fn match_group<S: BuildHasher>(
+    group: &FieldConditionGroup,
+    event: &HashMap<String, String, S>,
+) -> bool {
+    group
+        .conditions
+        .iter()
+        .all(|cond| match_field_condition(cond, event))
 }
 
 /// Check if a single field condition matches against an event.
@@ -71,11 +82,15 @@ pub fn match_field_condition<S: BuildHasher>(
     // Determine which event fields to check
     let target_fields: Vec<(&str, &str)> = if condition.field.is_empty() {
         // Empty field = keyword search — check ALL event values
-        event.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+        event
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect()
     } else {
         // Specific field — look it up (case-insensitive key match)
         let field_lower = condition.field.to_lowercase();
-        event.iter()
+        event
+            .iter()
             .filter(|(k, _)| k.to_lowercase() == field_lower)
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect()
@@ -97,17 +112,17 @@ pub fn match_field_condition<S: BuildHasher>(
     for (_field_name, field_value) in &target_fields {
         if require_all {
             // ALL values must match this field
-            let all_match = transformed_values.iter().all(|val| {
-                value_matches(val, field_value, &condition.modifiers)
-            });
+            let all_match = transformed_values
+                .iter()
+                .all(|val| value_matches(val, field_value, &condition.modifiers));
             if all_match {
                 return true;
             }
         } else {
             // ANY value matching this field is enough
-            let any_match = transformed_values.iter().any(|val| {
-                value_matches(val, field_value, &condition.modifiers)
-            });
+            let any_match = transformed_values
+                .iter()
+                .any(|val| value_matches(val, field_value, &condition.modifiers));
             if any_match {
                 return true;
             }
@@ -121,23 +136,25 @@ pub fn match_field_condition<S: BuildHasher>(
 // Exists modifier
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn handle_exists<S: BuildHasher>(condition: &FieldCondition, event: &HashMap<String, String, S>) -> bool {
+fn handle_exists<S: BuildHasher>(
+    condition: &FieldCondition,
+    event: &HashMap<String, String, S>,
+) -> bool {
     let field_lower = condition.field.to_lowercase();
     let field_present = event.keys().any(|k| k.to_lowercase() == field_lower);
 
     // The `exists` modifier checks: does the field exist?
     // The value in the condition determines the expected state:
     //   exists: true → field must be present
-    //   exists: false → field must NOT be present (NOTE: this is outside normal 
+    //   exists: false → field must NOT be present (NOTE: this is outside normal
     //                    Sigma spec but some community rules use it)
     // Default behavior (no explicit true/false): field must exist
-    let expect_exists = condition.values.first()
-        .is_none_or(|v| match v {
-            SigmaValue::Boolean(b) => *b,
-            SigmaValue::String(s) => s != "false" && s != "0",
-            SigmaValue::Integer(i) => *i != 0,
-            _ => true,
-        });
+    let expect_exists = condition.values.first().is_none_or(|v| match v {
+        SigmaValue::Boolean(b) => *b,
+        SigmaValue::String(s) => s != "false" && s != "0",
+        SigmaValue::Integer(i) => *i != 0,
+        _ => true,
+    });
 
     field_present == expect_exists
 }
@@ -150,10 +167,7 @@ fn handle_exists<S: BuildHasher>(condition: &FieldCondition, event: &HashMap<Str
 /// we're searching for, not the event data itself.
 ///
 /// Transform order matters (Sigma spec): base64offset → base64 → wide → windash
-fn apply_transforms(
-    values: &[SigmaValue],
-    modifiers: &[ValueModifier],
-) -> Vec<SigmaValue> {
+fn apply_transforms(values: &[SigmaValue], modifiers: &[ValueModifier]) -> Vec<SigmaValue> {
     let mut result: Vec<SigmaValue> = values.to_vec();
 
     // Each transform modifier expands the value set:
@@ -166,66 +180,80 @@ fn apply_transforms(
         match modifier {
             ValueModifier::Base64 => {
                 // Base64 REPLACES the original value with its base64-encoded form.
-                result = result.into_iter().flat_map(|v| {
-                    let s = v.as_str_lossy();
-                    if s.is_empty() {
-                        vec![v]
-                    } else {
-                        vec![SigmaValue::String(base64_encode(&s))]
-                    }
-                }).collect();
+                result = result
+                    .into_iter()
+                    .flat_map(|v| {
+                        let s = v.as_str_lossy();
+                        if s.is_empty() {
+                            vec![v]
+                        } else {
+                            vec![SigmaValue::String(base64_encode(&s))]
+                        }
+                    })
+                    .collect();
             }
 
             ValueModifier::Base64Offset => {
                 // Base64Offset REPLACES the original with the 3 offset variants.
-                result = result.into_iter().flat_map(|v| {
-                    let s = v.as_str_lossy();
-                    if s.is_empty() {
-                        return vec![v];
-                    }
+                result = result
+                    .into_iter()
+                    .flat_map(|v| {
+                        let s = v.as_str_lossy();
+                        if s.is_empty() {
+                            return vec![v];
+                        }
 
-                    (0..3usize).map(|offset| {
-                        let padded = " ".repeat(offset) + &s;
-                        let encoded = base64_encode(&padded);
-                        let trimmed = if offset > 0 {
-                            let skip = (offset * 4).div_ceil(3);
-                            encoded.get(skip..).unwrap_or(&encoded).to_string()
-                        } else {
-                            encoded
-                        };
-                        SigmaValue::String(trimmed)
-                    }).collect::<Vec<_>>()
-                }).collect();
+                        (0..3usize)
+                            .map(|offset| {
+                                let padded = " ".repeat(offset) + &s;
+                                let encoded = base64_encode(&padded);
+                                let trimmed = if offset > 0 {
+                                    let skip = (offset * 4).div_ceil(3);
+                                    encoded.get(skip..).unwrap_or(&encoded).to_string()
+                                } else {
+                                    encoded
+                                };
+                                SigmaValue::String(trimmed)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
             }
 
             ValueModifier::Wide => {
                 // Wide REPLACES the original with UTF-16LE null-byte interleaving.
-                result = result.into_iter().flat_map(|v| {
-                    let s = v.as_str_lossy();
-                    if s.is_empty() {
-                        vec![v]
-                    } else {
-                        // flat_map avoids per-char String allocation from format!
-                        let wide: String = s.chars().flat_map(|c| [c, '\x00']).collect();
-                        vec![SigmaValue::String(wide)]
-                    }
-                }).collect();
+                result = result
+                    .into_iter()
+                    .flat_map(|v| {
+                        let s = v.as_str_lossy();
+                        if s.is_empty() {
+                            vec![v]
+                        } else {
+                            // flat_map avoids per-char String allocation from format!
+                            let wide: String = s.chars().flat_map(|c| [c, '\x00']).collect();
+                            vec![SigmaValue::String(wide)]
+                        }
+                    })
+                    .collect();
             }
 
             ValueModifier::Windash => {
                 // Windash: for each value, add variant with `-` replaced by `/`
                 // Catches Windows command obfuscation: `cmd -c` → `cmd /c`
-                result = result.into_iter().flat_map(|v| {
-                    let s = v.as_str_lossy();
-                    let mut variants = vec![v];
-                    if s.contains('-') {
-                        variants.push(SigmaValue::String(s.replace('-', "/")));
-                    }
-                    if s.contains('/') {
-                        variants.push(SigmaValue::String(s.replace('/', "-")));
-                    }
-                    variants
-                }).collect();
+                result = result
+                    .into_iter()
+                    .flat_map(|v| {
+                        let s = v.as_str_lossy();
+                        let mut variants = vec![v];
+                        if s.contains('-') {
+                            variants.push(SigmaValue::String(s.replace('-', "/")));
+                        }
+                        if s.contains('/') {
+                            variants.push(SigmaValue::String(s.replace('/', "-")));
+                        }
+                        variants
+                    })
+                    .collect();
             }
 
             _ => {} // Non-transform modifiers handled in value_matches()
@@ -240,7 +268,7 @@ fn base64_encode(input: &str) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = input.as_bytes();
     let mut result = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    
+
     for chunk in bytes.chunks(3) {
         let b0 = u32::from(chunk[0]);
         let b1 = u32::from(chunk.get(1).copied().unwrap_or(0));
@@ -279,11 +307,7 @@ fn base64_encode(input: &str) -> String {
 /// - `regex` → regex pattern match
 /// - `cidr` → CIDR network range match for IP addresses
 /// - `gt`/`gte`/`lt`/`lte` → numeric comparison
-fn value_matches(
-    sigma_value: &SigmaValue,
-    field_value: &str,
-    modifiers: &[ValueModifier],
-) -> bool {
+fn value_matches(sigma_value: &SigmaValue, field_value: &str, modifiers: &[ValueModifier]) -> bool {
     // Null matches empty/missing fields only
     if *sigma_value == SigmaValue::Null {
         return field_value.is_empty();
@@ -357,7 +381,7 @@ fn wildcard_match_impl(pattern: &[char], text: &[char]) -> bool {
     let mut pi = 0usize;
     let mut ti = 0usize;
     let mut star_pat_idx = usize::MAX; // Position after last '*' in pattern
-    let mut star_txt_idx = 0usize;     // Position in text when we last matched '*'
+    let mut star_txt_idx = 0usize; // Position in text when we last matched '*'
 
     let plen = pattern.len();
     let tlen = text.len();
@@ -530,10 +554,15 @@ fn try_numeric_comparison(
     // silent rounding of large counters, timestamps, or port numbers.
     if let SigmaValue::Integer(n) = sigma_value {
         if let Ok(field_int) = field_value.trim().parse::<i64>() {
-            let result = if has_gt       { field_int > *n }
-                         else if has_gte { field_int >= *n }
-                         else if has_lt  { field_int < *n }
-                         else            { field_int <= *n };
+            let result = if has_gt {
+                field_int > *n
+            } else if has_gte {
+                field_int >= *n
+            } else if has_lt {
+                field_int < *n
+            } else {
+                field_int <= *n
+            };
             return Some(result);
         }
         // Field has a decimal component — fall through to f64 comparison.
@@ -583,9 +612,10 @@ pub fn match_identifier_with_cache<S1: BuildHasher, S2: BuildHasher>(
     regex_cache: &HashMap<String, Regex, S2>,
 ) -> bool {
     identifier.groups.iter().any(|group| {
-        group.conditions.iter().all(|cond| {
-            match_field_condition_with_cache(cond, event, regex_cache)
-        })
+        group
+            .conditions
+            .iter()
+            .all(|cond| match_field_condition_with_cache(cond, event, regex_cache))
     })
 }
 
@@ -603,10 +633,14 @@ fn match_field_condition_with_cache<S1: BuildHasher, S2: BuildHasher>(
 
     // Resolve target fields — identical to match_field_condition.
     let target_fields: Vec<(&str, &str)> = if condition.field.is_empty() {
-        event.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+        event
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect()
     } else {
         let field_lower = condition.field.to_lowercase();
-        event.iter()
+        event
+            .iter()
             .filter(|(k, _)| k.to_lowercase() == field_lower)
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect()

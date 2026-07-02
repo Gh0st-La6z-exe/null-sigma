@@ -8,7 +8,8 @@
 //   - Boolean operators: `and`, `or`, `not`
 //   - Grouping: `(selection_a or selection_b) and not filter`
 //   - Quantifiers: `1 of selection*`, `all of them`, `1 of (sel1, sel2)`
-//   - Pipe aggregation: `selection | count() > 5` (parsed but not yet evaluated)
+//   - Pipe aggregation (`selection | count() > 5`) is NOT supported — the
+//     parser rejects it with a clear error before compilation.
 //
 // COMPILATION PIPELINE:
 //   1. Tokenize: condition string → Vec<Token>
@@ -62,7 +63,7 @@ pub enum ConditionNode {
     ///
     /// Examples:
     ///   - `1 of selection*` → `OneOf` { count: 1, pattern: "selection*" }
-    ///   - `all of them` → `OneOf` { count: 0, identifiers: [all] }
+    ///   - `all of them` → `OneOf` { count: 0, identifiers: \[all\] }
     ///   - `all of selection*` → `OneOf` { count: 0, pattern: "selection*" }
     OneOf {
         /// How many must match. 0 = all.
@@ -79,21 +80,13 @@ impl ConditionNode {
     #[must_use]
     pub fn evaluate(&self, results: &HashMap<String, bool>) -> bool {
         match self {
-            ConditionNode::Identifier(name) => {
-                *results.get(name).unwrap_or(&false)
-            }
+            ConditionNode::Identifier(name) => *results.get(name).unwrap_or(&false),
 
-            ConditionNode::And(left, right) => {
-                left.evaluate(results) && right.evaluate(results)
-            }
+            ConditionNode::And(left, right) => left.evaluate(results) && right.evaluate(results),
 
-            ConditionNode::Or(left, right) => {
-                left.evaluate(results) || right.evaluate(results)
-            }
+            ConditionNode::Or(left, right) => left.evaluate(results) || right.evaluate(results),
 
-            ConditionNode::Not(inner) => {
-                !inner.evaluate(results)
-            }
+            ConditionNode::Not(inner) => !inner.evaluate(results),
 
             ConditionNode::OneOf { count, identifiers } => {
                 let matched = identifiers
@@ -138,7 +131,8 @@ enum Token {
     All,
     /// `them` keyword (for "all of them", "1 of them").
     Them,
-    /// Pipe `|` for aggregation expressions (future).
+    /// Pipe `|` token — recognised by the tokenizer but rejected by the parser;
+    /// pipe aggregation (`selection | count() > 5`) is not supported.
     Pipe,
     /// End of input.
     Eof,
@@ -227,7 +221,11 @@ struct Parser {
 
 impl Parser {
     fn new(tokens: Vec<Token>, known_identifiers: Vec<String>) -> Self {
-        Parser { tokens, pos: 0, known_identifiers }
+        Parser {
+            tokens,
+            pos: 0,
+            known_identifiers,
+        }
     }
 
     fn peek(&self) -> &Token {
@@ -315,7 +313,10 @@ impl Parser {
                 if *self.peek() == Token::Of {
                     self.advance(); // consume 'of'
                     let identifiers = self.parse_of_target()?;
-                    Ok(ConditionNode::OneOf { count: n, identifiers })
+                    Ok(ConditionNode::OneOf {
+                        count: n,
+                        identifiers,
+                    })
                 } else {
                     // Just a number as identifier? Shouldn't happen but handle gracefully
                     Err(CompileError::UnexpectedToken {
@@ -331,7 +332,10 @@ impl Parser {
                 if *self.peek() == Token::Of {
                     self.advance(); // consume 'of'
                     let identifiers = self.parse_of_target()?;
-                    Ok(ConditionNode::OneOf { count: 0, identifiers })
+                    Ok(ConditionNode::OneOf {
+                        count: 0,
+                        identifiers,
+                    })
                 } else {
                     Err(CompileError::UnexpectedToken {
                         expected: "'of' after 'all'".to_string(),
@@ -346,12 +350,10 @@ impl Parser {
                 Ok(ConditionNode::Identifier(name))
             }
 
-            ref other => {
-                Err(CompileError::UnexpectedToken {
-                    expected: "identifier, '(', number, or 'all'".to_string(),
-                    got: format!("{other:?}"),
-                })
-            }
+            ref other => Err(CompileError::UnexpectedToken {
+                expected: "identifier, '(', number, or 'all'".to_string(),
+                got: format!("{other:?}"),
+            }),
         }
     }
 
@@ -405,12 +407,10 @@ impl Parser {
                 Ok(names)
             }
 
-            ref other => {
-                Err(CompileError::UnexpectedToken {
-                    expected: "'them', identifier pattern, or '('".to_string(),
-                    got: format!("{other:?}"),
-                })
-            }
+            ref other => Err(CompileError::UnexpectedToken {
+                expected: "'them', identifier pattern, or '('".to_string(),
+                got: format!("{other:?}"),
+            }),
         }
     }
 
@@ -486,8 +486,8 @@ pub fn compile_condition(
         return Err(CompileError::EmptyCondition);
     }
 
-    // Handle pipe aggregation by taking only the pre-pipe part for now.
-    // Full aggregation support is tracked for a future release.
+    // The parser rejects pipe aggregation before this function is called.
+    // This guard handles any edge case where the pre-pipe content is empty.
     let condition_part = if let Some(pipe_idx) = condition.find('|') {
         // Check if this pipe is inside a quantifier or is a real aggregation pipe
         let before_pipe = &condition[..pipe_idx].trim();
