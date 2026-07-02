@@ -1,6 +1,6 @@
 #![no_main]
 
-use libfuzzer_sys::{arbitrary::Arbitrary, fuzz_target};
+use libfuzzer_sys::{arbitrary, arbitrary::Arbitrary, fuzz_target};
 use null_sigma::SigmaEngine;
 use std::collections::HashMap;
 
