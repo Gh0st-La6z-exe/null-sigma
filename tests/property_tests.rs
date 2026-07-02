@@ -336,3 +336,107 @@ proptest! {
              Event: {:?}", event);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P7 — Full engine loop never panics on valid rules + arbitrary events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A fixed set of known-valid rules covering all modifier types.
+/// These are loaded once and then evaluated against arbitrary events.
+const FIXTURE_FULL_RULE_SET: &str = r#"
+title: Contains Rule
+logsource: {}
+detection:
+    sel:
+        Field1|contains: 'needle'
+    condition: sel
+---
+title: Regex Rule
+logsource: {}
+detection:
+    sel:
+        Field2|re: 'pat\d+'
+    condition: sel
+---
+title: CIDR Rule
+logsource: {}
+detection:
+    sel:
+        IpField|cidr: '10.0.0.0/8'
+    condition: sel
+---
+title: Numeric Rule
+logsource: {}
+detection:
+    sel:
+        Count|gt: 5
+    condition: sel
+---
+title: Exists Rule
+logsource: {}
+detection:
+    sel:
+        Sentinel|exists: true
+    condition: sel
+---
+title: Base64 Rule
+logsource: {}
+detection:
+    sel:
+        Encoded|base64|contains: 'secret'
+    condition: sel
+---
+title: Windash Rule
+logsource: {}
+detection:
+    sel:
+        CmdLine|windash|contains: '-enc'
+    condition: sel
+---
+title: Wide Rule
+logsource: {}
+detection:
+    sel:
+        Wide|wide|contains: 'payload'
+    condition: sel
+---
+title: All-of Quantifier
+logsource: {}
+detection:
+    a:
+        F|contains: 'x'
+    b:
+        F|contains: 'y'
+    condition: all of them
+"#;
+
+proptest! {
+    #![proptest_config(proptest_cfg())]
+    /// Load a comprehensive valid rule set, then evaluate arbitrary events.
+    ///
+    /// Invariant: no panic, no hang, `evaluate_event` always returns.
+    /// This closes the gap between "parser doesn't panic" and
+    /// "engine doesn't panic on legal rules with arbitrary event data".
+    #[test]
+    fn p7_engine_never_panics_valid_rules_arbitrary_event(
+        k1 in printable_ascii(0, 32),
+        v1 in printable_ascii(0, 128),
+        k2 in printable_ascii(0, 32),
+        v2 in printable_ascii(0, 128),
+        k3 in printable_ascii(0, 32),
+        v3 in printable_ascii(0, 128),
+    ) {
+        let mut engine = SigmaEngine::new();
+        let (loaded, errors) = engine.load_rules(FIXTURE_FULL_RULE_SET);
+        prop_assume!(!loaded.is_empty(),
+            "At least some fixture rules must load: {:?}", errors);
+
+        let mut event = HashMap::new();
+        if !k1.is_empty() { event.insert(k1, v1); }
+        if !k2.is_empty() { event.insert(k2, v2); }
+        if !k3.is_empty() { event.insert(k3, v3); }
+
+        // Only the absence of panic is the invariant — any result is valid.
+        let _ = engine.evaluate_event(&event);
+    }
+}
