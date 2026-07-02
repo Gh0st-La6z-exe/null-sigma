@@ -818,6 +818,49 @@ detection:
             }
         }
 
+        /// Prove Rust's `regex` crate cannot be ReDoS'd.
+        ///
+        /// The `regex` crate uses a linear-time NFA — it does not backtrack.
+        /// A classically catastrophic pattern like `(a+)+$` that causes
+        /// exponential blowup in backtracking engines completes in O(n) here
+        /// regardless of input length.
+        ///
+        /// This test makes the guarantee executable: if a future dependency
+        /// swap introduces a backtracking evaluator, this test will hang and
+        /// the CI timeout will catch it.
+        #[test]
+        fn regex_linear_time_no_redos() {
+            // `(a+)+$` is the canonical ReDoS pattern.
+            // On a backtracking engine, "aaa...ab" causes 2^n backtracks.
+            // On Rust's NFA engine it runs in O(n).
+            let yaml = r#"
+title: ReDoS Stress Test
+logsource: {}
+detection:
+    sel:
+        Field|re: '(a+)+$'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            // 10 000 'a's followed by 'b' — the adversarial non-matching input
+            // that maximises backtracking in vulnerable engines.
+            let adversarial = "a".repeat(10_000) + "b";
+            let mut event = HashMap::new();
+            event.insert("Field".to_string(), adversarial);
+
+            let deadline = std::time::Instant::now();
+            let _ = engine.evaluate_event(&event);
+            let elapsed = deadline.elapsed();
+
+            assert!(
+                elapsed.as_millis() < 500,
+                "regex evaluation took {}ms — possible ReDoS regression (expected <500ms)",
+                elapsed.as_millis()
+            );
+        }
+
         // ─── CIDR modifier ─────────────────────────────────────────────
 
         #[test]
