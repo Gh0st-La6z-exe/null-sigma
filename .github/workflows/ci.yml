@@ -21,7 +21,7 @@ jobs:
       matrix:
         rust:
           - stable
-          - "1.82"   # MSRV declared in Cargo.toml rust-version field
+          - "1.85"   # MSRV: first stable Rust with edition 2024 support (required by indexmap ≥ 2.14)
     steps:
       - uses: actions/checkout@v4
 
