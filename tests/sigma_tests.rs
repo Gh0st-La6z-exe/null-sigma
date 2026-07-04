@@ -861,6 +861,210 @@ detection:
             );
         }
 
+        // ─── Regex flag sub-modifiers (|re|i, |re|m, |re|s) ─────────────
+
+        /// `re|i` — explicit case-insensitive flag. The engine is already
+        /// case-insensitive by default for |re, so this must load AND match.
+        #[test]
+        fn regex_i_flag_loads_and_matches() {
+            let event = make_event(&[("cmd", "Copy C:\\Windows\\System32\\cmd.exe")]);
+            let cond = make_condition(
+                "cmd",
+                &["c:\\\\windows\\\\system32"],
+                &[ValueModifier::Regex, ValueModifier::RegexI],
+            );
+            assert!(match_field_condition(&cond, &event));
+        }
+
+        /// `re|m` — `^`/`$` anchor at line breaks, not just string ends.
+        #[test]
+        fn regex_m_flag_multiline_anchors() {
+            let event = make_event(&[("log", "line one\nEVIL start\nline three")]);
+            let cond = make_condition(
+                "log",
+                &["^evil"],
+                &[ValueModifier::Regex, ValueModifier::RegexM],
+            );
+            assert!(match_field_condition(&cond, &event));
+
+            // Without |m the mid-string `^` must NOT match.
+            let cond_no_m = make_condition("log", &["^evil"], &[ValueModifier::Regex]);
+            assert!(!match_field_condition(&cond_no_m, &event));
+        }
+
+        /// `re|s` — `.` matches newlines (dot-all mode).
+        #[test]
+        fn regex_s_flag_dot_matches_newline() {
+            let event = make_event(&[("log", "start\nmiddle\nend")]);
+            let cond = make_condition(
+                "log",
+                &["start.+end"],
+                &[ValueModifier::Regex, ValueModifier::RegexS],
+            );
+            assert!(match_field_condition(&cond, &event));
+
+            // Without |s the `.` must not cross line boundaries.
+            let cond_no_s = make_condition("log", &["start.+end"], &[ValueModifier::Regex]);
+            assert!(!match_field_condition(&cond_no_s, &event));
+        }
+
+        /// A bare `|i` flag without a preceding `|re` is a parse error —
+        /// flags are not standalone match modes.
+        #[test]
+        fn regex_flag_without_re_is_parse_error() {
+            let yaml = r#"
+title: Bare Flag Rule
+logsource: {}
+detection:
+    sel:
+        CommandLine|i: 'foo'
+    condition: sel
+"#;
+            assert!(
+                parse_rule(yaml).is_err(),
+                "Bare |i without |re must be rejected at parse time"
+            );
+        }
+
+        /// End-to-end: the real SigmaHQ corpus shape `field|re|i: pattern`
+        /// loads and matches through the engine's regex cache path.
+        #[test]
+        fn regex_i_flag_through_engine_cache_path() {
+            let yaml = r#"
+title: Corpus Shape re|i
+logsource: {}
+detection:
+    sel:
+        CommandLine|re|i: '\s[''"]?c:\\windows\\(?:system32|syswow64)'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert(
+                "CommandLine".to_string(),
+                "copy \"C:\\Windows\\System32\\cmd.exe\" dest".to_string(),
+            );
+            assert_eq!(engine.evaluate_event(&event).len(), 1);
+
+            let mut event2 = HashMap::new();
+            event2.insert(
+                "CommandLine".to_string(),
+                "copy harmless.txt dest".to_string(),
+            );
+            assert!(engine.evaluate_event(&event2).is_empty());
+        }
+
+        // ─── FieldRef modifier ──────────────────────────────────────────
+
+        /// `Image|fieldref: ParentImage` — equality against another field.
+        #[test]
+        fn fieldref_equal_match() {
+            let event = make_event(&[
+                ("Image", "C:\\Windows\\explorer.exe"),
+                ("ParentImage", "C:\\Windows\\explorer.exe"),
+            ]);
+            let cond = make_condition("Image", &["ParentImage"], &[ValueModifier::FieldRef]);
+            assert!(match_field_condition(&cond, &event));
+        }
+
+        #[test]
+        fn fieldref_equal_no_match() {
+            let event = make_event(&[
+                ("Image", "C:\\Windows\\explorer.exe"),
+                ("ParentImage", "C:\\Windows\\services.exe"),
+            ]);
+            let cond = make_condition("Image", &["ParentImage"], &[ValueModifier::FieldRef]);
+            assert!(!match_field_condition(&cond, &event));
+        }
+
+        /// Field-name comparison is case-insensitive like the rest of the engine.
+        #[test]
+        fn fieldref_case_insensitive_values_and_names() {
+            let event = make_event(&[
+                ("image", "C:\\App\\RUN.EXE"),
+                ("parentimage", "c:\\app\\run.exe"),
+            ]);
+            let cond = make_condition("Image", &["ParentImage"], &[ValueModifier::FieldRef]);
+            assert!(match_field_condition(&cond, &event));
+        }
+
+        /// `fieldref|contains` — substring comparison between two fields.
+        #[test]
+        fn fieldref_contains() {
+            let event = make_event(&[
+                ("CommandLine", "cmd /c C:\\tools\\evil.exe -x"),
+                ("Image", "C:\\tools\\evil.exe"),
+            ]);
+            let cond = make_condition(
+                "CommandLine",
+                &["Image"],
+                &[ValueModifier::FieldRef, ValueModifier::Contains],
+            );
+            assert!(match_field_condition(&cond, &event));
+        }
+
+        /// Missing referenced field never matches.
+        #[test]
+        fn fieldref_missing_referenced_field_no_match() {
+            let event = make_event(&[("Image", "C:\\Windows\\explorer.exe")]);
+            let cond = make_condition("Image", &["ParentImage"], &[ValueModifier::FieldRef]);
+            assert!(!match_field_condition(&cond, &event));
+        }
+
+        /// Missing subject field never matches.
+        #[test]
+        fn fieldref_missing_subject_field_no_match() {
+            let event = make_event(&[("ParentImage", "C:\\Windows\\explorer.exe")]);
+            let cond = make_condition("Image", &["ParentImage"], &[ValueModifier::FieldRef]);
+            assert!(!match_field_condition(&cond, &event));
+        }
+
+        /// Wildcard characters in event data must compare LITERALLY under
+        /// fieldref — the referenced value is data, not a pattern.
+        #[test]
+        fn fieldref_event_data_wildcards_are_literal() {
+            let event = make_event(&[("a", "anything-here"), ("b", "*")]);
+            let cond = make_condition("a", &["b"], &[ValueModifier::FieldRef]);
+            assert!(
+                !match_field_condition(&cond, &event),
+                "A literal '*' in event data must not act as a wildcard"
+            );
+
+            let event2 = make_event(&[("a", "*"), ("b", "*")]);
+            assert!(match_field_condition(&cond, &event2));
+        }
+
+        /// End-to-end through the engine: the SigmaHQ corpus shape
+        /// `ParentImage|fieldref: Image` (process executing itself).
+        #[test]
+        fn fieldref_through_engine() {
+            let yaml = r#"
+title: Parent Executes Itself
+logsource: {}
+detection:
+    selection:
+        ParentImage|fieldref: Image
+    condition: selection
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert("Image".to_string(), "C:\\app\\worker.exe".to_string());
+            event.insert("ParentImage".to_string(), "C:\\app\\worker.exe".to_string());
+            assert_eq!(engine.evaluate_event(&event).len(), 1);
+
+            let mut event2 = HashMap::new();
+            event2.insert("Image".to_string(), "C:\\app\\worker.exe".to_string());
+            event2.insert(
+                "ParentImage".to_string(),
+                "C:\\Windows\\explorer.exe".to_string(),
+            );
+            assert!(engine.evaluate_event(&event2).is_empty());
+        }
+
         // ─── CIDR modifier ─────────────────────────────────────────────
 
         #[test]

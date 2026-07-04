@@ -287,6 +287,7 @@ fn parse_field_modifiers(
     let parts: Vec<&str> = key.split('|').collect();
     let field = parts[0].to_string();
     let mut modifiers = Vec::new();
+    let mut seen_regex = false;
 
     for &part in &parts[1..] {
         let modifier =
@@ -294,6 +295,23 @@ fn parse_field_modifiers(
                 field: format!("{identifier_name}.{field}"),
                 modifier: part.to_string(),
             })?;
+
+        // Regex flag sub-modifiers (i/m/s) are only meaningful as flags on a
+        // preceding `re` — reject `field|i` etc. so a bare flag can't load as
+        // a silently different match mode.
+        if matches!(
+            modifier,
+            ValueModifier::RegexI | ValueModifier::RegexM | ValueModifier::RegexS
+        ) && !seen_regex
+        {
+            return Err(ParseError::InvalidModifier {
+                field: format!("{identifier_name}.{field}"),
+                modifier: format!("{part} (regex flag without preceding |re)"),
+            });
+        }
+        if modifier == ValueModifier::Regex {
+            seen_regex = true;
+        }
         modifiers.push(modifier);
     }
 

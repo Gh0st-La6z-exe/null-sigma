@@ -40,7 +40,7 @@
 //! | [`types`] | Core type system: `SigmaRule`, `SeverityLevel`, `ValueModifier`, … |
 //! | [`parser`] | YAML → `SigmaRule` with full validation |
 //! | [`condition`] | Condition expression → boolean AST |
-//! | [`matcher`] | Event field matching — all 15 Sigma modifiers |
+//! | [`matcher`] | Event field matching — all 19 Sigma modifiers |
 //! | [`fieldmap`] | Sigma field-name translation |
 //! | [`engine`] | Multi-rule evaluation with Aho-Corasick optimisation |
 
@@ -52,8 +52,9 @@ pub mod condition;
 pub mod engine;
 /// Sigma field-name translation and enrichment.
 pub mod fieldmap;
-/// Event field matching — implements all 15 Sigma value modifiers (`contains`,
-/// `startswith`, `endswith`, `re`, `cidr`, `base64`, `wide`, `windash`, …).
+/// Event field matching — implements all 19 Sigma value modifiers (`contains`,
+/// `startswith`, `endswith`, `re` + `i`/`m`/`s` flags, `cidr`, `base64`,
+/// `wide`, `windash`, `fieldref`, …).
 pub mod matcher;
 /// YAML → [`types::SigmaRule`] parsing with full Sigma spec validation.
 pub mod parser;

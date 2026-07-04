@@ -79,6 +79,11 @@ pub fn match_field_condition<S: BuildHasher>(
         return handle_exists(condition, event);
     }
 
+    // Special case: `fieldref` compares against another event field's value
+    if condition.modifiers.contains(&ValueModifier::FieldRef) {
+        return handle_fieldref(condition, event);
+    }
+
     // Determine which event fields to check
     let target_fields: Vec<(&str, &str)> = if condition.field.is_empty() {
         // Empty field = keyword search — check ALL event values
@@ -157,6 +162,71 @@ fn handle_exists<S: BuildHasher>(
     });
 
     field_present == expect_exists
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FieldRef modifier
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Handle the `fieldref` modifier: the condition value names ANOTHER event
+/// field, and the comparison runs between the two event fields' values
+/// (Sigma v2 spec). Match-type modifiers apply to the comparison:
+///
+/// ```yaml
+/// Image|fieldref: ParentImage              # Image == ParentImage
+/// CommandLine|fieldref|contains: Image     # CommandLine contains Image's value
+/// ```
+///
+/// Missing fields never match: if either the subject field or the referenced
+/// field is absent from the event, the condition is false.
+fn handle_fieldref<S: BuildHasher>(
+    condition: &FieldCondition,
+    event: &HashMap<String, String, S>,
+) -> bool {
+    // Case-insensitive lookup of a field's value, matching the engine's
+    // field-name semantics elsewhere.
+    let lookup = |name: &str| -> Option<&str> {
+        let name_lower = name.to_lowercase();
+        event
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == name_lower)
+            .map(|(_, v)| v.as_str())
+    };
+
+    let Some(subject) = lookup(&condition.field) else {
+        return false;
+    };
+
+    let has_contains = condition.modifiers.contains(&ValueModifier::Contains);
+    let has_startswith = condition.modifiers.contains(&ValueModifier::StartsWith);
+    let has_endswith = condition.modifiers.contains(&ValueModifier::EndsWith);
+    let require_all = condition.modifiers.contains(&ValueModifier::All);
+
+    let subject_lower = subject.to_lowercase();
+    let check = |value: &SigmaValue| -> bool {
+        let referenced_field = value.as_str_lossy();
+        let Some(referenced) = lookup(&referenced_field) else {
+            return false;
+        };
+        // The referenced value is DATA, not a pattern — wildcards in event
+        // values must compare literally, so plain string ops are correct.
+        let referenced_lower = referenced.to_lowercase();
+        if has_contains {
+            subject_lower.contains(&referenced_lower)
+        } else if has_startswith {
+            subject_lower.starts_with(&referenced_lower)
+        } else if has_endswith {
+            subject_lower.ends_with(&referenced_lower)
+        } else {
+            subject_lower == referenced_lower
+        }
+    };
+
+    if require_all {
+        condition.values.iter().all(check)
+    } else {
+        condition.values.iter().any(check)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -366,7 +436,7 @@ fn value_matches(sigma_value: &SigmaValue, field_value: &str, modifiers: &[Value
 
     // Regex match — value is a regex pattern
     if has_regex {
-        return regex_matches(&sigma_str, field_value);
+        return regex_matches(&sigma_str, field_value, modifiers);
     }
 
     // Case-insensitive fields for string matching (Sigma default behavior)
@@ -615,17 +685,41 @@ fn cidr_matches(cidr: &str, ip_str: &str) -> bool {
 // Regex Matching
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Match using the `re` modifier — the sigma value is a regex pattern.
-/// Case-insensitive by default per Sigma spec.
-fn regex_matches(pattern: &str, text: &str) -> bool {
-    // Prepend case-insensitive flag if not already present
-    let pattern = if pattern.starts_with("(?") {
-        pattern.to_string()
-    } else {
-        format!("(?i){pattern}")
-    };
+/// True when the condition carries `|m` or `|s` regex flag sub-modifiers that
+/// change the compiled pattern relative to the plain `|re` default. (`|i` is
+/// a no-op: the engine is already case-insensitive by default for `|re`.)
+pub(crate) fn has_regex_flag_modifiers(modifiers: &[ValueModifier]) -> bool {
+    modifiers
+        .iter()
+        .any(|m| matches!(m, ValueModifier::RegexM | ValueModifier::RegexS))
+}
 
-    match regex::Regex::new(&pattern) {
+/// Build the final regex pattern string for a `|re` condition, applying the
+/// engine's case-insensitive default plus any `|m`/`|s` flag sub-modifiers.
+/// Used by BOTH load-time compilation and match-time cache lookup so the
+/// cache key is always the same string.
+pub(crate) fn regex_pattern_with_flags(pattern: &str, modifiers: &[ValueModifier]) -> String {
+    let mut flags = String::from("i");
+    if modifiers.contains(&ValueModifier::RegexM) {
+        flags.push('m');
+    }
+    if modifiers.contains(&ValueModifier::RegexS) {
+        flags.push('s');
+    }
+    // Back-compat: with no extra flags, a pattern carrying its own inline
+    // flags is left untouched (pre-existing behavior).
+    if flags == "i" && pattern.starts_with("(?") {
+        return pattern.to_string();
+    }
+    format!("(?{flags}){pattern}")
+}
+
+/// Match using the `re` modifier — the sigma value is a regex pattern.
+/// Case-insensitive by default per Sigma spec; `|m`/`|s` flag sub-modifiers
+/// enable multi-line and dot-all modes.
+fn regex_matches(pattern: &str, text: &str, modifiers: &[ValueModifier]) -> bool {
+    let full = regex_pattern_with_flags(pattern, modifiers);
+    match regex::Regex::new(&full) {
         Ok(re) => re.is_match(text),
         Err(_) => false, // Invalid regex → no match (don't crash)
     }
@@ -736,9 +830,12 @@ fn match_field_condition_with_cache<S1: BuildHasher, S2: BuildHasher>(
     event: &HashMap<String, String, S1>,
     regex_cache: &HashMap<String, Regex, S2>,
 ) -> bool {
-    // `exists` never involves regex.
+    // `exists` and `fieldref` never involve regex.
     if condition.modifiers.contains(&ValueModifier::Exists) {
         return handle_exists(condition, event);
+    }
+    if condition.modifiers.contains(&ValueModifier::FieldRef) {
+        return handle_fieldref(condition, event);
     }
 
     // Resolve target fields — identical to match_field_condition.
@@ -770,10 +867,18 @@ fn match_field_condition_with_cache<S1: BuildHasher, S2: BuildHasher>(
                 // Look up the pre-compiled Regex; fall back to on-demand compile
                 // only if the cache is missing the pattern (should not happen in
                 // normal operation — indicates a bug in collect_compiled_regexes).
+                // Cache key mirrors collect_compiled_regexes: raw pattern for
+                // plain |re (zero-allocation hot path), full flagged pattern
+                // only when |m/|s sub-modifiers are present.
                 let pattern = val.as_str_lossy();
-                match regex_cache.get(&pattern) {
+                let cached = if has_regex_flag_modifiers(&condition.modifiers) {
+                    regex_cache.get(&regex_pattern_with_flags(&pattern, &condition.modifiers))
+                } else {
+                    regex_cache.get(&pattern)
+                };
+                match cached {
                     Some(re) => re.is_match(field_value),
-                    None => regex_matches(&pattern, field_value),
+                    None => regex_matches(&pattern, field_value, &condition.modifiers),
                 }
             } else {
                 value_matches(val, field_value, &condition.modifiers)

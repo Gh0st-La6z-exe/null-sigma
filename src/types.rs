@@ -424,6 +424,20 @@ pub enum ValueModifier {
     // ── Existence modifier ──
     /// Check if field exists (true) or doesn't (false).
     Exists,
+
+    // ── Field reference modifier ──
+    /// Compare against the value of ANOTHER event field instead of a literal.
+    /// The condition value is interpreted as a field name (Sigma v2 spec):
+    /// `Image|fieldref: ParentImage` matches when `Image` == `ParentImage`.
+    FieldRef,
+
+    // ── Regex flag sub-modifiers (only valid immediately after `re`) ──
+    /// `re|i` — case-insensitive regex matching (Sigma v2 spec).
+    RegexI,
+    /// `re|m` — multi-line regex matching: `^`/`$` match at line breaks.
+    RegexM,
+    /// `re|s` — single-line ("dot all") regex matching: `.` matches `\n`.
+    RegexS,
 }
 
 impl ValueModifier {
@@ -449,6 +463,12 @@ impl ValueModifier {
             "lt" => Some(ValueModifier::Lt),
             "lte" => Some(ValueModifier::Lte),
             "exists" => Some(ValueModifier::Exists),
+            "fieldref" => Some(ValueModifier::FieldRef),
+            // Regex flag sub-modifiers — the parser validates that these
+            // only appear after `re` in the modifier chain.
+            "i" => Some(ValueModifier::RegexI),
+            "m" => Some(ValueModifier::RegexM),
+            "s" => Some(ValueModifier::RegexS),
             _ => None,
         }
     }

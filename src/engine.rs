@@ -690,11 +690,14 @@ fn is_ac_eligible(condition: &FieldCondition) -> bool {
         )
     });
     let has_exists = condition.modifiers.contains(&ValueModifier::Exists);
+    // FieldRef values are field NAMES, not searchable content — registering
+    // them as AC patterns would make the prefilter skip on the wrong bytes.
+    let has_fieldref = condition.modifiers.contains(&ValueModifier::FieldRef);
     // Transform modifiers change the effective search value — the original plain
     // string in AC is not a reliable proxy for whether the condition can match.
     let has_transform = condition.modifiers.iter().any(ValueModifier::is_transform);
 
-    !has_regex && !has_cidr && !has_numeric && !has_exists && !has_transform
+    !has_regex && !has_cidr && !has_numeric && !has_exists && !has_fieldref && !has_transform
 }
 
 /// Return true when a rule cannot match unless at least one AC-eligible
@@ -733,17 +736,25 @@ fn collect_compiled_regexes(
                 if cond.modifiers.contains(&ValueModifier::Regex) {
                     for val in &cond.values {
                         let pattern = val.as_str_lossy();
-                        if !pattern.is_empty() && !map.contains_key(&pattern) {
-                            // Prepend (?i) for case-insensitive matching (Sigma default)
-                            // unless the pattern already contains inline flags.
-                            let full = if pattern.starts_with("(?") {
-                                pattern.clone()
-                            } else {
-                                format!("(?i){pattern}")
-                            };
+                        if pattern.is_empty() {
+                            continue;
+                        }
+                        // Compile with the case-insensitive default plus any
+                        // |m/|s flag sub-modifiers. Cache key strategy mirrors
+                        // the match-time lookup: raw pattern for plain |re
+                        // (keeps the hot lookup allocation-free), full flagged
+                        // pattern when sub-modifiers change the compilation.
+                        let full =
+                            crate::matcher::regex_pattern_with_flags(&pattern, &cond.modifiers);
+                        let key = if crate::matcher::has_regex_flag_modifiers(&cond.modifiers) {
+                            full.clone()
+                        } else {
+                            pattern.clone()
+                        };
+                        if let std::collections::hash_map::Entry::Vacant(entry) = map.entry(key) {
                             match regex::Regex::new(&full) {
                                 Ok(re) => {
-                                    map.insert(pattern, re);
+                                    entry.insert(re);
                                 }
                                 Err(e) => {
                                     return Err(EngineError::InvalidRegex {
