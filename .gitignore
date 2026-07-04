@@ -1,2 +1,5 @@
 /target/
 Cargo.lock
+
+# Vendored rule corpora for compatibility testing (dev-only, never committed)
+/corpus/
