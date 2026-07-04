@@ -1849,6 +1849,83 @@ detection:
             event2.insert("command_line".to_string(), "mimikatz.exe".to_string());
             assert_eq!(engine.evaluate_event(&event2).len(), 1);
         }
+
+        /// `not selection` is true exactly when `selection` is false. A no-hit
+        /// AC scan must therefore fall through to full condition evaluation
+        /// instead of skipping the rule.
+        #[test]
+        fn ac_prefilter_not_skipped_for_negated_identifier() {
+            let yaml = r#"
+title: Negated AC Identifier Pre-filter Test
+level: medium
+logsource: {}
+detection:
+    selection:
+        CommandLine|contains: 'mimikatz'
+    condition: not selection
+"#;
+            let engine = make_engine_with_rule(yaml);
+
+            let mut event = HashMap::new();
+            event.insert(
+                "command_line".to_string(),
+                "powershell -enc ABC".to_string(),
+            );
+            assert_eq!(
+                engine.evaluate_event(&event).len(),
+                1,
+                "Rule must match when the negated AC identifier is absent"
+            );
+
+            let mut event2 = HashMap::new();
+            event2.insert("command_line".to_string(), "mimikatz.exe".to_string());
+            assert!(
+                engine.evaluate_event(&event2).is_empty(),
+                "Rule must not match when the negated identifier is present"
+            );
+        }
+
+        /// A mixed expression can also be satisfied solely by a negated
+        /// AC-eligible identifier. The prefilter must account for condition
+        /// polarity, not only identifier eligibility.
+        #[test]
+        fn ac_prefilter_not_skipped_when_negated_branch_can_fire() {
+            let yaml = r#"
+title: Negated OR Branch Pre-filter Test
+level: medium
+logsource: {}
+detection:
+    selection:
+        CommandLine|contains: 'whoami'
+    filter:
+        Image|endswith: '\cmd.exe'
+    condition: selection or not filter
+"#;
+            let engine = make_engine_with_rule(yaml);
+
+            let mut event = HashMap::new();
+            event.insert("command_line".to_string(), "powershell -nop".to_string());
+            event.insert(
+                "image".to_string(),
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            );
+            assert_eq!(
+                engine.evaluate_event(&event).len(),
+                1,
+                "Rule must match through `not filter` when no AC pattern is present"
+            );
+
+            let mut event2 = HashMap::new();
+            event2.insert("command_line".to_string(), "powershell -nop".to_string());
+            event2.insert(
+                "image".to_string(),
+                "C:\\Windows\\System32\\cmd.exe".to_string(),
+            );
+            assert!(
+                engine.evaluate_event(&event2).is_empty(),
+                "Rule must not match when only the negated branch is false"
+            );
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════

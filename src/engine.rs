@@ -345,17 +345,21 @@ impl SigmaEngine {
             }
         }
 
-        // A rule is "fully AC-covered" only when EVERY field condition in EVERY
-        // identifier group is AC-eligible. This is the safety precondition for the
-        // Aho-Corasick pre-filter: if any identifier has regex/CIDR/numeric/exists/
-        // transform conditions, those could match even when no AC string pattern
-        // appears in the event — pre-filtering would produce false negatives.
-        let fully_ac_covered = identifiers.iter().all(|ident| {
+        // A rule is AC-prefilter-safe only when:
+        //   1. every identifier condition is AC-eligible, so an AC miss proves
+        //      every identifier is false; and
+        //   2. the compiled condition cannot fire with all identifiers false.
+        //
+        // The second check protects negated rules such as `condition: not sel`:
+        // an event with no AC hits can be exactly the event that should match.
+        let all_identifiers_ac_covered = identifiers.iter().all(|ident| {
             ident
                 .groups
                 .iter()
                 .all(|group| group.conditions.iter().all(is_ac_eligible))
         });
+        let fully_ac_covered =
+            all_identifiers_ac_covered && conditions_require_ac_hit(&conditions, &identifiers);
 
         // Determine if any identifier uses |re (regex) so evaluate_event knows
         // whether to look up the side-table regex map for this rule.
@@ -653,6 +657,22 @@ fn is_ac_eligible(condition: &FieldCondition) -> bool {
     let has_transform = condition.modifiers.iter().any(ValueModifier::is_transform);
 
     !has_regex && !has_cidr && !has_numeric && !has_exists && !has_transform
+}
+
+/// Return true when a rule cannot match unless at least one AC-eligible
+/// identifier has matched.
+fn conditions_require_ac_hit(
+    conditions: &[ConditionNode],
+    identifiers: &[SearchIdentifier],
+) -> bool {
+    let all_false_results: HashMap<String, bool> = identifiers
+        .iter()
+        .map(|ident| (ident.name.clone(), false))
+        .collect();
+
+    conditions
+        .iter()
+        .all(|condition| !condition.evaluate(&all_false_results))
 }
 
 /// Pre-compile all `|re` regex patterns from a set of identifiers into a
