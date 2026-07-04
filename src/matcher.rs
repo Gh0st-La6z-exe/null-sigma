@@ -195,6 +195,14 @@ fn apply_transforms(values: &[SigmaValue], modifiers: &[ValueModifier]) -> Vec<S
 
             ValueModifier::Base64Offset => {
                 // Base64Offset REPLACES the original with the 3 offset variants.
+                // Each variant is the base64 encoding of the value at byte
+                // offset 0/1/2 within the stream, with unstable characters
+                // trimmed from BOTH ends:
+                //   - leading chars that mix bits from the unknown preceding
+                //     bytes (simulated by space padding) are stripped;
+                //   - trailing chars that mix bits from the unknown following
+                //     bytes — plus `=` padding — are stripped when the padded
+                //     length is not a multiple of 3.
                 result = result
                     .into_iter()
                     .flat_map(|v| {
@@ -207,14 +215,25 @@ fn apply_transforms(values: &[SigmaValue], modifiers: &[ValueModifier]) -> Vec<S
                             .map(|offset| {
                                 let padded = " ".repeat(offset) + &s;
                                 let encoded = base64_encode(&padded);
-                                let trimmed = if offset > 0 {
-                                    let skip = (offset * 4).div_ceil(3);
-                                    encoded.get(skip..).unwrap_or(&encoded).to_string()
-                                } else {
-                                    encoded
+
+                                // Leading trim: chars containing padding bits.
+                                let skip = (offset * 4).div_ceil(3);
+                                // Trailing trim: chars whose bits depend on the
+                                // bytes that follow the value in real data.
+                                //   len % 3 == 0 → last group complete, keep all
+                                //   len % 3 == 1 → strip partial char + "==" (3)
+                                //   len % 3 == 2 → strip partial char + "=" (2)
+                                let tail = match padded.len() % 3 {
+                                    1 => 3,
+                                    2 => 2,
+                                    _ => 0,
                                 };
+
+                                let end = encoded.len().saturating_sub(tail);
+                                let trimmed = encoded.get(skip..end).unwrap_or("").to_string();
                                 SigmaValue::String(trimmed)
                             })
+                            .filter(|v| !v.as_str_lossy().is_empty())
                             .collect::<Vec<_>>()
                     })
                     .collect();
@@ -238,18 +257,31 @@ fn apply_transforms(values: &[SigmaValue], modifiers: &[ValueModifier]) -> Vec<S
             }
 
             ValueModifier::Windash => {
-                // Windash: for each value, add variant with `-` replaced by `/`
-                // Catches Windows command obfuscation: `cmd -c` → `cmd /c`
+                // Windash: expand each value into variants for every dash
+                // character Windows accepts as a parameter prefix. Catches
+                // command obfuscation like `cmd /c` vs `cmd -c` vs `cmd –c`.
+                //
+                // Per the Sigma spec the variant set is: `-`, `/`,
+                // `–` (en dash U+2013), `—` (em dash U+2014), and
+                // `―` (horizontal bar U+2015). All dash occurrences in the
+                // value are replaced uniformly per variant.
+                const DASH_VARIANTS: [char; 5] = ['-', '/', '\u{2013}', '\u{2014}', '\u{2015}'];
                 result = result
                     .into_iter()
                     .flat_map(|v| {
                         let s = v.as_str_lossy();
                         let mut variants = vec![v];
-                        if s.contains('-') {
-                            variants.push(SigmaValue::String(s.replace('-', "/")));
-                        }
-                        if s.contains('/') {
-                            variants.push(SigmaValue::String(s.replace('/', "-")));
+                        if s.contains(DASH_VARIANTS) {
+                            for replacement in DASH_VARIANTS {
+                                let variant = s.replace(DASH_VARIANTS, &replacement.to_string());
+                                if variant != s
+                                    && !variants
+                                        .iter()
+                                        .any(|existing| existing.as_str_lossy() == variant)
+                                {
+                                    variants.push(SigmaValue::String(variant));
+                                }
+                            }
                         }
                         variants
                     })
@@ -355,9 +387,11 @@ fn value_matches(sigma_value: &SigmaValue, field_value: &str, modifiers: &[Value
         return wildcard_endswith(&sigma_lower, &field_lower);
     }
 
-    // Default: full match with wildcard support
-    // If the sigma value has wildcards (* or ?), convert to pattern match
-    if sigma_value.has_wildcards() {
+    // Default: full match with wildcard support.
+    // Route through the tokenizer whenever the value contains wildcard or
+    // escape characters so `\*` / `\\` sequences compare by their unescaped
+    // literal form, per the Sigma escaping rules.
+    if sigma_value.has_wildcards() || sigma_lower.contains('\\') {
         wildcard_match(&sigma_lower, &field_lower)
     } else {
         sigma_lower == field_lower
@@ -367,30 +401,101 @@ fn value_matches(sigma_value: &SigmaValue, field_value: &str, modifiers: &[Value
 // ─────────────────────────────────────────────────────────────────────────────
 // Wildcard Matching
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Sigma escaping rules (specification §"Escaping"):
+//   `*`  → wildcard: any sequence (including empty)
+//   `?`  → wildcard: exactly one character
+//   `\*` → literal asterisk
+//   `\?` → literal question mark
+//   `\\` → literal backslash
+//   `\x` (any other char) → plain backslash followed by `x` — single
+//         backslashes before non-wildcards need no escaping, so Windows
+//         paths like `\cmd.exe` keep their backslash.
+
+/// One element of a tokenized Sigma wildcard pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatToken {
+    /// `*` — matches any run of characters (including empty).
+    Star,
+    /// `?` — matches exactly one character.
+    Question,
+    /// A literal character (escapes already resolved).
+    Lit(char),
+}
+
+/// Tokenize a Sigma pattern, resolving escape sequences per the spec above.
+fn tokenize_pattern(pattern: &str) -> Vec<PatToken> {
+    let mut tokens = Vec::with_capacity(pattern.len());
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.peek() {
+                Some('*') => {
+                    tokens.push(PatToken::Lit('*'));
+                    chars.next();
+                }
+                Some('?') => {
+                    tokens.push(PatToken::Lit('?'));
+                    chars.next();
+                }
+                Some('\\') => {
+                    tokens.push(PatToken::Lit('\\'));
+                    chars.next();
+                }
+                // Lone backslash (before a normal char or at end of pattern)
+                // is a plain backslash — no escaping required by the spec.
+                _ => tokens.push(PatToken::Lit('\\')),
+            },
+            '*' => tokens.push(PatToken::Star),
+            '?' => tokens.push(PatToken::Question),
+            _ => tokens.push(PatToken::Lit(c)),
+        }
+    }
+    tokens
+}
+
+/// If the pattern contains no active wildcards, return its unescaped literal
+/// form (`\*` → `*`, `\\` → `\`). Returns `None` when the pattern has a real
+/// `*` or `?` wildcard. Used by the engine to decide Aho-Corasick eligibility
+/// and to register the correct literal bytes in the automaton.
+pub(crate) fn pattern_literal(pattern: &str) -> Option<String> {
+    let tokens = tokenize_pattern(pattern);
+    let mut literal = String::with_capacity(pattern.len());
+    for token in tokens {
+        match token {
+            PatToken::Star | PatToken::Question => return None,
+            PatToken::Lit(c) => literal.push(c),
+        }
+    }
+    Some(literal)
+}
 
 /// Full wildcard match: `*` matches any sequence, `?` matches single char.
 /// Uses a two-pointer algorithm — O(m*n) worst case but fast for typical patterns.
 fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().collect();
+    let tokens = tokenize_pattern(pattern);
     let text: Vec<char> = text.chars().collect();
-    wildcard_match_impl(pattern.as_slice(), text.as_slice())
+    wildcard_match_impl(&tokens, &text)
 }
 
-/// Two-pointer wildcard matching implementation.
-fn wildcard_match_impl(pattern: &[char], text: &[char]) -> bool {
+/// Two-pointer wildcard matching over tokenized patterns.
+fn wildcard_match_impl(pattern: &[PatToken], text: &[char]) -> bool {
     let mut pi = 0usize;
     let mut ti = 0usize;
-    let mut star_pat_idx = usize::MAX; // Position after last '*' in pattern
+    let mut star_pat_idx = usize::MAX; // Position of last '*' in pattern
     let mut star_txt_idx = 0usize; // Position in text when we last matched '*'
 
     let plen = pattern.len();
     let tlen = text.len();
 
     while ti < tlen {
-        if pi < plen && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
+        if pi < plen
+            && (matches!(pattern[pi], PatToken::Question)
+                || matches!(pattern[pi], PatToken::Lit(c) if c == text[ti]))
+        {
             pi += 1;
             ti += 1;
-        } else if pi < plen && pattern[pi] == '*' {
+        } else if pi < plen && pattern[pi] == PatToken::Star {
             star_pat_idx = pi;
             star_txt_idx = ti;
             pi += 1;
@@ -406,46 +511,51 @@ fn wildcard_match_impl(pattern: &[char], text: &[char]) -> bool {
     }
 
     // Consume trailing wildcards
-    while pi < plen && pattern[pi] == '*' {
+    while pi < plen && pattern[pi] == PatToken::Star {
         pi += 1;
     }
 
     pi == plen
 }
 
+/// Match tokenized pattern against text with implicit `*` anchors.
+/// `star_before`/`star_after` add unanchored ends for contains/startswith/endswith.
+fn wildcard_match_wrapped(pattern: &str, text: &str, star_before: bool, star_after: bool) -> bool {
+    // Fast path: pure literal after unescaping → plain substring operations.
+    if let Some(literal) = pattern_literal(pattern) {
+        return match (star_before, star_after) {
+            (true, true) => text.contains(&literal),
+            (false, true) => text.starts_with(&literal),
+            (true, false) => text.ends_with(&literal),
+            (false, false) => text == literal,
+        };
+    }
+
+    let mut tokens = Vec::new();
+    if star_before {
+        tokens.push(PatToken::Star);
+    }
+    tokens.extend(tokenize_pattern(pattern));
+    if star_after {
+        tokens.push(PatToken::Star);
+    }
+    let text_chars: Vec<char> = text.chars().collect();
+    wildcard_match_impl(&tokens, &text_chars)
+}
+
 /// Contains with wildcard support in the pattern.
 fn wildcard_contains(pattern: &str, text: &str) -> bool {
-    if !pattern.contains('*') && !pattern.contains('?') {
-        // Simple substring check
-        return text.contains(pattern);
-    }
-    // Use wildcard match with surrounding wildcards
-    let wrapped = format!("*{pattern}*");
-    let wrapped_chars: Vec<char> = wrapped.chars().collect();
-    let text_chars: Vec<char> = text.chars().collect();
-    wildcard_match_impl(&wrapped_chars, &text_chars)
+    wildcard_match_wrapped(pattern, text, true, true)
 }
 
 /// Starts-with with wildcard support.
 fn wildcard_startswith(pattern: &str, text: &str) -> bool {
-    if !pattern.contains('*') && !pattern.contains('?') {
-        return text.starts_with(pattern);
-    }
-    let wrapped = format!("{pattern}*");
-    let wrapped_chars: Vec<char> = wrapped.chars().collect();
-    let text_chars: Vec<char> = text.chars().collect();
-    wildcard_match_impl(&wrapped_chars, &text_chars)
+    wildcard_match_wrapped(pattern, text, false, true)
 }
 
 /// Ends-with with wildcard support.
 fn wildcard_endswith(pattern: &str, text: &str) -> bool {
-    if !pattern.contains('*') && !pattern.contains('?') {
-        return text.ends_with(pattern);
-    }
-    let wrapped = format!("*{pattern}");
-    let wrapped_chars: Vec<char> = wrapped.chars().collect();
-    let text_chars: Vec<char> = text.chars().collect();
-    wildcard_match_impl(&wrapped_chars, &text_chars)
+    wildcard_match_wrapped(pattern, text, true, false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

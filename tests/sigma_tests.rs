@@ -1622,7 +1622,80 @@ detection:
 
         #[test]
         fn wildcard_suffix_star() {
-            assert!(check_wildcard("C:\\Windows\\*", "C:\\Windows\\System32"));
+            // Per Sigma escaping, backslash-before-wildcard must itself be
+            // escaped: `C:\Windows\\*` = path prefix + active wildcard.
+            assert!(check_wildcard("C:\\Windows\\\\*", "C:\\Windows\\System32"));
+        }
+
+        // ─── Sigma escaping rules (spec §Escaping) ───────────────────────
+
+        /// `\*` is a LITERAL asterisk, not a wildcard.
+        #[test]
+        fn escaped_star_is_literal() {
+            assert!(check_wildcard("\\*", "*"));
+            assert!(!check_wildcard("\\*", "anything"));
+        }
+
+        /// `\?` is a LITERAL question mark, not a wildcard.
+        #[test]
+        fn escaped_question_is_literal() {
+            assert!(check_wildcard("te\\?t", "te?t"));
+            assert!(!check_wildcard("te\\?t", "test"));
+        }
+
+        /// `\\` unescapes to a single plain backslash.
+        #[test]
+        fn double_backslash_is_single_backslash() {
+            assert!(check_wildcard("C:\\\\Windows", "C:\\Windows"));
+        }
+
+        /// A single backslash before a normal character is a plain backslash —
+        /// Windows paths like `\cmd.exe` need no escaping.
+        #[test]
+        fn single_backslash_before_normal_char_preserved() {
+            assert!(check_wildcard("\\cmd.exe", "\\cmd.exe"));
+        }
+
+        /// `\\*` = plain backslash followed by an ACTIVE wildcard, while
+        /// `\*` alone is a literal asterisk (no wildcard behavior).
+        #[test]
+        fn escaped_backslash_then_active_wildcard() {
+            // `dir\\*` in Sigma = literal `dir\` + wildcard
+            assert!(check_wildcard("dir\\\\*", "dir\\anything"));
+            // `dir\*` in Sigma = literal `dir*`
+            assert!(check_wildcard("dir\\*", "dir*"));
+            assert!(!check_wildcard("dir\\*", "dir\\anything"));
+        }
+
+        /// Escaped literals must survive the engine's AC prefilter end-to-end:
+        /// the automaton has to hold the unescaped bytes.
+        #[test]
+        fn escaped_star_matches_through_engine_ac_path() {
+            let yaml = r#"
+title: Escaped Star Rule
+logsource: {}
+detection:
+    sel:
+        CommandLine|contains: '\*'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert("CommandLine".to_string(), "del *.log /q".to_string());
+            assert_eq!(
+                engine.evaluate_event(&event).len(),
+                1,
+                "Escaped `\\*` must match a literal asterisk via the AC path"
+            );
+
+            let mut event2 = HashMap::new();
+            event2.insert("CommandLine".to_string(), "del logs /q".to_string());
+            assert!(
+                engine.evaluate_event(&event2).is_empty(),
+                "Escaped `\\*` must NOT behave as a wildcard"
+            );
         }
 
         #[test]
@@ -1633,7 +1706,15 @@ detection:
 
         #[test]
         fn wildcard_multiple_stars() {
+            // Sigma escaping: backslash before `*` must be written `\\` to stay
+            // a plain backslash — pattern is `*\\*\powershell.exe` in Sigma.
             assert!(check_wildcard(
+                "*\\\\*\\powershell.exe",
+                "C:\\Windows\\System32\\powershell.exe"
+            ));
+            // The unescaped form `*\*\powershell.exe` means: anything, then a
+            // LITERAL asterisk, then `\powershell.exe` — must NOT match a path.
+            assert!(!check_wildcard(
                 "*\\*\\powershell.exe",
                 "C:\\Windows\\System32\\powershell.exe"
             ));
@@ -2063,6 +2144,116 @@ detection:
                 !match_field_condition(&cond, &event_none),
                 "windash should not match when neither variant present"
             );
+        }
+
+        /// Sigma spec windash variant set: `-`, `/`, en dash (U+2013),
+        /// em dash (U+2014), horizontal bar (U+2015). Copy-pasted commands
+        /// from documents often carry typographic dashes.
+        #[test]
+        fn windash_unicode_dash_variants() {
+            let cond = FieldCondition {
+                field: "cmd".to_string(),
+                values: vec![SigmaValue::String("-enc".to_string())],
+                modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
+            };
+
+            for (label, dash) in [
+                ("en dash", '\u{2013}'),
+                ("em dash", '\u{2014}'),
+                ("horizontal bar", '\u{2015}'),
+            ] {
+                let event = make_event("cmd", &format!("powershell {dash}enc SQBFAFg="));
+                assert!(
+                    match_field_condition(&cond, &event),
+                    "windash should match the {label} variant"
+                );
+            }
+        }
+
+        /// A rule written with a typographic dash must also catch the plain
+        /// `-` and `/` forms (variant expansion is bidirectional).
+        #[test]
+        fn windash_unicode_pattern_matches_ascii_event() {
+            let cond = FieldCondition {
+                field: "cmd".to_string(),
+                values: vec![SigmaValue::String("\u{2013}enc".to_string())],
+                modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
+            };
+            let event_dash = make_event("cmd", "powershell -enc SQBFAFg=");
+            let event_slash = make_event("cmd", "powershell /enc SQBFAFg=");
+            assert!(match_field_condition(&cond, &event_dash));
+            assert!(match_field_condition(&cond, &event_slash));
+        }
+
+        /// |base64offset must trim trailing characters whose bits depend on
+        /// the bytes FOLLOWING the value: "evil" (4 bytes) encodes to
+        /// "ZXZpbA==" in isolation, but embedded mid-stream the stable prefix
+        /// is only "ZXZpb". The old behavior kept the `=` padding and missed
+        /// any occurrence that wasn't at the very end of the data.
+        #[test]
+        fn base64offset_matches_value_embedded_mid_stream() {
+            // base64("evil more data") = "ZXZpbCBtb3JlIGRhdGE=" — "evil" is at
+            // offset 0 but the stream continues, so no "==" appears after it.
+            let event = make_event("cmd", "powershell -enc ZXZpbCBtb3JlIGRhdGE=");
+            let cond = make_condition(
+                "cmd",
+                &["evil"],
+                &[ValueModifier::Base64Offset, ValueModifier::Contains],
+            );
+            assert!(
+                match_field_condition(&cond, &event),
+                "|base64offset must find a value embedded mid-stream (trailing trim)"
+            );
+        }
+
+        /// All three byte offsets must be detected inside a longer stream.
+        #[test]
+        fn base64offset_matches_all_three_offsets() {
+            let needle = "evil";
+            for offset in 0..3usize {
+                // Simulate the value appearing at byte offset 0/1/2 in a stream.
+                let stream = format!("{}{}{}", "x".repeat(offset), needle, " trailing data");
+                let encoded = simple_b64(stream.as_bytes());
+                let event = make_event("cmd", &format!("cmd /c {encoded}"));
+                let cond = make_condition(
+                    "cmd",
+                    &[needle],
+                    &[ValueModifier::Base64Offset, ValueModifier::Contains],
+                );
+                assert!(
+                    match_field_condition(&cond, &event),
+                    "|base64offset must detect value at byte offset {offset} in {encoded}"
+                );
+            }
+        }
+
+        /// Minimal base64 encoder for test fixtures (kept independent of the
+        /// engine's internal encoder on purpose).
+        fn simple_b64(bytes: &[u8]) -> String {
+            const AB: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut out = String::new();
+            for chunk in bytes.chunks(3) {
+                let b = [
+                    chunk[0],
+                    *chunk.get(1).unwrap_or(&0),
+                    *chunk.get(2).unwrap_or(&0),
+                ];
+                let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+                out.push(AB[(n >> 18) as usize & 63] as char);
+                out.push(AB[(n >> 12) as usize & 63] as char);
+                out.push(if chunk.len() > 1 {
+                    AB[(n >> 6) as usize & 63] as char
+                } else {
+                    '='
+                });
+                out.push(if chunk.len() > 2 {
+                    AB[n as usize & 63] as char
+                } else {
+                    '='
+                });
+            }
+            out
         }
     }
 
@@ -2605,6 +2796,68 @@ detection:\n    sel:\n        other: thing\n    condition: sel";
             );
         }
 
+        /// A rule with an invalid `|re` pattern must be rejected at load time.
+        /// An uncompilable regex can never match, so silently accepting it
+        /// would disable the detection without any operator signal.
+        #[test]
+        fn load_rule_invalid_regex_is_load_error() {
+            let yaml = r#"
+title: Broken Regex Rule
+logsource: {}
+detection:
+    sel:
+        CommandLine|re: '[invalid'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            let result = engine.load_rule(yaml);
+            assert!(
+                matches!(result, Err(EngineError::InvalidRegex { .. })),
+                "Invalid |re pattern must produce EngineError::InvalidRegex, got {result:?}"
+            );
+            assert_eq!(
+                engine.rule_count(),
+                0,
+                "Rejected rule must not be partially loaded"
+            );
+
+            // Engine must remain fully usable after the rejected load.
+            engine.load_rule(MINIMAL_RULE).unwrap();
+            let event = make_event(&[
+                ("CommandLine", "evil.exe"),
+                ("category", "process_creation"),
+                ("product", "windows"),
+            ]);
+            assert_eq!(engine.evaluate_event(&event).len(), 1);
+        }
+
+        /// Bulk loading: a rule with a bad regex is collected as an error while
+        /// the remaining valid rules load normally.
+        #[test]
+        fn load_rules_invalid_regex_collected_as_error() {
+            let yaml = "\
+title: Valid Rule A\n\
+logsource: {}\n\
+detection:\n    sel:\n        field: value\n    condition: sel\n\
+---\n\
+title: Broken Regex Rule\n\
+logsource: {}\n\
+detection:\n    sel:\n        CommandLine|re: '(unclosed'\n    condition: sel\n\
+---\n\
+title: Valid Rule B\n\
+logsource: {}\n\
+detection:\n    sel:\n        other: thing\n    condition: sel";
+            let mut engine = SigmaEngine::new();
+            let (successes, errors) = engine.load_rules(yaml);
+            assert_eq!(successes.len(), 2, "Valid rules must load: {errors:?}");
+            assert_eq!(errors.len(), 1, "Bad-regex rule must produce one error");
+            assert!(
+                matches!(errors[0], EngineError::InvalidRegex { .. }),
+                "Error must be InvalidRegex, got {:?}",
+                errors[0]
+            );
+        }
+
         // ── Group 4: Behavioral Invariants ───────────────────────────────
 
         /// Loading the same rule twice (same title, same detection) must result
@@ -2678,6 +2931,64 @@ detection:
                     "Wildcard logsource rule must fire for category '{category}'"
                 );
             }
+        }
+
+        /// 32-bit FNV-1a hash of a lowercased string — mirrors the engine's
+        /// private logsource hash so the collision test below can construct
+        /// genuinely colliding category names.
+        fn fnv1a_lower(s: &str) -> u32 {
+            let mut h: u32 = 2_166_136_261;
+            for b in s.bytes() {
+                h ^= u32::from(b.to_ascii_lowercase());
+                h = h.wrapping_mul(16_777_619);
+            }
+            if h == 0 {
+                1
+            } else {
+                h
+            }
+        }
+
+        /// The hot loop compares logsource fields by 32-bit hash. Two distinct
+        /// category strings with colliding hashes must NOT cause the rule to
+        /// fire for the wrong category — the cold-path string recheck catches it.
+        #[test]
+        fn logsource_hash_collision_does_not_misroute() {
+            // Brute-force a real FNV-1a collision (birthday bound: ~77k tries).
+            let mut seen: HashMap<u32, String> = HashMap::new();
+            let mut pair: Option<(String, String)> = None;
+            for i in 0..2_000_000u32 {
+                let cand = format!("cat_{i}");
+                match seen.entry(fnv1a_lower(&cand)) {
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        pair = Some((e.get().clone(), cand));
+                        break;
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(cand);
+                    }
+                }
+            }
+            let (rule_cat, event_cat) = pair.expect("no FNV-1a collision found in 2M candidates");
+            assert_ne!(rule_cat, event_cat);
+            assert_eq!(fnv1a_lower(&rule_cat), fnv1a_lower(&event_cat));
+
+            let yaml = format!(
+                "title: Collision Test\nlogsource:\n    category: {rule_cat}\ndetection:\n    sel:\n        CommandLine|contains: 'hit'\n    condition: sel\n"
+            );
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(&yaml).unwrap();
+
+            // Event category hash-collides with the rule's but the strings differ.
+            let colliding = make_event(&[("CommandLine", "hit"), ("category", &event_cat)]);
+            assert!(
+                engine.evaluate_event(&colliding).is_empty(),
+                "Hash collision must not route event '{event_cat}' to rule for '{rule_cat}'"
+            );
+
+            // Sanity: the genuine category still matches.
+            let genuine = make_event(&[("CommandLine", "hit"), ("category", &rule_cat)]);
+            assert_eq!(engine.evaluate_event(&genuine).len(), 1);
         }
 
         /// A rule requiring `CommandLine` must never fire when only `ProcessName`

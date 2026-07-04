@@ -59,6 +59,15 @@ pub enum EngineError {
     Parse(ParseError),
     /// The condition expression compiled to an invalid AST.
     Compile(CompileError),
+    /// A `|re` pattern in the rule is not a valid regular expression.
+    /// Rejected at load time — a silently non-matching detection is worse
+    /// than a loud load failure.
+    InvalidRegex {
+        /// The offending `|re` pattern as written in the rule.
+        pattern: String,
+        /// The regex compiler's error message.
+        error: String,
+    },
 }
 
 impl std::fmt::Display for EngineError {
@@ -66,6 +75,9 @@ impl std::fmt::Display for EngineError {
         match self {
             EngineError::Parse(e) => write!(f, "Parse error: {e}"),
             EngineError::Compile(e) => write!(f, "Compile error: {e}"),
+            EngineError::InvalidRegex { pattern, error } => {
+                write!(f, "Invalid |re pattern '{pattern}': {error}")
+            }
         }
     }
 }
@@ -323,6 +335,26 @@ impl SigmaEngine {
             }
         };
 
+        // Determine if any identifier uses |re (regex) so evaluate_event knows
+        // whether to look up the side-table regex map for this rule.
+        let has_regex = identifiers.iter().any(|ident| {
+            ident.groups.iter().any(|group| {
+                group
+                    .conditions
+                    .iter()
+                    .any(|cond| cond.modifiers.contains(&ValueModifier::Regex))
+            })
+        });
+
+        // Compile all |re patterns BEFORE mutating any engine state: an invalid
+        // pattern must reject the whole rule and leave the engine untouched
+        // (no orphan AC patterns, no rule_count change).
+        let regex_map = if has_regex {
+            collect_compiled_regexes(&identifiers)?
+        } else {
+            HashMap::new()
+        };
+
         // Extract simple string patterns for Aho-Corasick optimization
         let mut ac_indices = Vec::new();
         for identifier in &identifiers {
@@ -332,8 +364,13 @@ impl SigmaEngine {
                     // with plain string values (no wildcards, no regex)
                     if is_ac_eligible(cond) {
                         for val in &cond.values {
+                            // Register the UNESCAPED literal (`\\` → `\`,
+                            // `\*` → `*`): the matcher compares unescaped
+                            // forms, so the automaton must hold the same bytes.
                             let s = val.as_str_lossy();
-                            let s_lower = s.to_lowercase();
+                            let literal = crate::matcher::pattern_literal(&s)
+                                .expect("is_ac_eligible guarantees no active wildcards");
+                            let s_lower = literal.to_lowercase();
                             if !s_lower.is_empty() {
                                 let pattern_idx = self.ac_patterns.len();
                                 self.ac_patterns.push(s_lower);
@@ -360,24 +397,6 @@ impl SigmaEngine {
         });
         let fully_ac_covered =
             all_identifiers_ac_covered && conditions_require_ac_hit(&conditions, &identifiers);
-
-        // Determine if any identifier uses |re (regex) so evaluate_event knows
-        // whether to look up the side-table regex map for this rule.
-        let has_regex = identifiers.iter().any(|ident| {
-            ident.groups.iter().any(|group| {
-                group
-                    .conditions
-                    .iter()
-                    .any(|cond| cond.modifiers.contains(&ValueModifier::Regex))
-            })
-        });
-
-        // Build per-rule regex map only when needed (stored off the hot struct).
-        let regex_map = if has_regex {
-            collect_compiled_regexes(&identifiers)
-        } else {
-            HashMap::new()
-        };
 
         self.rules.push(CompiledRule {
             rule,
@@ -474,20 +493,24 @@ impl SigmaEngine {
         // canonical names are present and aliases need to be added.
         let enriched = self.field_mapping.enrich_event_cow(event);
 
-        // Pre-compute event logsource hashes for O(1) integer comparison in the hot loop.
-        // hash == 0 means "field absent in event" — fails any non-wildcard rule check.
-        let event_cat_hash = enriched
+        // Resolve event logsource strings once; hash them for O(1) integer
+        // comparison in the hot loop. hash == 0 means "field absent in event"
+        // — fails any non-wildcard rule check.
+        let event_category = enriched
             .get("event_category")
             .or_else(|| enriched.get("category"))
-            .map_or(0, |s| hash_logsource(s));
-        let event_prod_hash = enriched
+            .map(String::as_str);
+        let event_product = enriched
             .get("event_product")
             .or_else(|| enriched.get("product"))
-            .map_or(0, |s| hash_logsource(s));
-        let event_svc_hash = enriched
+            .map(String::as_str);
+        let event_service = enriched
             .get("event_service")
             .or_else(|| enriched.get("service"))
-            .map_or(0, |s| hash_logsource(s));
+            .map(String::as_str);
+        let event_cat_hash = event_category.map_or(0, hash_logsource);
+        let event_prod_hash = event_product.map_or(0, hash_logsource);
+        let event_svc_hash = event_service.map_or(0, hash_logsource);
 
         // Run Aho-Corasick scan across all event field values
         let ac_hits = self.run_ac_scan(&enriched);
@@ -523,6 +546,19 @@ impl SigmaEngine {
 
             // ── Cold path: full evaluation (only when both hot filters pass) ──────
             let compiled = &self.rules[rule_idx];
+
+            // Logsource string recheck: the hot loop compared 32-bit FNV-1a
+            // hashes, which can collide. Confirm with the real strings before
+            // evaluating — a collision must not route an event to the wrong
+            // rule. Runs only for rules that already passed both prefilters,
+            // so the cost is off the hot path.
+            if !compiled
+                .rule
+                .logsource
+                .matches(event_category, event_product, event_service)
+            {
+                continue;
+            }
 
             // Full evaluation: check each identifier against the event.
             // Hot path: rules without |re use match_identifier directly (no HashMap lookup).
@@ -634,9 +670,11 @@ impl Default for SigmaEngine {
 /// "-enc" is in the AC automaton. If the event field holds "/enc", AC misses
 /// and the pre-filter would incorrectly skip a rule that should match.
 fn is_ac_eligible(condition: &FieldCondition) -> bool {
-    // Must have string values with no wildcards
+    // Must have string values with no ACTIVE wildcards. Escaped wildcards
+    // (`\*`, `\?`) unescape to plain literals and remain AC-eligible.
     let all_plain_strings = condition.values.iter().all(|v| {
-        matches!(v, crate::types::SigmaValue::String(s) if !s.contains('*') && !s.contains('?'))
+        matches!(v, crate::types::SigmaValue::String(s)
+            if crate::matcher::pattern_literal(s).is_some())
     });
 
     if !all_plain_strings {
@@ -678,7 +716,16 @@ fn conditions_require_ac_hit(
 /// Pre-compile all `|re` regex patterns from a set of identifiers into a
 /// lookup map. Called once per rule at load time; stored on `CompiledRule` so
 /// `evaluate_event` can do O(1) lookups instead of O(1) regex compilations.
-fn collect_compiled_regexes(identifiers: &[SearchIdentifier]) -> HashMap<String, regex::Regex> {
+///
+/// # Errors
+///
+/// Returns [`EngineError::InvalidRegex`] if any `|re` pattern fails to
+/// compile. A pattern that cannot compile can never match, so accepting it
+/// would silently disable the detection — rejecting the rule at load time
+/// gives the operator a signal instead.
+fn collect_compiled_regexes(
+    identifiers: &[SearchIdentifier],
+) -> Result<HashMap<String, regex::Regex>, EngineError> {
     let mut map = HashMap::new();
     for ident in identifiers {
         for group in &ident.groups {
@@ -694,8 +741,16 @@ fn collect_compiled_regexes(identifiers: &[SearchIdentifier]) -> HashMap<String,
                             } else {
                                 format!("(?i){pattern}")
                             };
-                            if let Ok(re) = regex::Regex::new(&full) {
-                                map.insert(pattern, re);
+                            match regex::Regex::new(&full) {
+                                Ok(re) => {
+                                    map.insert(pattern, re);
+                                }
+                                Err(e) => {
+                                    return Err(EngineError::InvalidRegex {
+                                        pattern,
+                                        error: e.to_string(),
+                                    });
+                                }
                             }
                         }
                     }
@@ -703,5 +758,5 @@ fn collect_compiled_regexes(identifiers: &[SearchIdentifier]) -> HashMap<String,
             }
         }
     }
-    map
+    Ok(map)
 }

@@ -2,7 +2,7 @@
 //!
 //! Parse Sigma rules from YAML once, compile them into an optimised internal
 //! representation, then evaluate streams of security events against the full
-//! rule set at **449 000+ events/second × 1 000 rules on a single core**
+//! rule set at **427 000+ events/second × 1 000 rules on a single core**
 //! (Apple M4, release, Criterion-measured).
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -63,7 +63,7 @@ pub mod types;
 
 // Re-export the primary public API
 pub use condition::{compile_condition, CompileError, ConditionNode};
-pub use engine::SigmaEngine;
+pub use engine::{EngineError, SigmaEngine};
 pub use fieldmap::FieldMapping;
 pub use matcher::{match_field_condition, match_identifier};
 pub use parser::{parse_rule, parse_rules, ParseError};
