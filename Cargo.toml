@@ -32,12 +32,33 @@ aho-corasick = "1.1"
 # Sigma supports `|re` (regex) and `*` glob wildcards in values.
 regex = "1.11"
 
+# JSON parsing for the optional `json` ingestion feature - flattens nested
+# telemetry (ECS, Sysmon, CloudTrail) into the engine's flat event format.
+serde_json = { version = "1.0", optional = true }
+
+[features]
+# Nested JSON event ingestion: `json::flatten_str`, `json::flatten_value`,
+# and `SigmaEngine::evaluate_json`. Off by default — the core engine has no
+# JSON dependency.
+json = ["dep:serde_json"]
+
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }
 # Generative property-based testing — generates thousands of random inputs to
 # prove engine invariants hold universally, not just for hand-picked cases.
 proptest = "1.5"
+# JSON construction in tests for the `json` feature (fixtures, property strategies).
+serde_json = "1.0"
+
+# docs.rs builds with all features so the `json` module appears in the docs.
+[package.metadata.docs.rs]
+all-features = true
 
 [[bench]]
 name = "sigma_bench"
 harness = false
+
+[[bench]]
+name = "json_bench"
+harness = false
+required-features = ["json"]

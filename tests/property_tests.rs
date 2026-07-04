@@ -440,3 +440,126 @@ proptest! {
         let _ = engine.evaluate_event(&event);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JSON flattening properties (feature = "json")
+// ─────────────────────────────────────────────────────────────────────────────
+//   PJ1. flatten_value never panics on any JSON structure (Ok or typed error).
+//   PJ2. Determinism — flattening the same value twice yields identical maps.
+//   PJ3. Guards always honored — with a tiny max_depth, deep inputs return
+//        DepthExceeded and shallow inputs succeed; never a panic either way.
+//   PJ4. Monotonicity — adding a fresh top-level field never removes or
+//        changes the flattened output of existing fields.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "json")]
+mod json_properties {
+    use super::{printable_ascii, proptest_cfg};
+    use null_sigma::json::{flatten_value, flatten_value_with, FlattenError, FlattenOptions};
+    use proptest::prelude::*;
+
+    /// Arbitrary JSON: recursive objects/arrays over null/bool/int/string
+    /// leaves. Bounded (depth 6, ≤64 nodes) — deep-nesting guard behavior is
+    /// exercised separately in PJ3 with a tiny limit.
+    fn arb_json() -> impl Strategy<Value = serde_json::Value> {
+        let leaf = prop_oneof![
+            Just(serde_json::Value::Null),
+            any::<bool>().prop_map(serde_json::Value::from),
+            any::<i64>().prop_map(serde_json::Value::from),
+            printable_ascii(0, 20).prop_map(serde_json::Value::from),
+        ];
+        leaf.prop_recursive(6, 64, 6, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..6).prop_map(serde_json::Value::Array),
+                proptest::collection::btree_map(printable_ascii(1, 10), inner, 0..6)
+                    .prop_map(|m| serde_json::Value::Object(m.into_iter().collect())),
+            ]
+        })
+    }
+
+    /// Arbitrary top-level JSON *object* (events must be objects).
+    fn arb_json_object() -> impl Strategy<Value = serde_json::Value> {
+        proptest::collection::btree_map(printable_ascii(1, 10), arb_json(), 0..8)
+            .prop_map(|m| serde_json::Value::Object(m.into_iter().collect()))
+    }
+
+    /// JSON generation is heavier than flat-string generation — 2,000 cases
+    /// keeps the suite fast while still exploring thousands of shapes.
+    fn json_cfg() -> ProptestConfig {
+        ProptestConfig {
+            cases: 2_000,
+            ..proptest_cfg()
+        }
+    }
+
+    proptest! {
+        #![proptest_config(json_cfg())]
+
+        /// PJ1: flatten never panics — every input is Ok or a typed error.
+        #[test]
+        fn pj1_flatten_never_panics(value in arb_json()) {
+            let _ = flatten_value(&value);
+        }
+
+        /// PJ2: flattening is deterministic.
+        #[test]
+        fn pj2_flatten_deterministic(value in arb_json_object()) {
+            let first = flatten_value(&value);
+            let second = flatten_value(&value);
+            prop_assert_eq!(first, second);
+        }
+
+        /// PJ3: guards are always honored with a tiny depth limit — the
+        /// result is Ok or DepthExceeded/FieldsExceeded, never a panic, and
+        /// Ok outputs never exceed the field cap.
+        #[test]
+        fn pj3_guards_honored(value in arb_json_object()) {
+            let opts = FlattenOptions { max_depth: 3, max_fields: 16 };
+            match flatten_value_with(&value, opts) {
+                Ok(map) => prop_assert!(map.len() <= 16),
+                Err(FlattenError::DepthExceeded { max_depth }) => {
+                    prop_assert_eq!(max_depth, 3);
+                }
+                Err(FlattenError::FieldsExceeded { max_fields }) => {
+                    prop_assert_eq!(max_fields, 16);
+                }
+                Err(e) => prop_assert!(false, "unexpected error variant: {e:?}"),
+            }
+        }
+
+        /// PJ4: adding a fresh top-level scalar field preserves every
+        /// previously flattened entry byte-for-byte.
+        #[test]
+        fn pj4_monotonic_field_addition(
+            value in arb_json_object(),
+            fresh_val in printable_ascii(0, 20),
+        ) {
+            let serde_json::Value::Object(map) = &value else { unreachable!() };
+            // A key no printable-ASCII generator can produce (contains \x01),
+            // so it cannot collide with existing keys or dot paths.
+            let fresh_key = "\u{1}pj4_fresh";
+            prop_assume!(!map.contains_key(fresh_key));
+
+            let Ok(before) = flatten_value(&value) else {
+                // Guard-rejected inputs are covered by PJ3.
+                return Ok(());
+            };
+
+            let mut extended = map.clone();
+            extended.insert(
+                fresh_key.to_string(),
+                serde_json::Value::String(fresh_val),
+            );
+            let after = flatten_value(&serde_json::Value::Object(extended))
+                .expect("adding one scalar field cannot trip guards that passed before");
+
+            for (k, v) in &before {
+                prop_assert_eq!(
+                    after.get(k),
+                    Some(v),
+                    "existing flattened field changed after unrelated addition"
+                );
+            }
+        }
+    }
+}

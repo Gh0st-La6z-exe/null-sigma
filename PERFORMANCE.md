@@ -379,3 +379,64 @@ and regex-cache work that landed between the two measurement dates; the
 hardening itself cost 1–7% relative to its immediate pre-change baseline.)
 
 The 100k events/sec × 1,000 rules target remains exceeded by **4.3×**.
+
+---
+
+## 10. Addendum — 2026-07-04 JSON Ingestion Layer
+
+The feature-gated `json` module (nested-event flattening, see `CHANGELOG.md`)
+was verified against the no-regression policy in two ways.
+
+### 10a. Core suite regression verification — zero impact by construction
+
+The `json` feature is **off by default**, so `cargo bench` compiles the exact
+same core code as before the feature landed — `serde_json` and `src/json.rs`
+are not in the benchmark binary at all. A core regression is therefore
+structurally impossible, but the full suite was still run to confirm.
+
+Full `sigma_bench` suite, run twice back-to-back after the JSON work:
+
+| Benchmark | Result | Criterion verdict |
+|---|---|---|
+| `single_rule_single_event` | 1.35 µs | no change |
+| `100_rules_single_event` | 865–896 ns | within noise |
+| `1000_rules_single_event` | **2.38 µs** | within noise (−0.4%) |
+| `1000_rules_mixed_field_noise` | 15.9–16.5 µs | within noise |
+| `100_rules_100_events_batch` | 95–97 µs | within noise |
+| `1000_rules_logsource_mismatch` | ~924 ns | no change |
+| `1000_rules_ac_prefilter_zero_match` | 1.79 µs | no change |
+| `100_regex_rules_single_event` | 36.1 / 38.3 µs | see note below |
+| `enrich_event_cow_sigma_keys_borrowed` | 185–191 ns | improved −4.4% |
+| `enrich_event_cow_canonical_keys_owned` | 744–748 ns | within noise |
+
+**Noise note — `100_regex_rules_single_event`:** Criterion flagged the first
+run as "+2.2% regressed", but the two consecutive runs measured the *same
+unchanged binary* at 36.1 µs and then 38.3 µs — a 6% swing with zero code
+difference. This benchmark exercises 100 regex matches per event and is the
+noisiest in the suite; single-run deltas under ~6% on it should not be
+treated as signal. Cross-check against a stable neighbor (e.g.
+`1000_rules_single_event`, run-to-run spread < 0.5%) before accepting a
+verdict on this benchmark.
+
+### 10b. JSON layer costs — measured in isolation (`json_bench`)
+
+Benchmarked on the 30-field nested ECS process-creation fixture, engine
+loaded with matching rules (Apple M4, release, Criterion medians):
+
+| Benchmark | Median | What it measures |
+|---|---|---|
+| `flatten_ecs_event_30_fields` | 8.3 µs | parse + flatten only |
+| `evaluate_json_ecs_event` | 11.9 µs | flatten + full engine evaluation |
+| `evaluate_preflattened_ecs_event` | 2.66 µs | engine evaluation only, same event |
+
+Two takeaways for consumers:
+
+1. **JSON parsing dominates the ingest path** (~70% of `evaluate_json` is
+   `serde_json` parse + flatten, not rule evaluation). At ~84k events/sec
+   end-to-end from raw JSON strings, the layer is fast enough for most single
+   log streams, but the engine core is ~4.5× faster than the parse in front
+   of it.
+2. **Flatten once, evaluate many.** If the same event is checked against
+   multiple engines, or events arrive already parsed as `serde_json::Value`,
+   use `flatten_value` once and call `evaluate_event` directly —
+   `evaluate_preflattened` shows the engine-only cost is 2.66 µs.

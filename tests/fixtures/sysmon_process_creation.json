@@ -1,0 +1,23 @@
+{
+  "EventID": 1,
+  "Channel": "Microsoft-Windows-Sysmon/Operational",
+  "Computer": "dc01.corp.local",
+  "product": "windows",
+  "UtcTime": "2026-07-04 14:25:03.117",
+  "ProcessGuid": "{a23eae89-bd56-5903-0000-0010e9d95e00}",
+  "ProcessId": 3204,
+  "Image": "C:\\Users\\Public\\update.exe",
+  "OriginalFileName": "mimikatz.exe",
+  "CommandLine": "update.exe \"sekurlsa::logonpasswords\" exit",
+  "CurrentDirectory": "C:\\Users\\Public\\",
+  "User": "CORP\\svc-backup",
+  "IntegrityLevel": "High",
+  "Hashes": [
+    "MD5=e930b05efe23891d19bc354a4209be3e",
+    "SHA256=8815e7fe8ba1d0f04dcf05a15e92db4996b6b4a6",
+    "IMPHASH=9528a0e91e28fbb88ad433feabca2456"
+  ],
+  "ParentProcessId": 980,
+  "ParentImage": "C:\\Windows\\System32\\services.exe",
+  "ParentCommandLine": "C:\\Windows\\system32\\services.exe"
+}

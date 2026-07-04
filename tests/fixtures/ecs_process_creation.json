@@ -1,0 +1,35 @@
+{
+  "@timestamp": "2026-07-04T14:23:11.482Z",
+  "event": {
+    "category": "process",
+    "type": "start",
+    "kind": "event",
+    "module": "endpoint"
+  },
+  "host": {
+    "name": "ws-finance-042",
+    "os": {
+      "family": "windows",
+      "version": "10.0.22631"
+    },
+    "ip": ["10.20.30.42"]
+  },
+  "user": {
+    "name": "j.doe",
+    "domain": "CORP"
+  },
+  "process": {
+    "pid": 6244,
+    "name": "powershell.exe",
+    "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "command_line": "powershell.exe -NoProfile -EncodedCommand SQBFAFgA",
+    "parent": {
+      "pid": 5120,
+      "name": "cmd.exe",
+      "executable": "C:\\Windows\\System32\\cmd.exe"
+    },
+    "hash": {
+      "sha256": "de96a6e69944335375dc1ac238336066889d9ffc7d73628ef4fe1b1b160ab32c"
+    }
+  }
+}

@@ -411,6 +411,59 @@ condition:
 
 ---
 
+## JSON telemetry ingestion (`json` feature)
+
+Real telemetry is nested JSON — ECS, Sysmon exports, CloudTrail records. The
+optional `json` feature adds a flattening layer that converts nested events
+into the engine's flat field format without touching the core (the crate
+compiles identically with the feature off):
+
+```toml
+[dependencies]
+null-sigma = { version = "0.1", features = ["json"] }
+```
+
+```rust
+use null_sigma::SigmaEngine;
+
+let mut engine = SigmaEngine::new();
+engine.load_rule(r#"
+title: Encoded PowerShell
+logsource: {}
+detection:
+    sel:
+        process.command_line|contains: '-EncodedCommand'
+    condition: sel
+"#).unwrap();
+
+let matches = engine.evaluate_json(
+    r#"{"process": {"command_line": "powershell -EncodedCommand SQBFAFgA"}}"#,
+).unwrap();
+assert_eq!(matches.len(), 1);
+```
+
+Flattening semantics:
+
+- **Objects** → dot paths (`process.parent.name`)
+- **Scalars** → strings; `i64`/`u64` render exactly (no float precision loss)
+- **`null`** → empty string, so Sigma `field: null` (matches empty) works
+- **Arrays** → indexed keys (`Hashes.0`, `Hashes.1`) plus a newline-joined
+  base key, so `Hashes|contains` matches *any element* (multi-value field
+  semantics); single-element arrays collapse to the base key
+- **Collisions** (literal `"a.b"` key vs nested path) → first write wins,
+  deterministic
+- **Guards** — configurable `max_depth` (default 64) and `max_fields`
+  (default 10 000) reject adversarial documents with typed `FlattenError`s
+  instead of overflowing or truncating silently
+
+Lower-level entry points `flatten_str` / `flatten_value` (+ `_with` variants
+taking `FlattenOptions`) are exported for pipelines that flatten once and
+evaluate many times. Measured on the ECS fixture (~30 fields, 4 levels):
+flatten 8.3 µs, full `evaluate_json` 11.9 µs per event (~84k events/sec
+single-core including JSON parsing; pre-flattened evaluation is unchanged).
+
+---
+
 ## Type system
 
 ```
@@ -465,12 +518,13 @@ inside `load_rule` / `load_rules` — never lazily inside `evaluate_event`.
 ```
 cargo test
 
-running 196 tests
+running 230 tests (--features json)
   0  unit (lib)
  10  corpus_tests   — parse known-good and known-bad YAML fixtures
- 10  property_tests — proptest: invariants proven on 10,000 random inputs each
+ 14  property_tests — proptest: invariants proven on thousands of random inputs
 174  sigma_tests    — modifiers, conditions, engine, hardening, concurrency
-  2  doc tests
+ 29  json_tests     — flattening semantics, guards, ECS/Sysmon/CloudTrail fixtures
+  3  doc tests
 ```
 
 Selected property invariants proven by proptest:
@@ -511,13 +565,18 @@ Selected hardening tests:
 
 ## Cargo features
 
-No optional features. The dependency surface is intentionally minimal:
+| Feature | Default | Adds |
+|---|---|---|
+| `json` | off | Nested JSON event ingestion (`evaluate_json`, `flatten_str`) via optional `serde_json` |
+
+The core dependency surface is intentionally minimal:
 
 | Crate | Role |
 |---|---|
 | `serde` + `serde_norway` | YAML → `SigmaRule` (maintained `serde_yaml` successor) |
 | `aho-corasick` | SIMD-accelerated multi-pattern batch scan |
 | `regex` | `\|re` modifier pattern matching |
+| `serde_json` (optional) | `json` feature only |
 
 ---
 

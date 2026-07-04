@@ -52,6 +52,10 @@ pub mod condition;
 pub mod engine;
 /// Sigma field-name translation and enrichment.
 pub mod fieldmap;
+/// Nested JSON telemetry ingestion — flattens ECS/Sysmon/CloudTrail-style
+/// events into the engine's flat format (requires the `json` feature).
+#[cfg(feature = "json")]
+pub mod json;
 /// Event field matching — implements all 19 Sigma value modifiers (`contains`,
 /// `startswith`, `endswith`, `re` + `i`/`m`/`s` flags, `cidr`, `base64`,
 /// `wide`, `windash`, `fieldref`, …).
@@ -66,6 +70,8 @@ pub mod types;
 pub use condition::{compile_condition, CompileError, ConditionNode};
 pub use engine::{EngineError, SigmaEngine};
 pub use fieldmap::FieldMapping;
+#[cfg(feature = "json")]
+pub use json::{flatten_str, flatten_value, FlattenError, FlattenOptions};
 pub use matcher::{match_field_condition, match_identifier};
 pub use parser::{parse_rule, parse_rules, ParseError};
 pub use types::{

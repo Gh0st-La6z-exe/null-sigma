@@ -12,6 +12,7 @@ libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 
 [dependencies.null-sigma]
 path = ".."
+features = ["json"]
 
 # fuzz_parse_rule — feeds arbitrary bytes to the YAML parser.
 # Finds panics, stack overflows, and OOM in the parsing path.
@@ -27,6 +28,15 @@ bench = false
 [[bin]]
 name = "fuzz_evaluate_event"
 path = "fuzz_targets/fuzz_evaluate_event.rs"
+test = false
+doc = false
+bench = false
+
+# fuzz_flatten_json — feeds arbitrary bytes to the JSON flattening layer.
+# Finds panics, stack overflows, and guard bypasses in json::flatten_str.
+[[bin]]
+name = "fuzz_flatten_json"
+path = "fuzz_targets/fuzz_flatten_json.rs"
 test = false
 doc = false
 bench = false

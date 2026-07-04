@@ -29,12 +29,26 @@ Findings and fixes:
 Possible follow-up: `|expand` support via a user-supplied placeholder map at
 load time (would take placeholder rules from 0% to 100% too).
 
-## 2. Nested JSON event ingestion
+## 2. Nested JSON event ingestion (DONE — 2026-07-04)
 
-Real telemetry is nested JSON (ECS, Windows XML→JSON, CloudTrail); the API
-takes `HashMap<String, String>`. Add a flattening layer
-(`serde_json::Value` → dotted field paths) as a **separate module/crate**,
-not woven into the matcher. This is the main real-world adoption blocker.
+Shipped as the feature-gated `json` module (decision: cargo feature over a
+workspace crate — one crate on crates.io, `serde_json` optional, zero core
+changes; the layering rule held: `matcher.rs`/`engine.rs` untouched).
+
+Delivered: dot-path flattening, exact numeric rendering, null→empty (Sigma
+`field: null` works), array semantics (indexed keys + joined base key for
+any-element `|contains`), deterministic collision policy, depth/field guards
+with typed errors, `SigmaEngine::evaluate_json`. Test stack: 29 unit/fixture
+tests (ECS, Sysmon, CloudTrail), 4 proptest properties, `fuzz_flatten_json`
+target, benchmarks (flatten 8.3 µs, evaluate_json 11.9 µs on a 30-field ECS
+event), CI matrix with/without the feature.
+
+Regression verification: the feature is off by default, so `cargo bench`
+compiles the identical core binary — zero impact by construction. Confirmed
+empirically with two full-suite runs (all 10 benchmarks within noise; details
+in `PERFORMANCE.md` §10, including a recorded lesson that
+`100_regex_rules_single_event` has ~6% run-to-run jitter and single-run
+verdicts on it are not signal).
 
 ## 3. Head-to-head benchmark harness
 

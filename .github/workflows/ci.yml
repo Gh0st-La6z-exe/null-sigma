@@ -36,8 +36,11 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo test
+      - name: cargo test (default features)
         run: cargo test
+
+      - name: cargo test (json feature)
+        run: cargo test --features json
 
   # ─── Lint ─────────────────────────────────────────────────────────────────
   clippy:
@@ -54,8 +57,11 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo clippy
+      - name: cargo clippy (default features)
         run: cargo clippy -- -W clippy::all -W clippy::pedantic
+
+      - name: cargo clippy (json feature)
+        run: cargo clippy --features json -- -W clippy::all -W clippy::pedantic
 
   # ─── Format ───────────────────────────────────────────────────────────────
   fmt:
@@ -86,7 +92,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: cargo doc
-        run: cargo doc --no-deps
+        run: cargo doc --no-deps --features json
         env:
           # Broken intra-doc links and missing docs are errors, not warnings.
           RUSTDOCFLAGS: -D warnings
@@ -152,6 +158,7 @@ jobs:
         target:
           - fuzz_parse_rule
           - fuzz_evaluate_event
+          - fuzz_flatten_json
     steps:
       - uses: actions/checkout@v4
 
