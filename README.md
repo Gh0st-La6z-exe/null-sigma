@@ -9,7 +9,7 @@ A pure-Rust [Sigma](https://sigmahq.io) rule evaluation engine.
 
 Parse YAML rules once, compile them into an optimised internal representation,
 then evaluate streams of security events against the full rule set at
-**449 000 events/sec × 1 000 rules on a single core** (Apple M4, release).
+**427 000 events/sec × 1 000 rules on a single core** (Apple M4, release).
 
 ```toml
 [dependencies]
@@ -123,8 +123,14 @@ fn logsource_ok(rule_hash: u32, event_hash: u32) -> bool {
 0 is reserved as the "no constraint" sentinel. Non-zero event hashes are
 guaranteed by remapping the FNV collision `h == 0 → 1`.
 
+The hash comparison is a prefilter, not the final word: rules that pass it
+are re-checked against the **actual logsource strings** on the cold path
+(`LogSource::matches`) before evaluation. A 32-bit hash collision therefore
+cannot route an event to the wrong rule — the recheck costs nothing on the
+hot path because it only runs for rules that already passed both prefilters.
+
 **Measured result:** 1 000 rules, event with wrong logsource category →
-**863 ns** total. All 1 000 rules are rejected before a single `CompiledRule`
+**912 ns** total. All 1 000 rules are rejected before a single `CompiledRule`
 is touched.
 
 ---
@@ -166,18 +172,27 @@ if !flat_ac_indices[start..end]
 
 | Benchmark | Median |
 |---|---|
-| `single_rule_single_event` | 1.17 µs |
-| `100_rules_single_event` | **793 ns** |
+| `single_rule_single_event` | 1.35 µs |
+| `100_rules_single_event` | **856 ns** |
 
 The AC automaton scans the event field once regardless of rule count. One
 hundred rules sharing overlapping string vocabularies means 100 rules get
 prefiltered for less total work than naively evaluating one rule's conditions.
 
-A rule is only AC-prefiltered when *every* field condition in *every* group is
-AC-eligible. Rules containing `|re`, `|cidr`, numeric comparisons, `|exists`,
-or transform modifiers (`|base64`, `|wide`, `|windash`) bypass the prefilter
-gate and always proceed to full evaluation — conservatively correct, never a
-false negative.
+A rule is only AC-prefiltered when two safety conditions hold:
+
+1. **Every** field condition in **every** identifier group is AC-eligible.
+   Rules containing `|re`, `|cidr`, numeric comparisons, `|exists`, or
+   transform modifiers (`|base64`, `|wide`, `|windash`) bypass the prefilter
+   gate and always proceed to full evaluation.
+2. The compiled condition **cannot fire with all identifiers false**. This
+   protects negated conditions such as `condition: not selection` — an event
+   with zero AC hits can be exactly the event that should match, so those
+   rules are never skipped on an AC miss.
+
+Both checks are computed once at rule load time; violating either would
+produce false negatives, so they are enforced by dedicated regression tests
+(`ac_prefilter_tests`).
 
 ---
 
@@ -194,11 +209,17 @@ match regex_cache.get(&pattern) {
 }
 ```
 
+Compilation is also where validation happens: a `|re` pattern that fails to
+compile **rejects the whole rule at load time** with
+`EngineError::InvalidRegex`. An uncompilable pattern can never match, so
+silently accepting it would disable the detection without any operator
+signal.
+
 Without the cache, `|re` rules call `regex::Regex::new()` on every event —
 a 1–10 µs compilation penalty per pattern per call. With the cache, 100 rules
 × 4 patterns = 400 `is_match` calls at ~88 ns each.
 
-**Measured:** `100_regex_rules_single_event` → **34.3 µs**
+**Measured:** `100_regex_rules_single_event` → **35.9 µs**
 
 ---
 
@@ -232,8 +253,8 @@ if aliases.is_empty() {
 
 | Path | Median | Allocation |
 |---|---|---|
-| `enrich_event_cow` (Sigma keys) | **205 ns** | None |
-| `enrich_event_cow` (canonical keys) | **778 ns** | One clone |
+| `enrich_event_cow` (Sigma keys) | **193 ns** | None |
+| `enrich_event_cow` (canonical keys) | **739 ns** | One clone |
 
 This single change reduced `single_rule_single_event` from 2.08 µs to
 **1.25 µs** — a 40% improvement — because the allocation was on the critical
@@ -243,30 +264,43 @@ path of every `evaluate_event` call.
 
 ## Benchmark summary
 
+![null-sigma benchmark chart: per-event latency stays hundreds of times below naive linear scaling as rule count grows, and single-core throughput by scenario](assets/benchmarks.svg)
+
+The left panel is the headline property: adding rules costs almost nothing.
+Per-event latency at 1 000 rules is **576× below** what naive
+per-rule evaluation would cost, because the prefilters reject nearly every
+rule before its condition tree is ever touched. The chart is generated from
+the Criterion medians below by `scripts/gen_benchmark_chart.py`.
+
 All numbers: Apple M4, single core, `cargo bench` (release profile),
 Criterion 100-sample statistical measurement.
 
 ```
-single_rule_single_event          time: [1.1663 µs 1.1683 µs 1.1707 µs]
-100_rules_single_event            time: [804.43 ns  805.93 ns  807.51 ns]
-1000_rules_single_event           time: [2.2249 µs  2.2274 µs  2.2301 µs]
-1000_rules_mixed_field_noise      time: [15.501 µs  15.524 µs  15.547 µs]
-100_rules_100_events_batch        time: [87.962 µs  89.049 µs  90.737 µs]
-1000_rules_logsource_mismatch     time: [869.46 ns  876.17 ns  886.34 ns]
-1000_rules_ac_prefilter_zero_match time: [1.7403 µs 1.7428 µs 1.7458 µs]
-100_regex_rules_single_event      time: [34.087 µs  34.218 µs  34.350 µs]
-enrich_event_cow_sigma_keys       time: [189.65 ns  189.84 ns  190.07 ns]
-enrich_event_cow_canonical_keys   time: [741.69 ns  744.43 ns  748.88 ns]
+single_rule_single_event          time: [1.3463 µs 1.3489 µs 1.3517 µs]
+100_rules_single_event            time: [855.53 ns  856.34 ns  857.20 ns]
+1000_rules_single_event           time: [2.3385 µs  2.3405 µs  2.3428 µs]
+1000_rules_mixed_field_noise      time: [15.916 µs  15.934 µs  15.958 µs]
+100_rules_100_events_batch        time: [93.203 µs  93.298 µs  93.399 µs]
+1000_rules_logsource_mismatch     time: [909.78 ns  912.15 ns  915.89 ns]
+1000_rules_ac_prefilter_zero_match time: [1.7766 µs 1.7881 µs 1.8083 µs]
+100_regex_rules_single_event      time: [35.783 µs  35.877 µs  35.975 µs]
+enrich_event_cow_sigma_keys       time: [192.36 ns  193.29 ns  195.25 ns]
+enrich_event_cow_canonical_keys   time: [732.02 ns  738.83 ns  752.37 ns]
 ```
 
 Derived throughput (single core):
 
 | Scenario | Events/sec |
 |---|---|
-| 1 000 rules, matching event | **449 000** |
-| 1 000 rules, wrong logsource | **1 141 000** |
-| 1 000 rules, right logsource, no AC hit | **574 000** |
-| 100 rules × 100 event batch | **1 123 000** |
+| 1 000 rules, matching event | **427 000** |
+| 1 000 rules, wrong logsource | **1 096 000** |
+| 1 000 rules, right logsource, no AC hit | **559 000** |
+| 100 rules × 100 event batch | **1 072 000** |
+
+These figures include the correctness hardening added in July 2026 (logsource
+string recheck, condition-aware AC gating, spec-conformant wildcard escaping)
+— a 1–7% cost versus the pre-hardening numbers, traded for the elimination of
+several false-negative classes.
 
 Interactive HTML reports are generated by Criterion at
 `target/criterion/report/index.html` after running `cargo bench`.
@@ -302,9 +336,17 @@ evaluated at O(n_identifiers) per event.
 | Existence | `exists` |
 
 Transform modifiers (`base64`, `wide`, `windash`) expand the value set before
-matching. `base64offset` generates all three base64 boundary offset variants.
-`windash` adds both `-` and `/` flag variants for Windows command obfuscation
-detection.
+matching:
+
+- `base64offset` generates all three base64 boundary offset variants and trims
+  the unstable characters from **both** ends, so a value embedded mid-stream
+  in a longer base64 blob is still detected (not just values at the end of
+  the encoded data).
+- `windash` expands to the full Sigma variant set: `-`, `/`, `–` (en dash),
+  `—` (em dash), and `―` (horizontal bar) — catching commands copy-pasted
+  from documents with typographic dashes. Expansion is bidirectional: a rule
+  written with any variant matches all of them.
+- `wide` re-encodes the value as UTF-16LE.
 
 ### Condition forms
 
@@ -334,6 +376,11 @@ condition:
 - **OR** across values within a condition (unless `|all`)
 - **Keyword search** (empty field name) matches against all event values
 - **Wildcards** in values: `*` (any sequence) and `?` (single char)
+- **Escaping** per the Sigma spec: `\*` and `\?` are literal characters,
+  `\\` is a single backslash, and a lone backslash before a normal character
+  passes through unchanged — Windows paths like `\cmd.exe` need no escaping.
+  Escaped literals stay eligible for the Aho-Corasick prefilter (the
+  automaton stores the unescaped bytes).
 
 ---
 
@@ -391,11 +438,11 @@ inside `load_rule` / `load_rules` — never lazily inside `evaluate_event`.
 ```
 cargo test
 
-running 166 tests
+running 183 tests
   0  unit (lib)
  10  corpus_tests   — parse known-good and known-bad YAML fixtures
-  9  property_tests — proptest: invariants proven on thousands of random inputs
-145  sigma_tests    — modifiers, conditions, engine, hardening, concurrency
+ 10  property_tests — proptest: invariants proven on 10,000 random inputs each
+161  sigma_tests    — modifiers, conditions, engine, hardening, concurrency
   2  doc tests
 ```
 
@@ -414,6 +461,9 @@ Selected hardening tests:
 - 1 000 fields in a single event
 - Unicode field names
 - Duplicate rule loads (both loaded, no silent deduplication)
+- Brute-forced FNV-1a logsource hash collision — proven not to misroute events
+- Negated conditions (`not selection`) — proven never skipped by the AC prefilter
+- Invalid `|re` pattern — rejected at load, engine state left untouched
 
 ---
 
@@ -422,7 +472,11 @@ Selected hardening tests:
 - **Zero `unsafe` code** — `#![forbid(unsafe_code)]` enforced at crate level
 - **No C extensions** — pure Rust, no pyo3, no bindgen, no FFI
 - **No panics by design** — malformed YAML returns `ParseError`, invalid
-  conditions return `CompileError`, invalid regex patterns log and continue
+  conditions return `CompileError`, and invalid `|re` patterns return
+  `EngineError::InvalidRegex` at load time (fail loud, never fail silent)
+- **No silent detection loss** — every load failure leaves the engine state
+  untouched; `load_rules` collects per-rule errors so bulk ingestion reports
+  exactly which rules were rejected and why
 - **`#![deny(missing_docs)]`** — all public items documented
 - **Clippy pedantic** — zero warnings at `-W clippy::pedantic`
 
@@ -434,7 +488,7 @@ No optional features. The dependency surface is intentionally minimal:
 
 | Crate | Role |
 |---|---|
-| `serde` + `serde_yaml` | YAML → `SigmaRule` |
+| `serde` + `serde_norway` | YAML → `SigmaRule` (maintained `serde_yaml` successor) |
 | `aho-corasick` | SIMD-accelerated multi-pattern batch scan |
 | `regex` | `\|re` modifier pattern matching |
 

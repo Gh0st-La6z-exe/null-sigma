@@ -192,11 +192,14 @@ fn logsource_ok(rule_hash: u32, event_hash: u32) -> bool {
 
 **Collision analysis:** FNV-32 collision probability between any two distinct strings is
 ~1/2³² ≈ 2.3 × 10⁻¹⁰. The Sigma logsource value space is a few dozen known ASCII
-strings. Collisions are practically impossible. Critically, a hash collision can only
-produce a **false positive in the prefilter** (a rule passes the hot check but proceeds
-to full eval, which uses exact string matching and will correctly not report a match).
-Hash collisions **cannot produce false negatives** — a matching rule will never be
-incorrectly skipped.
+strings, so collisions are practically impossible — but "practically" is not "provably".
+As of the July 2026 hardening pass, the cold path re-checks the **actual logsource
+strings** (`LogSource::matches`) for every rule that passes the hash prefilter, so a
+collision can only cost one wasted string comparison, never a misrouted evaluation.
+The recheck runs only for rules that already passed both prefilters (~1 in 1,000), so
+it adds nothing to the hot loop. Hash collisions **cannot produce false negatives** —
+a matching rule will never be incorrectly skipped, because a colliding hash still
+compares equal and proceeds to the string recheck.
 
 **Hot loop (simplified):**
 
@@ -301,21 +304,32 @@ receive their entry.
 ### Fully-AC-covered safety invariant
 
 `RuleHotData::fully_ac_covered` (and its mirror `CompiledRule::fully_ac_covered`) must
-be `true` ONLY when every field condition in every identifier of the rule is
-AC-eligible. The definition of AC eligibility (`is_ac_eligible()`) explicitly excludes:
-- Wildcard patterns (`*`, `?`)
-- Regex (`|re`)
-- CIDR (`|cidr`)
-- Numeric comparisons (`|gt`, `|gte`, `|lt`, `|lte`)
-- Existence checks (`|exists`)
-- Transform modifiers (`|base64`, `|base64offset`, `|wide`, `|windash`)
+be `true` ONLY when **both** of the following hold:
+
+1. Every field condition in every identifier of the rule is AC-eligible.
+   The definition of AC eligibility (`is_ac_eligible()`) explicitly excludes:
+   - Active wildcard patterns (`*`, `?`) — escaped literals `\*`/`\?` remain eligible
+   - Regex (`|re`)
+   - CIDR (`|cidr`)
+   - Numeric comparisons (`|gt`, `|gte`, `|lt`, `|lte`)
+   - Existence checks (`|exists`)
+   - Transform modifiers (`|base64`, `|base64offset`, `|wide`, `|windash`)
+2. The compiled condition cannot evaluate to `true` when every identifier is
+   false (`conditions_require_ac_hit()`). Negated conditions such as
+   `condition: not selection` can fire precisely when nothing matched — an AC
+   miss for those rules is NOT proof of a non-match, so they must never be
+   prefilter-skipped. (Fixed July 2026 — was a real false-negative bug.)
 
 Transform modifiers are excluded because they change the effective search value at
 match time (e.g., `|windash` on `-enc` also accepts `/enc`). The AC automaton only
 holds the original string, so an AC miss does NOT guarantee the condition fails.
-Violating this invariant would produce **false negatives** — matching rules silently
-skipped. Do not relax `is_ac_eligible()` without re-running the full prefilter test
-module (`ac_prefilter_tests`).
+Note also that AC patterns are registered in **unescaped** form (`\*` → `*`, `\\` → `\`
+via `pattern_literal()`) because the matcher compares unescaped literals — the
+automaton must hold the same bytes.
+
+Violating either invariant would produce **false negatives** — matching rules silently
+skipped. Do not relax `is_ac_eligible()` or `conditions_require_ac_hit()` without
+re-running the full prefilter test module (`ac_prefilter_tests`).
 
 ### FNV-32 hash sentinel values
 
@@ -331,3 +345,37 @@ usage on 64-bit platforms. Cast to `usize` when indexing: `ac_hits[idx as usize]
 The maximum valid index is `ac_patterns.len() - 1`. For a single engine instance,
 `ac_patterns` is bounded by rules × patterns/rule; u32 overflow would require >4 billion
 patterns, which is not a realistic scenario.
+
+---
+
+## 9. Addendum — 2026-07-04 Correctness Hardening
+
+A dedicated correctness pass traded a small amount of throughput for the
+elimination of several false-negative and misrouting classes. Each change was
+regression-gated (full test suite + benchmark comparison) before acceptance;
+see `CHANGELOG.md` for the complete list. Summary:
+
+| Change | Perf cost | Correctness gain |
+|---|---|---|
+| Condition-aware AC gating (`conditions_require_ac_hit`) | none (load-time) | `not selection` rules no longer prefilter-skipped |
+| Logsource string recheck on cold path | none on hot path | hash collision cannot misroute an event |
+| Spec-conformant wildcard escaping (`\*`, `\?`, `\\`) | ~0–3% on wildcard paths | literal `*`/`?` matchable; AC holds unescaped bytes |
+| `\|re` validation at load (`EngineError::InvalidRegex`) | none (load-time) | uncompilable regex fails loud, engine state untouched |
+| `\|windash` full 5-dash variant set | negligible (load-time expansion) | typographic-dash obfuscation covered |
+| `\|base64offset` trailing trim | none | mid-stream embedded values detected |
+
+Post-hardening benchmark medians (Apple M4, release, Criterion):
+
+| Benchmark | §5 final | Post-hardening | Events/sec |
+|---|---|---|---|
+| `single_rule_single_event` | 2.11 µs | 1.35 µs | 741k |
+| `100_rules_single_event` | 1.73 µs | 856 ns | 1,168k |
+| `1000_rules_single_event` | 3.14 µs | **2.34 µs** | **427k** |
+| `1000_rules_mixed_field_noise` | 16.2 µs | 15.9 µs | 63k |
+| `100_rules_100_events_batch` | 181 µs | 93.3 µs | 1,072k |
+
+(The improvements over §5 come from the zero-allocation `enrich_event_cow`
+and regex-cache work that landed between the two measurement dates; the
+hardening itself cost 1–7% relative to its immediate pre-change baseline.)
+
+The 100k events/sec × 1,000 rules target remains exceeded by **4.3×**.
