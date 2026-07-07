@@ -4,11 +4,11 @@
 
 [package]
 name = "null-sigma"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Gh0st-La6z-exe"]
 license = "Apache-2.0"
-description = "High-performance Sigma rule engine — compile detection rules to Aho-Corasick + regex AST, evaluate events at 427K+/sec per core against 1000 rules (Apple M4, release)"
+description = "High-performance Sigma rule engine — Aho-Corasick prefilter + compiled condition AST; ~311k events/sec × 1k synthetic rules or ~1.9k/sec on real SigmaHQ process_creation rules (Apple M4, release)"
 repository = "https://github.com/Gh0st-La6z-exe/null-sigma"
 readme = "README.md"
 keywords = ["sigma", "detection", "siem", "security", "aho-corasick"]
