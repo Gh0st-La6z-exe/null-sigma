@@ -53,10 +53,7 @@ pub fn match_identifier<S: BuildHasher>(
 
 /// Check if a field condition group matches against an event.
 /// ALL conditions in the group must match (AND logic within a group).
-fn match_group_on_view(
-    group: &FieldConditionGroup,
-    view: &mut EventView<'_>,
-) -> bool {
+fn match_group_on_view(group: &FieldConditionGroup, view: &mut EventView<'_>) -> bool {
     group
         .conditions
         .iter()
@@ -121,41 +118,35 @@ pub(crate) fn match_field_condition_on_view(
     let eval_field = |field_value: &str| -> bool {
         let field_lower = field_value.to_lowercase();
         if require_all {
-            transformed_values
-                .iter()
-                .enumerate()
-                .all(|(idx, val)| {
-                    let sigma_folded = if use_precomputed_folds {
-                        condition.values_folded.get(idx).and_then(|v| v.as_deref())
-                    } else {
-                        None
-                    };
-                    value_matches(
-                        val,
-                        sigma_folded,
-                        field_value,
-                        &field_lower,
-                        &condition.modifiers,
-                    )
-                })
+            transformed_values.iter().enumerate().all(|(idx, val)| {
+                let sigma_folded = if use_precomputed_folds {
+                    condition.values_folded.get(idx).and_then(|v| v.as_deref())
+                } else {
+                    None
+                };
+                value_matches(
+                    val,
+                    sigma_folded,
+                    field_value,
+                    &field_lower,
+                    &condition.modifiers,
+                )
+            })
         } else {
-            transformed_values
-                .iter()
-                .enumerate()
-                .any(|(idx, val)| {
-                    let sigma_folded = if use_precomputed_folds {
-                        condition.values_folded.get(idx).and_then(|v| v.as_deref())
-                    } else {
-                        None
-                    };
-                    value_matches(
-                        val,
-                        sigma_folded,
-                        field_value,
-                        &field_lower,
-                        &condition.modifiers,
-                    )
-                })
+            transformed_values.iter().enumerate().any(|(idx, val)| {
+                let sigma_folded = if use_precomputed_folds {
+                    condition.values_folded.get(idx).and_then(|v| v.as_deref())
+                } else {
+                    None
+                };
+                value_matches(
+                    val,
+                    sigma_folded,
+                    field_value,
+                    &field_lower,
+                    &condition.modifiers,
+                )
+            })
         }
     };
 
@@ -1006,7 +997,7 @@ fn match_field_condition_with_cache_on_view<S2: BuildHasher>(
     false
 }
 
-fn condition_field_folded<'a>(condition: &'a FieldCondition) -> Cow<'a, str> {
+fn condition_field_folded(condition: &FieldCondition) -> Cow<'_, str> {
     if condition.field_folded.is_empty() {
         Cow::Owned(fold_key(&condition.field))
     } else {

@@ -373,64 +373,7 @@ impl SigmaEngine {
         };
 
         // ── Per-identifier AC gating ────────────────────────────────────
-        // An identifier is "AC-gated" when EVERY one of its OR-groups
-        // contains at least one AC-eligible condition whose values all
-        // produce non-empty literals. If such an identifier is true, some
-        // group is fully true, so its eligible condition matched, so one of
-        // its literals occurs in some event value — i.e. the AC scan MUST
-        // report a hit. Contrapositive: zero hits across the rule's gated
-        // patterns proves every gated identifier false.
-        //
-        // (The old all-or-nothing rule — every condition of every
-        // identifier AC-eligible — disabled the prefilter for nearly the
-        // whole SigmaHQ corpus: one wildcard or regex anywhere in a filter
-        // identifier forced the rule onto the cold path. Found by the
-        // head-to-head harness, 2026-07.)
-        let mut ac_indices: Vec<usize> = Vec::new();
-        let mut gated_flags: Vec<bool> = Vec::with_capacity(identifiers.len());
-        for identifier in &identifiers {
-            let mut identifier_gated = !identifier.groups.is_empty();
-            let mut ident_patterns: Vec<usize> = Vec::new();
-            for group in &identifier.groups {
-                let mut group_has_eligible = false;
-                for cond in &group.conditions {
-                    if !is_ac_eligible(cond) {
-                        continue;
-                    }
-                    // Register the UNESCAPED literals (`\\` → `\`, `\*` →
-                    // `*`): the matcher compares unescaped forms, so the
-                    // automaton must hold the same bytes.
-                    let mut literals: Vec<String> = Vec::with_capacity(cond.values.len());
-                    for val in &cond.values {
-                        let s = val.as_str_lossy();
-                        let literal = crate::matcher::pattern_literal(&s)
-                            .expect("is_ac_eligible guarantees no active wildcards");
-                        let s_lower = literal.to_lowercase();
-                        if !s_lower.is_empty() {
-                            literals.push(s_lower);
-                        }
-                    }
-                    // Gating demands every value yield a non-empty literal:
-                    // a multi-value OR containing an empty literal can be
-                    // true with zero automaton hits.
-                    if !literals.is_empty() && literals.len() == cond.values.len() {
-                        group_has_eligible = true;
-                        for lit in literals {
-                            ident_patterns.push(self.intern_ac_pattern(lit));
-                        }
-                    }
-                }
-                if !group_has_eligible {
-                    identifier_gated = false;
-                }
-            }
-            if identifier_gated {
-                ac_indices.extend(ident_patterns);
-            }
-            gated_flags.push(identifier_gated);
-        }
-        ac_indices.sort_unstable();
-        ac_indices.dedup();
+        let (ac_indices, gated_flags) = self.compile_ac_gating(&identifiers);
 
         // The rule is prefilter-safe when the condition cannot fire while
         // every gated identifier is false (checked over all assignments of
@@ -492,6 +435,63 @@ impl SigmaEngine {
         Ok(())
     }
 
+    /// Build per-identifier AC gating state for a rule being compiled.
+    ///
+    /// An identifier is "AC-gated" when every one of its OR-groups contains at
+    /// least one AC-eligible condition whose values all produce non-empty
+    /// literals. If such an identifier is true, some group is fully true, so
+    /// its eligible condition matched, so one of its literals occurs in some
+    /// event value — i.e. the AC scan must report a hit. Contrapositive: zero
+    /// hits across the rule's gated patterns proves every gated identifier false.
+    fn compile_ac_gating(&mut self, identifiers: &[SearchIdentifier]) -> (Vec<usize>, Vec<bool>) {
+        let mut ac_indices: Vec<usize> = Vec::new();
+        let mut gated_flags: Vec<bool> = Vec::with_capacity(identifiers.len());
+        for identifier in identifiers {
+            let mut identifier_gated = !identifier.groups.is_empty();
+            let mut ident_patterns: Vec<usize> = Vec::new();
+            for group in &identifier.groups {
+                let mut group_has_eligible = false;
+                for cond in &group.conditions {
+                    if !is_ac_eligible(cond) {
+                        continue;
+                    }
+                    // Register the UNESCAPED literals (`\\` → `\`, `\*` →
+                    // `*`): the matcher compares unescaped forms, so the
+                    // automaton must hold the same bytes.
+                    let mut literals: Vec<String> = Vec::with_capacity(cond.values.len());
+                    for val in &cond.values {
+                        let s = val.as_str_lossy();
+                        let literal = crate::matcher::pattern_literal(&s)
+                            .expect("is_ac_eligible guarantees no active wildcards");
+                        let s_lower = literal.to_lowercase();
+                        if !s_lower.is_empty() {
+                            literals.push(s_lower);
+                        }
+                    }
+                    // Gating demands every value yield a non-empty literal:
+                    // a multi-value OR containing an empty literal can be
+                    // true with zero automaton hits.
+                    if !literals.is_empty() && literals.len() == cond.values.len() {
+                        group_has_eligible = true;
+                        for lit in literals {
+                            ident_patterns.push(self.intern_ac_pattern(lit));
+                        }
+                    }
+                }
+                if !group_has_eligible {
+                    identifier_gated = false;
+                }
+            }
+            if identifier_gated {
+                ac_indices.extend(ident_patterns);
+            }
+            gated_flags.push(identifier_gated);
+        }
+        ac_indices.sort_unstable();
+        ac_indices.dedup();
+        (ac_indices, gated_flags)
+    }
+
     /// Intern an AC pattern: rules sharing a literal share one pattern slot
     /// (and one hit bit). Duplicate slots would break the prefilter — the
     /// scan reports one pattern id per occurrence.
@@ -534,6 +534,7 @@ impl SigmaEngine {
     ///
     /// Same semantics as [`Self::evaluate_event`], but skips result metadata
     /// allocation — use for throughput-sensitive paths that only need a hit count.
+    #[must_use = "returns the number of matching rules — discarding it silently suppresses detection counts"]
     pub fn evaluate_event_count(&self, event: &HashMap<String, String>) -> usize {
         self.evaluate_event_inner(event, false, &mut |_, _, _| {})
     }
@@ -554,22 +555,26 @@ impl SigmaEngine {
     #[must_use = "returns all threat detections — discarding them silently suppresses security alerts"]
     pub fn evaluate_event(&self, event: &HashMap<String, String>) -> Vec<RuleMatch> {
         let mut matches = Vec::new();
-        self.evaluate_event_inner(event, true, &mut |compiled, id_results, matched_conditions| {
-            let matched_identifiers: Vec<String> = id_results
-                .iter()
-                .filter_map(|(name, &matched)| if matched { Some(name.clone()) } else { None })
-                .collect();
+        self.evaluate_event_inner(
+            event,
+            true,
+            &mut |compiled, id_results, matched_conditions| {
+                let matched_identifiers: Vec<String> = id_results
+                    .iter()
+                    .filter_map(|(name, &matched)| if matched { Some(name.clone()) } else { None })
+                    .collect();
 
-            matches.push(RuleMatch {
-                rule_id: compiled.rule.id.clone(),
-                rule_title: compiled.rule.title.clone(),
-                rule_level: compiled.rule.level,
-                matched_conditions: matched_conditions.to_vec(),
-                matched_identifiers,
-                tags: compiled.rule.tags.clone(),
-                score: compiled.rule.level.to_score(),
-            });
-        });
+                matches.push(RuleMatch {
+                    rule_id: compiled.rule.id.clone(),
+                    rule_title: compiled.rule.title.clone(),
+                    rule_level: compiled.rule.level,
+                    matched_conditions: matched_conditions.to_vec(),
+                    matched_identifiers,
+                    tags: compiled.rule.tags.clone(),
+                    score: compiled.rule.level.to_score(),
+                });
+            },
+        );
         matches
     }
 

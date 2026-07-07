@@ -493,6 +493,7 @@ detection:
     );
     assert_eq!(engine.evaluate_json_count(event).unwrap(), 1);
 
-    let benign = r#"{"category":"process_creation","product":"windows","Image":"C:\\Windows\\notepad.exe"}"#;
+    let benign =
+        r#"{"category":"process_creation","product":"windows","Image":"C:\\Windows\\notepad.exe"}"#;
     assert_eq!(engine.evaluate_json_count(benign).unwrap(), 0);
 }
