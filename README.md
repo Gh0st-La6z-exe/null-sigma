@@ -1,4 +1,5 @@
 # null-sigma
+<img width="736" height="1000" alt="Gemini_Generated_Image_" src="https://github.com/user-attachments/assets/15821532-452d-4e03-b951-79c8bbf306c5" />
 
 [![CI](https://github.com/Gh0st-La6z-exe/null-sigma/actions/workflows/ci.yml/badge.svg)](https://github.com/Gh0st-La6z-exe/null-sigma/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/null-sigma.svg)](https://crates.io/crates/null-sigma)
