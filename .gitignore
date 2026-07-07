@@ -10,3 +10,4 @@ Cargo.lock
 /harness/bin/
 /harness/data/
 /harness/Cargo.lock
+/harness/prof/

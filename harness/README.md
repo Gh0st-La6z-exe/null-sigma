@@ -78,6 +78,23 @@ null-sigma also benchmarks `null_sigma_full` with all 1 182 rules it loads.
 
 Interactive HTML: `harness/target/criterion/report/index.html`
 
+## Profiling gate (local only, before Phase 2)
+
+Tier A `prof_benign` — same workload as `single_benign_event`. Output under
+`harness/prof/` (gitignored).
+
+```bash
+cargo install samply   # once
+cd harness && ./scripts/prof_benign.sh
+```
+
+Produces:
+- `prof/samply_*.json.gz` — open with `samply load …` (Firefox Profiler)
+- `prof/sample_*.txt` — run `sample $BPID` during the 100k loop for symbolicated stacks (see script output)
+- `prof/summary_*.txt` — fill after review (template: `scripts/prof_NOTES.template.md`)
+
+Do not commit `harness/prof/` artifacts.
+
 ## Tier B — CLI end-to-end (hyperfine)
 
 ```bash
@@ -118,6 +135,7 @@ silently matches nothing on JSONL and looks artificially fast.
 | `cross_check` | Correctness gate — run before publishing numbers |
 | `null_sigma_run` | Tier B reference CLI (`rule_dir events.jsonl`) |
 | `gen_dataset` | Deterministic JSONL event generator |
+| `prof_benign` | Tier A profiling target (`--profile prof`) |
 
 ## Layout
 
@@ -131,8 +149,12 @@ harness/
 ├── src/bin/
 │   ├── cross_check.rs
 │   ├── null_sigma_run.rs
-│   └── gen_dataset.rs
-├── scripts/run_cli_bench.sh   # Tier B
+│   ├── gen_dataset.rs
+│   └── prof_benign.rs         # Profiling gate (local)
+├── scripts/
+│   ├── run_cli_bench.sh       # Tier B
+│   └── prof_benign.sh         # samply profiling (local output → prof/)
+├── prof/                      # gitignored — profiles + summary notes
 ├── config/chainsaw-json-mapping.yml
 └── data/tier_b_results.md     # Latest Tier B output
 ```

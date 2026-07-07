@@ -41,8 +41,18 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "head_to_head"
 harness = false
 
+[[bin]]
+name = "prof_benign"
+path = "src/bin/prof_benign.rs"
+
 [profile.release]
 debug = false
+
+# Profiling profile: release optimizations + debug symbols for samply/flamegraph.
+[profile.prof]
+inherits = "release"
+debug = true
+strip = false
 
 [profile.bench]
 debug = false
