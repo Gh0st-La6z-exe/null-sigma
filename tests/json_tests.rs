@@ -468,3 +468,31 @@ detection:
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn evaluate_json_count_matches_evaluate_json_len() {
+    let yaml = r#"
+title: Count Parity
+id: count-parity-001
+status: test
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    sel:
+        Image|endswith: '\mimikatz.exe'
+    condition: sel
+"#;
+    let mut engine = SigmaEngine::new();
+    engine.load_rule(yaml).unwrap();
+
+    let event = r#"{"category":"process_creation","product":"windows","Image":"C:\\Users\\Public\\mimikatz.exe"}"#;
+    assert_eq!(
+        engine.evaluate_json_count(event).unwrap(),
+        engine.evaluate_json(event).unwrap().len()
+    );
+    assert_eq!(engine.evaluate_json_count(event).unwrap(), 1);
+
+    let benign = r#"{"category":"process_creation","product":"windows","Image":"C:\\Windows\\notepad.exe"}"#;
+    assert_eq!(engine.evaluate_json_count(benign).unwrap(), 0);
+}

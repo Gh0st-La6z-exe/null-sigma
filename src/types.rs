@@ -278,10 +278,18 @@ pub struct FieldConditionGroup {
 pub struct FieldCondition {
     /// The field name to check (e.g., "`CommandLine`", "Image").
     pub field: String,
+    /// Lowercased field name for case-insensitive lookup.
+    /// Filled at parse/load time as an internal optimization.
+    pub field_folded: String,
 
     /// Value(s) to match against. Multiple values are OR'd by default,
     /// unless the `all` modifier is set.
     pub values: Vec<SigmaValue>,
+
+    /// Lowercased string values parallel to `values`, used by the matcher hot
+    /// path to avoid repeated folding. Non-string values and values matched via
+    /// regex/CIDR/numeric paths use `None`.
+    pub values_folded: Vec<Option<String>>,
 
     /// Modifiers applied to this field check.
     pub modifiers: Vec<ValueModifier>,

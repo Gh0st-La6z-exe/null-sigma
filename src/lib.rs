@@ -2,8 +2,10 @@
 //!
 //! Parse Sigma rules from YAML once, compile them into an optimised internal
 //! representation, then evaluate streams of security events against the full
-//! rule set at **427 000+ events/second × 1 000 rules on a single core**
-//! (Apple M4, release, Criterion-measured).
+//! rule set at **311 000+ events/second × 1 000 synthetic rules on a single core**
+//! (Apple M4, release, microbenchmark suite). Against real SigmaHQ
+//! `process_creation` rules: **~1 850 events/second** (see `harness/` and
+//! `PERFORMANCE.md` §11).
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 //!
@@ -47,11 +49,13 @@
 /// Condition expression compiler: Sigma condition strings → boolean AST
 /// ([`condition::ConditionNode`]).
 pub mod condition;
+mod event_view;
 /// Multi-rule evaluation engine with Aho-Corasick batch prefilter and
 /// cache-friendly hot/cold struct split.
 pub mod engine;
 /// Sigma field-name translation and enrichment.
 pub mod fieldmap;
+mod fold;
 /// Nested JSON telemetry ingestion — flattens ECS/Sysmon/CloudTrail-style
 /// events into the engine's flat format (requires the `json` feature).
 #[cfg(feature = "json")]

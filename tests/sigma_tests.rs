@@ -613,10 +613,12 @@ detection:
         fn make_condition(field: &str, values: &[&str], mods: &[ValueModifier]) -> FieldCondition {
             FieldCondition {
                 field: field.to_string(),
+                field_folded: field.to_lowercase(),
                 values: values
                     .iter()
                     .map(|v| SigmaValue::String(v.to_string()))
                     .collect(),
+                values_folded: values.iter().map(|v| Some(v.to_lowercase())).collect(),
                 modifiers: mods.to_vec(),
             }
         }
@@ -1102,7 +1104,9 @@ detection:
             let event = make_event(&[("score", "85")]);
             let cond = FieldCondition {
                 field: "score".to_string(),
+                field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(80)],
+                values_folded: vec![Some("80".to_string())],
                 modifiers: vec![ValueModifier::Gt],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1113,7 +1117,9 @@ detection:
             let event = make_event(&[("score", "80")]);
             let cond = FieldCondition {
                 field: "score".to_string(),
+                field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(80)],
+                values_folded: vec![Some("80".to_string())],
                 modifiers: vec![ValueModifier::Gt],
             };
             assert!(!match_field_condition(&cond, &event));
@@ -1124,7 +1130,9 @@ detection:
             let event = make_event(&[("score", "80")]);
             let cond = FieldCondition {
                 field: "score".to_string(),
+                field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(80)],
+                values_folded: vec![Some("80".to_string())],
                 modifiers: vec![ValueModifier::Gte],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1135,7 +1143,9 @@ detection:
             let event = make_event(&[("score", "5")]);
             let cond = FieldCondition {
                 field: "score".to_string(),
+                field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(10)],
+                values_folded: vec![Some("10".to_string())],
                 modifiers: vec![ValueModifier::Lt],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1146,7 +1156,9 @@ detection:
             let event = make_event(&[("score", "10")]);
             let cond = FieldCondition {
                 field: "score".to_string(),
+                field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(10)],
+                values_folded: vec![Some("10".to_string())],
                 modifiers: vec![ValueModifier::Lte],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1157,7 +1169,9 @@ detection:
             let event = make_event(&[("score", "not_a_number")]);
             let cond = FieldCondition {
                 field: "score".to_string(),
+                field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(10)],
+                values_folded: vec![Some("10".to_string())],
                 modifiers: vec![ValueModifier::Gt],
             };
             assert!(!match_field_condition(&cond, &event));
@@ -1170,7 +1184,9 @@ detection:
             let event = make_event(&[("cmd", "something")]);
             let cond = FieldCondition {
                 field: "cmd".to_string(),
+                field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::Boolean(true)],
+                values_folded: vec![Some("true".to_string())],
                 modifiers: vec![ValueModifier::Exists],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1181,7 +1197,9 @@ detection:
             let event = make_event(&[("other", "something")]);
             let cond = FieldCondition {
                 field: "cmd".to_string(),
+                field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::Boolean(true)],
+                values_folded: vec![Some("true".to_string())],
                 modifiers: vec![ValueModifier::Exists],
             };
             assert!(!match_field_condition(&cond, &event));
@@ -1192,7 +1210,9 @@ detection:
             let event = make_event(&[("other", "something")]);
             let cond = FieldCondition {
                 field: "cmd".to_string(),
+                field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::Boolean(false)],
+                values_folded: vec![Some("false".to_string())],
                 modifiers: vec![ValueModifier::Exists],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1238,7 +1258,9 @@ detection:
             let event = make_event(&[("field", "")]);
             let cond = FieldCondition {
                 field: "field".to_string(),
+                field_folded: "field".to_string(),
                 values: vec![SigmaValue::Null],
+                values_folded: vec![Some(String::new())],
                 modifiers: vec![],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1249,7 +1271,9 @@ detection:
             let event = make_event(&[("field", "something")]);
             let cond = FieldCondition {
                 field: "field".to_string(),
+                field_folded: "field".to_string(),
                 values: vec![SigmaValue::Null],
+                values_folded: vec![Some(String::new())],
                 modifiers: vec![],
             };
             assert!(!match_field_condition(&cond, &event));
@@ -1796,7 +1820,9 @@ detection:
                 [("f".to_string(), text.to_string())].into_iter().collect();
             let cond = FieldCondition {
                 field: "f".to_string(),
+                field_folded: "f".to_string(),
                 values: vec![SigmaValue::String(pattern.to_string())],
+                values_folded: vec![Some(pattern.to_lowercase())],
                 modifiers: vec![],
             };
             match_field_condition(&cond, &event)
@@ -2135,6 +2161,134 @@ detection:
             assert_eq!(engine.evaluate_event(&event2).len(), 1);
         }
 
+        /// Two rules sharing an identical AC literal must BOTH receive the
+        /// hit. Before pattern deduplication, duplicate patterns produced
+        /// distinct pattern ids, and the AC scan only ever reported one of
+        /// them — the later rule's hit bit stayed false and the rule was
+        /// prefilter-skipped (false negative found by the head-to-head
+        /// correctness cross-check, 2026-07).
+        #[test]
+        fn ac_prefilter_duplicate_literal_across_rules() {
+            let rule_a = r"
+title: Rule A
+level: medium
+logsource: {}
+detection:
+    selection:
+        CommandLine|contains|all:
+            - 'shell32.dll'
+            - 'Control_RunDLL'
+        CommandLine|contains: '\AppData\'
+    condition: selection
+";
+            let rule_b = r"
+title: Rule B
+level: medium
+logsource: {}
+detection:
+    selection:
+        CommandLine|contains|all:
+            - 'shell32.dll'
+            - 'Control_RunDLL'
+    condition: selection
+";
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(rule_a).unwrap();
+            engine.load_rule(rule_b).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert(
+                "command_line".to_string(),
+                "rundll32.exe Shell32.dll,Control_RunDLL desk.cpl".to_string(),
+            );
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(
+                matches.len(),
+                1,
+                "Rule B must match even though Rule A registered the same literals first"
+            );
+            assert_eq!(matches[0].rule_title, "Rule B");
+        }
+
+        /// The AC scan must report overlapping matches. `find_iter` reports
+        /// non-overlapping matches only: after `shell32.dll` matches, a
+        /// pattern like `.dll,` overlapping that span is skipped, its hit
+        /// bit stays false, and any fully-AC-covered rule that needs it is
+        /// silently dropped (false negative found by the head-to-head
+        /// correctness cross-check, 2026-07).
+        #[test]
+        fn ac_prefilter_overlapping_patterns_all_reported() {
+            // Rule A registers `shell32.dll` (matches at 13..24).
+            let rule_a = r"
+title: Overlap A
+level: medium
+logsource: {}
+detection:
+    selection:
+        CommandLine|contains: 'shell32.dll'
+    condition: selection
+";
+            // Rule B registers `.dll,` which overlaps A's span (20..25).
+            let rule_b = r"
+title: Overlap B
+level: medium
+logsource: {}
+detection:
+    selection:
+        CommandLine|contains: '.dll,'
+    condition: selection
+";
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(rule_a).unwrap();
+            engine.load_rule(rule_b).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert(
+                "command_line".to_string(),
+                "rundll32.exe Shell32.dll,Control_RunDLL desk.cpl".to_string(),
+            );
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(
+                matches.len(),
+                2,
+                "both rules must match: overlapping AC occurrences must all be reported"
+            );
+        }
+
+        /// Nested-prefix patterns: `pattern_5` is a prefix of `pattern_500`.
+        /// Standard AC semantics report the earliest-ending occurrence
+        /// (`pattern_5`) and resume after it — the longer patterns sharing
+        /// the same start must still receive their hit bits.
+        #[test]
+        fn ac_prefilter_nested_prefix_patterns_all_hit() {
+            let mut engine = SigmaEngine::new();
+            for i in [5, 50, 500] {
+                let rule = format!(
+                    r"
+title: Rule {i}
+level: medium
+logsource: {{}}
+detection:
+    selection:
+        CommandLine|contains: 'pattern_{i}'
+    condition: selection
+"
+                );
+                engine.load_rule(&rule).unwrap();
+            }
+            let mut event = HashMap::new();
+            event.insert(
+                "command_line".to_string(),
+                "cmd.exe /c pattern_500 something".to_string(),
+            );
+            // pattern_5, pattern_50, pattern_500 are ALL substrings.
+            assert_eq!(
+                engine.evaluate_event(&event).len(),
+                3,
+                "nested prefix patterns must all match"
+            );
+        }
+
         /// `not selection` is true exactly when `selection` is false. A no-hit
         /// AC scan must therefore fall through to full condition evaluation
         /// instead of skipping the rule.
@@ -2227,10 +2381,12 @@ detection:
         fn make_condition(field: &str, values: &[&str], mods: &[ValueModifier]) -> FieldCondition {
             FieldCondition {
                 field: field.to_string(),
+                field_folded: field.to_lowercase(),
                 values: values
                     .iter()
                     .map(|v| SigmaValue::String(v.to_string()))
                     .collect(),
+                values_folded: values.iter().map(|v| Some(v.to_lowercase())).collect(),
                 modifiers: mods.to_vec(),
             }
         }
@@ -2332,7 +2488,9 @@ detection:
 
             let cond = FieldCondition {
                 field: "cmd".to_string(),
+                field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::String("-enc".to_string())],
+                values_folded: vec![Some("-enc".to_string())],
                 modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
             };
 
@@ -2357,7 +2515,9 @@ detection:
         fn windash_unicode_dash_variants() {
             let cond = FieldCondition {
                 field: "cmd".to_string(),
+                field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::String("-enc".to_string())],
+                values_folded: vec![Some("-enc".to_string())],
                 modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
             };
 
@@ -2380,7 +2540,9 @@ detection:
         fn windash_unicode_pattern_matches_ascii_event() {
             let cond = FieldCondition {
                 field: "cmd".to_string(),
+                field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::String("\u{2013}enc".to_string())],
+                values_folded: vec![Some("\u{2013}enc".to_lowercase())],
                 modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
             };
             let event_dash = make_event("cmd", "powershell -enc SQBFAFg=");
@@ -2607,7 +2769,9 @@ detection:
         fn cidr_cond(cidr: &str) -> FieldCondition {
             FieldCondition {
                 field: "ip".to_string(),
+                field_folded: "ip".to_string(),
                 values: vec![SigmaValue::String(cidr.to_string())],
+                values_folded: vec![Some(cidr.to_lowercase())],
                 modifiers: vec![ValueModifier::Cidr],
             }
         }

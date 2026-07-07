@@ -1,0 +1,48 @@
+# =============================================================================
+# null-sigma-harness — Head-to-head benchmark harness (Roadmap item 3)
+#
+# Standalone crate: NOT a member of the null-sigma build. The core crate keeps
+# its three dependencies; competitor engines are dependencies of this harness
+# only. Never published.
+# =============================================================================
+
+[package]
+name = "null-sigma-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Measures null-sigma against tau-engine (Chainsaw's matcher) and sigma-rust on identical rules and events"
+
+# Standalone workspace root — keeps this crate out of any parent workspace.
+[workspace]
+
+[dependencies]
+null-sigma = { path = "..", features = ["json"] }
+# Chainsaw's document-tagging/matching core (MIT). Same feature set Chainsaw
+# itself enables: `core` exposes the optimiser passes Chainsaw applies after
+# converting Sigma rules, `json` lets it solve on serde_json::Value.
+tau-engine = { version = "1.15", features = ["core", "json", "sync"] }
+# Direct Sigma-evaluation library peer (MIT OR Apache-2.0).
+sigma-rust = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Same YAML stack as the core crate — used to build converted tau rules.
+serde_norway = "0.9"
+# Needed by the ported Chainsaw converter for |base64 / |base64offset.
+base64 = "0.22"
+# For the profile_eval diagnostic (isolated AC scan timing).
+aho-corasick = "1.1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "head_to_head"
+harness = false
+
+[profile.release]
+debug = false
+
+[profile.bench]
+debug = false

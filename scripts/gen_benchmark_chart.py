@@ -15,17 +15,17 @@ Right panel: single-core throughput by scenario.
 import math
 import os
 
-# ── Data (Criterion medians, Apple M4, release, 2026-07-04) ─────────────────
+# ── Data (Criterion medians, Apple M4, release, 2026-07-07) ─────────────────
 
 # (rule count, per-event latency in µs) — *_rules_single_event benchmarks
-SCALING = [(1, 1.3489), (100, 0.85634), (1000, 2.3405)]
+SCALING = [(1, 1.3916), (100, 1.4588), (1000, 3.2211)]
 
 # (label, events/sec) — derived throughput, single core
 THROUGHPUT = [
-    ("1000 rules · wrong logsource", 1_096_000),
-    ("100 rules · 100-event batch", 1_072_000),
-    ("1000 rules · no AC hit", 559_000),
-    ("1000 rules · matching event", 427_000),
+    ("1000 rules · wrong logsource", 835_000),
+    ("100 rules · 100-event batch", 680_000),
+    ("1000 rules · no AC hit", 508_000),
+    ("1000 rules · matching event", 311_000),
 ]
 
 # ── Style ────────────────────────────────────────────────────────────────────

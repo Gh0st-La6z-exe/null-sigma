@@ -20,10 +20,13 @@
 //   - CIDR matching uses our existing ioc_matcher crate (via direct implementation)
 // =============================================================================
 
+use crate::event_view::EventView;
+use crate::fold::fold_key;
 use crate::types::{
     FieldCondition, FieldConditionGroup, SearchIdentifier, SigmaValue, ValueModifier,
 };
 use regex::Regex;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::net::IpAddr;
@@ -44,23 +47,20 @@ pub fn match_identifier<S: BuildHasher>(
     identifier: &SearchIdentifier,
     event: &HashMap<String, String, S>,
 ) -> bool {
-    // OR across groups — any group matching means the identifier matches
-    identifier
-        .groups
-        .iter()
-        .any(|group| match_group(group, event))
+    let mut view = EventView::from_map(event);
+    match_identifier_on_view(identifier, &mut view)
 }
 
 /// Check if a field condition group matches against an event.
 /// ALL conditions in the group must match (AND logic within a group).
-fn match_group<S: BuildHasher>(
+fn match_group_on_view(
     group: &FieldConditionGroup,
-    event: &HashMap<String, String, S>,
+    view: &mut EventView<'_>,
 ) -> bool {
     group
         .conditions
         .iter()
-        .all(|cond| match_field_condition(cond, event))
+        .all(|cond| match_field_condition_on_view(cond, view))
 }
 
 /// Check if a single field condition matches against an event.
@@ -74,64 +74,109 @@ pub fn match_field_condition<S: BuildHasher>(
     condition: &FieldCondition,
     event: &HashMap<String, String, S>,
 ) -> bool {
+    let mut view = EventView::from_map(event);
+    match_field_condition_on_view(condition, &mut view)
+}
+
+/// Internal fast path that evaluates an identifier against a pre-built
+/// case-insensitive event view.
+#[must_use]
+pub(crate) fn match_identifier_on_view(
+    identifier: &SearchIdentifier,
+    view: &mut EventView<'_>,
+) -> bool {
+    identifier
+        .groups
+        .iter()
+        .any(|group| match_group_on_view(group, view))
+}
+
+/// Internal fast path that evaluates one field condition against a pre-built
+/// case-insensitive event view.
+#[must_use]
+pub(crate) fn match_field_condition_on_view(
+    condition: &FieldCondition,
+    view: &mut EventView<'_>,
+) -> bool {
+    let field_folded = condition_field_folded(condition);
     // Special case: `exists` modifier checks field presence
     if condition.modifiers.contains(&ValueModifier::Exists) {
-        return handle_exists(condition, event);
+        return handle_exists_on_view(condition, &field_folded, view);
     }
 
     // Special case: `fieldref` compares against another event field's value
     if condition.modifiers.contains(&ValueModifier::FieldRef) {
-        return handle_fieldref(condition, event);
-    }
-
-    // Determine which event fields to check
-    let target_fields: Vec<(&str, &str)> = if condition.field.is_empty() {
-        // Empty field = keyword search — check ALL event values
-        event
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect()
-    } else {
-        // Specific field — look it up (case-insensitive key match)
-        let field_lower = condition.field.to_lowercase();
-        event
-            .iter()
-            .filter(|(k, _)| k.to_lowercase() == field_lower)
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect()
-    };
-
-    // If no matching fields found and this isn't a negation context,
-    // the condition doesn't match
-    if target_fields.is_empty() {
-        return false;
+        return handle_fieldref_on_view(condition, view);
     }
 
     // Pre-process values through transform modifiers (base64, wide, windash)
     let transformed_values = apply_transforms(&condition.values, &condition.modifiers);
+    let use_precomputed_folds = !condition.modifiers.iter().any(ValueModifier::is_transform)
+        && transformed_values.len() == condition.values_folded.len();
 
     // Determine if "all" modifier is present (changes OR to AND for values)
     let require_all = condition.modifiers.contains(&ValueModifier::All);
 
-    // Check each target field
-    for (_field_name, field_value) in &target_fields {
+    let mut matched_any_field = false;
+    let eval_field = |field_value: &str| -> bool {
+        let field_lower = field_value.to_lowercase();
         if require_all {
-            // ALL values must match this field
-            let all_match = transformed_values
+            transformed_values
                 .iter()
-                .all(|val| value_matches(val, field_value, &condition.modifiers));
-            if all_match {
-                return true;
-            }
+                .enumerate()
+                .all(|(idx, val)| {
+                    let sigma_folded = if use_precomputed_folds {
+                        condition.values_folded.get(idx).and_then(|v| v.as_deref())
+                    } else {
+                        None
+                    };
+                    value_matches(
+                        val,
+                        sigma_folded,
+                        field_value,
+                        &field_lower,
+                        &condition.modifiers,
+                    )
+                })
         } else {
-            // ANY value matching this field is enough
-            let any_match = transformed_values
+            transformed_values
                 .iter()
-                .any(|val| value_matches(val, field_value, &condition.modifiers));
-            if any_match {
+                .enumerate()
+                .any(|(idx, val)| {
+                    let sigma_folded = if use_precomputed_folds {
+                        condition.values_folded.get(idx).and_then(|v| v.as_deref())
+                    } else {
+                        None
+                    };
+                    value_matches(
+                        val,
+                        sigma_folded,
+                        field_value,
+                        &field_lower,
+                        &condition.modifiers,
+                    )
+                })
+        }
+    };
+
+    if condition.field.is_empty() {
+        for (_, field_value) in view.values_all() {
+            matched_any_field = true;
+            if eval_field(field_value) {
                 return true;
             }
         }
+    } else {
+        for (_, field_value) in view.values_for_field(&field_folded) {
+            matched_any_field = true;
+            if eval_field(field_value) {
+                return true;
+            }
+        }
+    }
+
+    if !matched_any_field {
+        return false;
     }
 
     false
@@ -141,12 +186,22 @@ pub fn match_field_condition<S: BuildHasher>(
 // Exists modifier
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn handle_exists<S: BuildHasher>(
     condition: &FieldCondition,
     event: &HashMap<String, String, S>,
 ) -> bool {
-    let field_lower = condition.field.to_lowercase();
-    let field_present = event.keys().any(|k| k.to_lowercase() == field_lower);
+    let mut view = EventView::from_map(event);
+    let field_folded = condition_field_folded(condition);
+    handle_exists_on_view(condition, &field_folded, &mut view)
+}
+
+fn handle_exists_on_view(
+    condition: &FieldCondition,
+    field_folded: &str,
+    view: &mut EventView<'_>,
+) -> bool {
+    let field_present = view.has_field_folded(field_folded);
 
     // The `exists` modifier checks: does the field exist?
     // The value in the condition determines the expected state:
@@ -179,21 +234,24 @@ fn handle_exists<S: BuildHasher>(
 ///
 /// Missing fields never match: if either the subject field or the referenced
 /// field is absent from the event, the condition is false.
+#[allow(dead_code)]
 fn handle_fieldref<S: BuildHasher>(
     condition: &FieldCondition,
     event: &HashMap<String, String, S>,
 ) -> bool {
+    let mut view = EventView::from_map(event);
+    handle_fieldref_on_view(condition, &mut view)
+}
+
+fn handle_fieldref_on_view(condition: &FieldCondition, view: &mut EventView<'_>) -> bool {
     // Case-insensitive lookup of a field's value, matching the engine's
     // field-name semantics elsewhere.
     let lookup = |name: &str| -> Option<&str> {
-        let name_lower = name.to_lowercase();
-        event
-            .iter()
-            .find(|(k, _)| k.to_lowercase() == name_lower)
-            .map(|(_, v)| v.as_str())
+        let name_lower = fold_key(name);
+        view.first_value_for_folded_field(&name_lower)
     };
 
-    let Some(subject) = lookup(&condition.field) else {
+    let Some(subject) = lookup(condition_field_folded(condition).as_ref()) else {
         return false;
     };
 
@@ -409,7 +467,13 @@ fn base64_encode(input: &str) -> String {
 /// - `regex` → regex pattern match
 /// - `cidr` → CIDR network range match for IP addresses
 /// - `gt`/`gte`/`lt`/`lte` → numeric comparison
-fn value_matches(sigma_value: &SigmaValue, field_value: &str, modifiers: &[ValueModifier]) -> bool {
+fn value_matches(
+    sigma_value: &SigmaValue,
+    sigma_folded: Option<&str>,
+    field_value: &str,
+    field_lower: &str,
+    modifiers: &[ValueModifier],
+) -> bool {
     // Null matches empty/missing fields only
     if *sigma_value == SigmaValue::Null {
         return field_value.is_empty();
@@ -440,21 +504,26 @@ fn value_matches(sigma_value: &SigmaValue, field_value: &str, modifiers: &[Value
     }
 
     // Case-insensitive fields for string matching (Sigma default behavior)
-    let field_lower = field_value.to_lowercase();
-    let sigma_lower = sigma_str.to_lowercase();
+    let sigma_lower_owned;
+    let sigma_lower = if let Some(folded) = sigma_folded {
+        folded
+    } else {
+        sigma_lower_owned = sigma_str.to_lowercase();
+        sigma_lower_owned.as_str()
+    };
 
     // String matching with modifier-determined mode
     if has_contains {
         // Substring match (with wildcard support within the pattern)
-        return wildcard_contains(&sigma_lower, &field_lower);
+        return wildcard_contains(sigma_lower, field_lower);
     }
 
     if has_startswith {
-        return wildcard_startswith(&sigma_lower, &field_lower);
+        return wildcard_startswith(sigma_lower, field_lower);
     }
 
     if has_endswith {
-        return wildcard_endswith(&sigma_lower, &field_lower);
+        return wildcard_endswith(sigma_lower, field_lower);
     }
 
     // Default: full match with wildcard support.
@@ -462,7 +531,7 @@ fn value_matches(sigma_value: &SigmaValue, field_value: &str, modifiers: &[Value
     // escape characters so `\*` / `\\` sequences compare by their unescaped
     // literal form, per the Sigma escaping rules.
     if sigma_value.has_wildcards() || sigma_lower.contains('\\') {
-        wildcard_match(&sigma_lower, &field_lower)
+        wildcard_match(sigma_lower, field_lower)
     } else {
         sigma_lower == field_lower
     }
@@ -815,53 +884,59 @@ pub fn match_identifier_with_cache<S1: BuildHasher, S2: BuildHasher>(
     event: &HashMap<String, String, S1>,
     regex_cache: &HashMap<String, Regex, S2>,
 ) -> bool {
+    let mut view = EventView::from_map(event);
+    match_identifier_with_cache_on_view(identifier, &mut view, regex_cache)
+}
+
+#[must_use]
+pub(crate) fn match_identifier_with_cache_on_view<S2: BuildHasher>(
+    identifier: &SearchIdentifier,
+    view: &mut EventView<'_>,
+    regex_cache: &HashMap<String, Regex, S2>,
+) -> bool {
     identifier.groups.iter().any(|group| {
         group
             .conditions
             .iter()
-            .all(|cond| match_field_condition_with_cache(cond, event, regex_cache))
+            .all(|cond| match_field_condition_with_cache_on_view(cond, view, regex_cache))
     })
 }
 
 /// Like [`match_field_condition`] but uses a pre-compiled regex cache for `|re`
 /// conditions instead of compiling the pattern on each invocation.
+#[allow(dead_code)]
 fn match_field_condition_with_cache<S1: BuildHasher, S2: BuildHasher>(
     condition: &FieldCondition,
     event: &HashMap<String, String, S1>,
     regex_cache: &HashMap<String, Regex, S2>,
 ) -> bool {
+    let mut view = EventView::from_map(event);
+    match_field_condition_with_cache_on_view(condition, &mut view, regex_cache)
+}
+
+fn match_field_condition_with_cache_on_view<S2: BuildHasher>(
+    condition: &FieldCondition,
+    view: &mut EventView<'_>,
+    regex_cache: &HashMap<String, Regex, S2>,
+) -> bool {
+    let field_folded = condition_field_folded(condition);
     // `exists` and `fieldref` never involve regex.
     if condition.modifiers.contains(&ValueModifier::Exists) {
-        return handle_exists(condition, event);
+        return handle_exists_on_view(condition, &field_folded, view);
     }
     if condition.modifiers.contains(&ValueModifier::FieldRef) {
-        return handle_fieldref(condition, event);
-    }
-
-    // Resolve target fields — identical to match_field_condition.
-    let target_fields: Vec<(&str, &str)> = if condition.field.is_empty() {
-        event
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect()
-    } else {
-        let field_lower = condition.field.to_lowercase();
-        event
-            .iter()
-            .filter(|(k, _)| k.to_lowercase() == field_lower)
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect()
-    };
-
-    if target_fields.is_empty() {
-        return false;
+        return handle_fieldref_on_view(condition, view);
     }
 
     let transformed_values = apply_transforms(&condition.values, &condition.modifiers);
     let require_all = condition.modifiers.contains(&ValueModifier::All);
     let has_regex = condition.modifiers.contains(&ValueModifier::Regex);
+    let use_precomputed_folds = !condition.modifiers.iter().any(ValueModifier::is_transform)
+        && transformed_values.len() == condition.values_folded.len();
 
-    for (_field_name, field_value) in &target_fields {
+    let mut matched_any_field = false;
+    let eval_field = |field_value: &str| {
+        let field_lower = field_value.to_lowercase();
         let check = |val: &SigmaValue| -> bool {
             if has_regex {
                 // Look up the pre-compiled Regex; fall back to on-demand compile
@@ -881,18 +956,60 @@ fn match_field_condition_with_cache<S1: BuildHasher, S2: BuildHasher>(
                     None => regex_matches(&pattern, field_value, &condition.modifiers),
                 }
             } else {
-                value_matches(val, field_value, &condition.modifiers)
+                let sigma_folded = if use_precomputed_folds {
+                    condition
+                        .values
+                        .iter()
+                        .position(|candidate| candidate == val)
+                        .and_then(|idx| condition.values_folded.get(idx))
+                        .and_then(|v| v.as_deref())
+                } else {
+                    None
+                };
+                value_matches(
+                    val,
+                    sigma_folded,
+                    field_value,
+                    &field_lower,
+                    &condition.modifiers,
+                )
             }
         };
 
         if require_all {
-            if transformed_values.iter().all(check) {
+            transformed_values.iter().all(check)
+        } else {
+            transformed_values.iter().any(check)
+        }
+    };
+
+    if condition.field.is_empty() {
+        for (_, field_value) in view.values_all() {
+            matched_any_field = true;
+            if eval_field(field_value) {
                 return true;
             }
-        } else if transformed_values.iter().any(check) {
-            return true;
+        }
+    } else {
+        for (_, field_value) in view.values_for_field(&field_folded) {
+            matched_any_field = true;
+            if eval_field(field_value) {
+                return true;
+            }
         }
     }
 
+    if !matched_any_field {
+        return false;
+    }
+
     false
+}
+
+fn condition_field_folded<'a>(condition: &'a FieldCondition) -> Cow<'a, str> {
+    if condition.field_folded.is_empty() {
+        Cow::Owned(fold_key(&condition.field))
+    } else {
+        Cow::Borrowed(condition.field_folded.as_str())
+    }
 }

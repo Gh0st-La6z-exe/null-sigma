@@ -302,4 +302,18 @@ impl SigmaEngine {
         let event = flatten_str(json)?;
         Ok(self.evaluate_event(&event))
     }
+
+    /// Parse JSON and count matching rules without building [`RuleMatch`] payloads.
+    ///
+    /// Same semantics as [`Self::evaluate_json`], but skips result metadata
+    /// allocation — use for throughput-sensitive JSONL ingestion paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlattenError`] for invalid JSON, non-object documents, or
+    /// guard violations. Evaluation itself cannot fail.
+    pub fn evaluate_json_count(&self, json: &str) -> Result<usize, FlattenError> {
+        let event = flatten_str(json)?;
+        Ok(self.evaluate_event_count(&event))
+    }
 }

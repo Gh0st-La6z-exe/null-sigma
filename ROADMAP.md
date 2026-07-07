@@ -50,13 +50,39 @@ in `PERFORMANCE.md` §10, including a recorded lesson that
 `100_regex_rules_single_event` has ~6% run-to-run jitter and single-run
 verdicts on it are not signal).
 
-## 3. Head-to-head benchmark harness
+## 3. Head-to-head benchmark harness (DONE — 2026-07-07)
 
-Same machine, same rule set, same pre-parsed events vs Hayabusa and Chainsaw
-matching paths; harness published in-repo. Converts the "4–5× faster"
-projection into a measured fact (or an honest correction). Until then, keep
-comparative claims labeled approximate.
+Shipped as standalone `harness/` workspace crate. Compares null-sigma,
+tau-engine (Chainsaw matching core via faithful converter), and sigma-rust on
+the same SigmaHQ `process_creation` rules and seeded event stream.
 
+Delivered:
+- **Correctness gate** — `cross_check` binary: 2.2M rule×event cells; 0
+  disagreements vs sigma-rust; 13 cells (0.0006%) vs tau-engine (one rule,
+  converter semantics).
+- **Tier A** — Criterion matcher-level benches (`head_to_head`); 1 102 common
+  rules, pre-built native event representations.
+- **Tier B** — hyperfine CLI wall-clock vs pinned Hayabusa 3.9.0 and Chainsaw
+  2.13.1 (`run_cli_bench.sh`); 100k JSONL events.
+- Deterministic event generator (`gen.rs`, seed 42), Chainsaw JSON mapping fix
+  (`config/chainsaw-json-mapping.yml`), `null_sigma_run` reference CLI.
+
+Measured (Apple M4, release, 2026-07-07):
+- Tier A single benign event: null-sigma **541 µs**, tau-engine **139 µs**,
+  sigma-rust 4.61 ms.
+- Tier B (100k events): Hayabusa default **17.7 s**, null-sigma runner 120.4 s.
+
+Core fixes discovered/enabled by the harness:
+- AC overlapping scan + pattern interning (false-negative elimination).
+- Per-identifier AC gating (`conditions_require_gated_hit`).
+- Phase 1 EventView + fold-once matching (~6× on real corpus).
+- Count-only API (`evaluate_event_count`).
+
+Full numbers and reproduction steps: `harness/README.md`, `PERFORMANCE.md` §11,
+`harness/data/tier_b_results.md`.
+
+Follow-up: Phase 2 (`EvalScratch` buffer reuse) and Phase 3 (ingest streaming,
+optional rayon) — see `PERFORMANCE.md` §11.6.
 ## 4. CLI binary (`null-sigma-cli`)
 
 Tail a JSON log file or read stdin, emit alerts. Demo-able artifact; ten

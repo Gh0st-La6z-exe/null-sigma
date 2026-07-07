@@ -215,7 +215,9 @@ fn parse_search_identifier(
                 vec![FieldConditionGroup {
                     conditions: vec![FieldCondition {
                         field: String::new(), // Empty field = keyword match (match any field)
+                        field_folded: String::new(),
                         values,
+                        values_folded: Vec::new(),
                         modifiers: vec![ValueModifier::Contains],
                     }],
                 }]
@@ -227,7 +229,9 @@ fn parse_search_identifier(
             vec![FieldConditionGroup {
                 conditions: vec![FieldCondition {
                     field: String::new(),
+                    field_folded: String::new(),
                     values: vec![SigmaValue::from_yaml(value)],
+                    values_folded: Vec::new(),
                     modifiers: vec![ValueModifier::Contains],
                 }],
             }]
@@ -267,8 +271,10 @@ fn parse_field_map(
         let values = parse_field_values(value);
 
         conditions.push(FieldCondition {
-            field,
+            field: field.clone(),
+            field_folded: field.to_lowercase(),
             values,
+            values_folded: Vec::new(),
             modifiers,
         });
     }

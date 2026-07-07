@@ -10,11 +10,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **AC prefilter false negatives on overlapping patterns.** `find_iter` is
+  non-overlapping and reports only the lowest pattern ID when multiple patterns
+  share the same match position. Duplicate pattern strings across rules could
+  cause later rules' pattern indices to never be set. Fixed with
+  `find_overlapping_iter` plus `ac_pattern_lookup` pattern interning.
+
 - **AC prefilter false negatives on negated conditions.** The Aho-Corasick
   prefilter skipped rules whenever no string pattern hit — but for conditions
   like `condition: not selection`, an event with zero AC hits is exactly the
   event that should match. Prefilter eligibility now additionally requires
   that the compiled condition cannot fire with all identifiers false.
+
+- **Per-identifier AC gating too coarse.** Rule-level `fully_ac_covered` gated
+  the entire rule even when only some identifiers were AC-dependent. New
+  `conditions_require_gated_hit()` enables per-identifier gating: 1 044/1 102
+  real SigmaHQ `process_creation` rules are gated without false negatives.
 
 - **Logsource hash-collision misrouting.** The hot loop compares logsource
   fields by 32-bit FNV-1a hash; a collision could evaluate a rule against the
@@ -35,6 +46,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   Previously only values at the very end of the encoded data matched.
 
 ### Added
+
+- **Head-to-head benchmark harness** (`harness/` workspace crate, roadmap
+  item 3). Compares null-sigma, tau-engine (Chainsaw core), and sigma-rust on
+  the same SigmaHQ rules and seeded events. Includes `cross_check` correctness
+  gate, Tier A Criterion benches (`head_to_head`), Tier B hyperfine CLI
+  comparison (`run_cli_bench.sh` vs Hayabusa 3.9.0 / Chainsaw 2.13.1),
+  deterministic event generator, and `null_sigma_run` reference CLI.
+  Documented in `harness/README.md` and `PERFORMANCE.md` §11.
+
+- **EventView + fold-once matching (Phase 1).** New `fold.rs` and
+  `event_view.rs` modules. `FieldCondition` gains `field_folded` and
+  `values_folded` (populated at load time). `EventView::from_map()` builds a
+  folded-key index once per event; the matcher uses pre-folded literals on the
+  hot path. ~6× improvement on SigmaHQ `process_creation` workload (541 µs vs
+  ~3.3 ms per benign event).
+
+- **Count-only evaluation API.** `evaluate_event_count()` and
+  `evaluate_json_count()` return match counts without building `RuleMatch`
+  structs — used by the harness runner and Tier B benchmarks.
 
 - **`json` feature — nested JSON telemetry ingestion.** Optional flattening
   layer (`serde_json` behind a feature flag; the core compiles identically
@@ -85,12 +115,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Benchmark numbers updated to measured head-to-head results.** Synthetic
+  microbench (`1000_rules_single_event`): **311k events/sec** (was 427k).
+  Real SigmaHQ `process_creation` (1 102 rules): **~1 850 events/sec** per
+  benign event; tau-engine is ~3.9× faster on this workload. See
+  `PERFORMANCE.md` §6 and §11; obsolete "3–5× faster than Hayabusa" claims
+  removed.
+
 - `|windash` expands to the full Sigma dash variant set — `-`, `/`,
   `–` (en dash), `—` (em dash), `―` (horizontal bar) — bidirectionally.
   Previously only `-` ↔ `/` were covered.
-- Benchmarks after the correctness hardening: 1 000 rules × matching event
-  now 2.34 µs (~427k events/sec, was ~449k) — a 1–7% cost across the suite,
-  traded for eliminating several false-negative classes.
 
 ---
 

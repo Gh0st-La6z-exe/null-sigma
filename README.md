@@ -9,7 +9,10 @@ A pure-Rust [Sigma](https://sigmahq.io) rule evaluation engine.
 
 Parse YAML rules once, compile them into an optimised internal representation,
 then evaluate streams of security events against the full rule set at
-**427 000 events/sec × 1 000 rules on a single core** (Apple M4, release).
+**311 000 events/sec × 1 000 synthetic rules on a single core** (Apple M4,
+release, microbenchmark suite). Against 1 102 real SigmaHQ `process_creation`
+rules the measured rate is **~1 850 events/sec** — see
+[Head-to-head benchmarks](#head-to-head-benchmarks) below.
 
 ```toml
 [dependencies]
@@ -168,12 +171,17 @@ if !flat_ac_indices[start..end]
 }
 ```
 
-**Why 100 rules is faster than 1 rule:**
+**Why AC prefilter scaling changed (2026-07-07):** After fixing overlapping-scan
+false negatives (§11.2), the automaton correctly reports all substring matches.
+On synthetic rules with shared vocabulary, 100 rules can be *slower* than 1 rule
+because more patterns fire the prefilter — but correctness is preserved. Real
+SigmaHQ rules rarely achieve full AC coverage; see §6b for measured corpus numbers.
 
-| Benchmark | Median |
+| Benchmark | Median (2026-07-07) |
 |---|---|
-| `single_rule_single_event` | 1.35 µs |
-| `100_rules_single_event` | **856 ns** |
+| `single_rule_single_event` | 1.39 µs |
+| `100_rules_single_event` | 1.46 µs |
+| `1000_rules_single_event` | 3.22 µs |
 
 The AC automaton scans the event field once regardless of rule count. One
 hundred rules sharing overlapping string vocabularies means 100 rules get
@@ -262,45 +270,111 @@ path of every `evaluate_event` call.
 
 ---
 
+### 5 — EventView fold-once matching
+
+Real SigmaHQ rules force most events through the cold evaluation path (wildcards,
+`|exists`, `|fieldref`, multi-identifier conditions). The dominant cost on that
+path was repeated `to_lowercase()` scans over event fields and rule literals.
+
+`EventView::from_map()` builds a folded-key index once per event. Rule literals
+are folded at load time (`field_folded`, `values_folded` on `FieldCondition`).
+The matcher looks up pre-folded values via the view — no per-lookup allocation.
+
+**Measured on SigmaHQ `process_creation` (1 102 rules, benign event):**
+
+| Stage | Per-event latency |
+|---|---|
+| Pre-EventView (post-AC-fix) | ~3.3 ms |
+| After EventView + count-only API | **541 µs** |
+| tau-engine (Chainsaw core, same workload) | 139 µs |
+
+Details in `PERFORMANCE.md` §11.
+
+---
+
 ## Benchmark summary
+
+Two measurement tiers — do not conflate them:
+
+| Tier | What it measures | Command |
+|---|---|---|
+| **Microbench** | Prefilter scaling on synthetic uniform rules | `cargo bench --bench sigma_bench` |
+| **Tier A** | Matcher-level, real SigmaHQ rules, library APIs | `cd harness && cargo bench --bench head_to_head` |
+| **Tier B** | Full CLI wall-clock (parse + enrich + output) | `harness/scripts/run_cli_bench.sh` |
 
 ![null-sigma benchmark chart: per-event latency stays hundreds of times below naive linear scaling as rule count grows, and single-core throughput by scenario](assets/benchmarks.svg)
 
-The left panel is the headline property: adding rules costs almost nothing.
-Per-event latency at 1 000 rules is **576× below** what naive
-per-rule evaluation would cost, because the prefilters reject nearly every
-rule before its condition tree is ever touched. The chart is generated from
-the Criterion medians below by `scripts/gen_benchmark_chart.py`.
+The left panel shows prefilter sublinear scaling on the **microbench** suite.
+The chart is generated from Criterion medians by `scripts/gen_benchmark_chart.py`.
 
-All numbers: Apple M4, single core, `cargo bench` (release profile),
-Criterion 100-sample statistical measurement.
+### Microbenchmark suite
+
+Apple M4, single core, `cargo bench` (release profile), Criterion 100-sample
+measurement, 2026-07-07:
 
 ```
-single_rule_single_event          time: [1.3463 µs 1.3489 µs 1.3517 µs]
-100_rules_single_event            time: [855.53 ns  856.34 ns  857.20 ns]
-1000_rules_single_event           time: [2.3385 µs  2.3405 µs  2.3428 µs]
-1000_rules_mixed_field_noise      time: [15.916 µs  15.934 µs  15.958 µs]
-100_rules_100_events_batch        time: [93.203 µs  93.298 µs  93.399 µs]
-1000_rules_logsource_mismatch     time: [909.78 ns  912.15 ns  915.89 ns]
-1000_rules_ac_prefilter_zero_match time: [1.7766 µs 1.7881 µs 1.8083 µs]
-100_regex_rules_single_event      time: [35.783 µs  35.877 µs  35.975 µs]
-enrich_event_cow_sigma_keys       time: [192.36 ns  193.29 ns  195.25 ns]
-enrich_event_cow_canonical_keys   time: [732.02 ns  738.83 ns  752.37 ns]
+single_rule_single_event          time: [1.3883 µs 1.3916 µs 1.3966 µs]
+100_rules_single_event            time: [1.4514 µs 1.4588 µs 1.4668 µs]
+1000_rules_single_event           time: [3.2176 µs 3.2211 µs 3.2247 µs]
+1000_rules_mixed_field_noise      time: [96.510 µs 96.662 µs 96.828 µs]
+100_rules_100_events_batch        time: [146.76 µs 146.88 µs 147.01 µs]
+1000_rules_logsource_mismatch     time: [1.1954 µs 1.1973 µs 1.1993 µs]
+1000_rules_ac_prefilter_zero_match time: [1.9687 µs 1.9711 µs 1.9735 µs]
+100_regex_rules_single_event      time: [28.203 µs 28.309 µs 28.413 µs]
+enrich_event_cow_sigma_keys       time: [187.80 ns 188.04 ns 188.28 ns]
+enrich_event_cow_canonical_keys   time: [724.52 ns 732.01 ns 746.48 ns]
 ```
 
-Derived throughput (single core):
+Derived throughput (single core, microbench):
 
 | Scenario | Events/sec |
 |---|---|
-| 1 000 rules, matching event | **427 000** |
-| 1 000 rules, wrong logsource | **1 096 000** |
-| 1 000 rules, right logsource, no AC hit | **559 000** |
-| 100 rules × 100 event batch | **1 072 000** |
+| 1 000 rules, matching event | **311 000** |
+| 1 000 rules, wrong logsource | 835 000 |
+| 1 000 rules, right logsource, no AC hit | 508 000 |
+| 100 rules × 100 event batch | 680 000 |
 
-These figures include the correctness hardening added in July 2026 (logsource
-string recheck, condition-aware AC gating, spec-conformant wildcard escaping)
-— a 1–7% cost versus the pre-hardening numbers, traded for the elimination of
-several false-negative classes.
+### Head-to-head benchmarks
+
+The `harness/` crate compares null-sigma, tau-engine (Chainsaw's matching core),
+and sigma-rust on the **same 1 102 SigmaHQ `process_creation` rules** and a
+seeded event stream. Correctness is verified first:
+
+```bash
+git clone --depth 1 https://github.com/SigmaHQ/sigma.git corpus/sigmahq
+cd harness && cargo run --release --bin cross_check
+```
+
+Cross-check (2.2M rule×event cells): null-sigma vs sigma-rust **0 disagreements**;
+vs tau-engine **13 cells (0.0006%)** on one rule (Chainsaw converter semantics).
+
+**Tier A** — matcher-level, pre-built native event representations (2026-07-07):
+
+| Engine | Single benign event | 1 000-event batch |
+|---|---|---|
+| null-sigma | **541 µs** (~1 850/s) | 602 ms (~1 660/s) |
+| tau-engine | **139 µs** (~7 200/s) | 142 ms (~7 000/s) |
+| sigma-rust | 4.61 ms (~217/s) | 3.94 s (~254/s) |
+
+On real SigmaHQ rules, tau-engine is **~3.9× faster** per event; null-sigma is
+**~8.5× faster** than sigma-rust. See `harness/README.md` and `PERFORMANCE.md` §11.
+
+**Tier B** — CLI end-to-end, 100 000 JSONL events (hyperfine, 5 runs):
+
+| Tool | Wall time | Events/sec |
+|---|---|---|
+| Hayabusa (default threads) | 17.7 s | 5 650 |
+| Hayabusa (1 thread) | 54.1 s | 1 850 |
+| Chainsaw hunt | 31.5 s | 3 170 |
+| null-sigma runner | 120.4 s | 831 |
+
+Tier B includes each tool's full pipeline. The null-sigma runner is a minimal
+reference implementation (single-threaded, count-only); ingest optimisation is
+planned (Phase 3 in `PERFORMANCE.md` §11.6).
+
+These figures include the correctness hardening and AC prefilter fixes added in
+July 2026 — traded for eliminating several false-negative classes and enabling
+honest head-to-head measurement.
 
 Interactive HTML reports are generated by Criterion at
 `target/criterion/report/index.html` after running `cargo bench`.
@@ -518,12 +592,12 @@ inside `load_rule` / `load_rules` — never lazily inside `evaluate_event`.
 ```
 cargo test
 
-running 230 tests (--features json)
-  0  unit (lib)
+running 237 tests (--features json)
+  3  unit (lib)
  10  corpus_tests   — parse known-good and known-bad YAML fixtures
+ 30  json_tests     — flattening semantics, guards, ECS/Sysmon/CloudTrail fixtures
  14  property_tests — proptest: invariants proven on thousands of random inputs
-174  sigma_tests    — modifiers, conditions, engine, hardening, concurrency
- 29  json_tests     — flattening semantics, guards, ECS/Sysmon/CloudTrail fixtures
+177  sigma_tests    — modifiers, conditions, engine, hardening, concurrency
   3  doc tests
 ```
 

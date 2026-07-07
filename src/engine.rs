@@ -17,8 +17,10 @@
 // =============================================================================
 
 use crate::condition::{compile_condition, CompileError, ConditionNode};
+use crate::event_view::EventView;
 use crate::fieldmap::FieldMapping;
-use crate::matcher::{match_identifier, match_identifier_with_cache};
+use crate::fold::{fold_key, fold_value};
+use crate::matcher::{match_identifier_on_view, match_identifier_with_cache_on_view};
 use crate::parser::{parse_rule, parse_rules, ParseError};
 use crate::types::{
     ConditionExpr, EvalResult, FieldCondition, RuleMatch, SearchIdentifier, SigmaRule,
@@ -196,8 +198,17 @@ pub struct SigmaEngine {
     rules: Vec<CompiledRule>,
     /// Field name mapping (Sigma → application canonical names).
     field_mapping: FieldMapping,
-    /// All string patterns across all rules for Aho-Corasick.
+    /// All string patterns across all rules for Aho-Corasick, deduplicated:
+    /// rules sharing a literal share one pattern slot and one hit bit.
+    /// (Duplicate patterns would break the scan — see `run_ac_scan`.)
     ac_patterns: Vec<String>,
+    /// Load-time lookup: lowercased literal → index into `ac_patterns`.
+    /// Never touched on the evaluation path. Safe because the engine has no
+    /// rule-removal API — a pattern slot, once created, is never invalidated.
+    ac_pattern_lookup: HashMap<String, usize>,
+    /// Length in bytes of the longest AC pattern — bounds the rescan window
+    /// in `run_ac_scan` (see the soundness argument there).
+    ac_max_pattern_len: usize,
     /// Compiled Aho-Corasick automaton. Rebuilt after rule changes.
     ac_automaton: Option<AhoCorasick>,
     /// Whether the AC automaton needs rebuilding.
@@ -226,6 +237,8 @@ impl SigmaEngine {
             rules: Vec::new(),
             field_mapping: FieldMapping::new(),
             ac_patterns: Vec::new(),
+            ac_pattern_lookup: HashMap::new(),
+            ac_max_pattern_len: 0,
             ac_automaton: None,
             ac_dirty: false,
             rule_regex_maps: Vec::new(),
@@ -241,6 +254,8 @@ impl SigmaEngine {
             rules: Vec::new(),
             field_mapping,
             ac_patterns: Vec::new(),
+            ac_pattern_lookup: HashMap::new(),
+            ac_max_pattern_len: 0,
             ac_automaton: None,
             ac_dirty: false,
             rule_regex_maps: Vec::new(),
@@ -319,8 +334,10 @@ impl SigmaEngine {
     fn add_compiled_rule(
         &mut self,
         rule: SigmaRule,
-        identifiers: Vec<SearchIdentifier>,
+        mut identifiers: Vec<SearchIdentifier>,
     ) -> Result<(), EngineError> {
+        finalize_identifiers(&mut identifiers);
+
         // Compile each condition expression into an AST
         let conditions: Vec<ConditionNode> = match &rule.detection.condition {
             ConditionExpr::Single(c) => {
@@ -355,48 +372,73 @@ impl SigmaEngine {
             HashMap::new()
         };
 
-        // Extract simple string patterns for Aho-Corasick optimization
-        let mut ac_indices = Vec::new();
+        // ── Per-identifier AC gating ────────────────────────────────────
+        // An identifier is "AC-gated" when EVERY one of its OR-groups
+        // contains at least one AC-eligible condition whose values all
+        // produce non-empty literals. If such an identifier is true, some
+        // group is fully true, so its eligible condition matched, so one of
+        // its literals occurs in some event value — i.e. the AC scan MUST
+        // report a hit. Contrapositive: zero hits across the rule's gated
+        // patterns proves every gated identifier false.
+        //
+        // (The old all-or-nothing rule — every condition of every
+        // identifier AC-eligible — disabled the prefilter for nearly the
+        // whole SigmaHQ corpus: one wildcard or regex anywhere in a filter
+        // identifier forced the rule onto the cold path. Found by the
+        // head-to-head harness, 2026-07.)
+        let mut ac_indices: Vec<usize> = Vec::new();
+        let mut gated_flags: Vec<bool> = Vec::with_capacity(identifiers.len());
         for identifier in &identifiers {
+            let mut identifier_gated = !identifier.groups.is_empty();
+            let mut ident_patterns: Vec<usize> = Vec::new();
             for group in &identifier.groups {
+                let mut group_has_eligible = false;
                 for cond in &group.conditions {
-                    // Only extract patterns suitable for AC: "contains" modifier
-                    // with plain string values (no wildcards, no regex)
-                    if is_ac_eligible(cond) {
-                        for val in &cond.values {
-                            // Register the UNESCAPED literal (`\\` → `\`,
-                            // `\*` → `*`): the matcher compares unescaped
-                            // forms, so the automaton must hold the same bytes.
-                            let s = val.as_str_lossy();
-                            let literal = crate::matcher::pattern_literal(&s)
-                                .expect("is_ac_eligible guarantees no active wildcards");
-                            let s_lower = literal.to_lowercase();
-                            if !s_lower.is_empty() {
-                                let pattern_idx = self.ac_patterns.len();
-                                self.ac_patterns.push(s_lower);
-                                ac_indices.push(pattern_idx);
-                            }
+                    if !is_ac_eligible(cond) {
+                        continue;
+                    }
+                    // Register the UNESCAPED literals (`\\` → `\`, `\*` →
+                    // `*`): the matcher compares unescaped forms, so the
+                    // automaton must hold the same bytes.
+                    let mut literals: Vec<String> = Vec::with_capacity(cond.values.len());
+                    for val in &cond.values {
+                        let s = val.as_str_lossy();
+                        let literal = crate::matcher::pattern_literal(&s)
+                            .expect("is_ac_eligible guarantees no active wildcards");
+                        let s_lower = literal.to_lowercase();
+                        if !s_lower.is_empty() {
+                            literals.push(s_lower);
+                        }
+                    }
+                    // Gating demands every value yield a non-empty literal:
+                    // a multi-value OR containing an empty literal can be
+                    // true with zero automaton hits.
+                    if !literals.is_empty() && literals.len() == cond.values.len() {
+                        group_has_eligible = true;
+                        for lit in literals {
+                            ident_patterns.push(self.intern_ac_pattern(lit));
                         }
                     }
                 }
+                if !group_has_eligible {
+                    identifier_gated = false;
+                }
             }
+            if identifier_gated {
+                ac_indices.extend(ident_patterns);
+            }
+            gated_flags.push(identifier_gated);
         }
+        ac_indices.sort_unstable();
+        ac_indices.dedup();
 
-        // A rule is AC-prefilter-safe only when:
-        //   1. every identifier condition is AC-eligible, so an AC miss proves
-        //      every identifier is false; and
-        //   2. the compiled condition cannot fire with all identifiers false.
-        //
-        // The second check protects negated rules such as `condition: not sel`:
-        // an event with no AC hits can be exactly the event that should match.
-        let all_identifiers_ac_covered = identifiers.iter().all(|ident| {
-            ident
-                .groups
-                .iter()
-                .all(|group| group.conditions.iter().all(is_ac_eligible))
-        });
-        let fully_ac_covered =
-            all_identifiers_ac_covered && conditions_require_ac_hit(&conditions, &identifiers);
+        // The rule is prefilter-safe when the condition cannot fire while
+        // every gated identifier is false (checked over all assignments of
+        // the ungated identifiers). This protects negated conditions such
+        // as `condition: not sel`: an event with no AC hits can be exactly
+        // the event that should match.
+        let fully_ac_covered = !ac_indices.is_empty()
+            && conditions_require_gated_hit(&conditions, &identifiers, &gated_flags);
 
         self.rules.push(CompiledRule {
             rule,
@@ -450,6 +492,20 @@ impl SigmaEngine {
         Ok(())
     }
 
+    /// Intern an AC pattern: rules sharing a literal share one pattern slot
+    /// (and one hit bit). Duplicate slots would break the prefilter — the
+    /// scan reports one pattern id per occurrence.
+    fn intern_ac_pattern(&mut self, pattern: String) -> usize {
+        if let Some(&idx) = self.ac_pattern_lookup.get(&pattern) {
+            return idx;
+        }
+        let idx = self.ac_patterns.len();
+        self.ac_max_pattern_len = self.ac_max_pattern_len.max(pattern.len());
+        self.ac_patterns.push(pattern.clone());
+        self.ac_pattern_lookup.insert(pattern, idx);
+        idx
+    }
+
     /// Rebuild the Aho-Corasick automaton after rule changes.
     fn rebuild_ac(&mut self) {
         if !self.ac_dirty {
@@ -459,7 +515,10 @@ impl SigmaEngine {
         if self.ac_patterns.is_empty() {
             self.ac_automaton = None;
         } else {
-            // Build case-insensitive AC automaton
+            // Build case-insensitive AC automaton. The kind is left to the
+            // library's auto choice: forcing DFA measured ~1% faster on the
+            // overlapping scan but its memory grows with pattern count, and
+            // a failed build here would silently disable the prefilter.
             self.ac_automaton = AhoCorasick::builder()
                 .ascii_case_insensitive(true)
                 .build(&self.ac_patterns)
@@ -470,6 +529,14 @@ impl SigmaEngine {
     }
 
     // ─── Event Evaluation ───────────────────────────────────────────────
+
+    /// Count matching rules without building [`RuleMatch`] payloads.
+    ///
+    /// Same semantics as [`Self::evaluate_event`], but skips result metadata
+    /// allocation — use for throughput-sensitive paths that only need a hit count.
+    pub fn evaluate_event_count(&self, event: &HashMap<String, String>) -> usize {
+        self.evaluate_event_inner(event, false, &mut |_, _, _| {})
+    }
 
     /// Evaluate a single event against all loaded rules.
     ///
@@ -486,12 +553,44 @@ impl SigmaEngine {
     /// build the Aho-Corasick automaton eagerly so evaluation is always ready.
     #[must_use = "returns all threat detections — discarding them silently suppresses security alerts"]
     pub fn evaluate_event(&self, event: &HashMap<String, String>) -> Vec<RuleMatch> {
+        let mut matches = Vec::new();
+        self.evaluate_event_inner(event, true, &mut |compiled, id_results, matched_conditions| {
+            let matched_identifiers: Vec<String> = id_results
+                .iter()
+                .filter_map(|(name, &matched)| if matched { Some(name.clone()) } else { None })
+                .collect();
+
+            matches.push(RuleMatch {
+                rule_id: compiled.rule.id.clone(),
+                rule_title: compiled.rule.title.clone(),
+                rule_level: compiled.rule.level,
+                matched_conditions: matched_conditions.to_vec(),
+                matched_identifiers,
+                tags: compiled.rule.tags.clone(),
+                score: compiled.rule.level.to_score(),
+            });
+        });
+        matches
+    }
+
+    /// Shared single-event evaluation loop.
+    ///
+    /// When `collect_details` is false, skips `matched_conditions` accumulation
+    /// and never invokes `on_match`.
+    #[allow(clippy::type_complexity)]
+    fn evaluate_event_inner(
+        &self,
+        event: &HashMap<String, String>,
+        collect_details: bool,
+        on_match: &mut dyn FnMut(&CompiledRule, &HashMap<String, bool>, &[usize]),
+    ) -> usize {
         // Enrich the event with Sigma-canonical field names so rules can
         // match regardless of naming convention.
         // `enrich_event_cow` returns `Borrowed` (zero allocation) when the
         // event already uses Sigma field names, `Owned` only when application
         // canonical names are present and aliases need to be added.
         let enriched = self.field_mapping.enrich_event_cow(event);
+        let mut view = EventView::from_map(enriched.as_ref());
 
         // Resolve event logsource strings once; hash them for O(1) integer
         // comparison in the hot loop. hash == 0 means "field absent in event"
@@ -515,7 +614,7 @@ impl SigmaEngine {
         // Run Aho-Corasick scan across all event field values
         let ac_hits = self.run_ac_scan(&enriched);
 
-        let mut matches = Vec::new();
+        let mut matches = 0usize;
 
         for rule_idx in 0..self.rules.len() {
             // ── Hot prefilter: 24-byte RuleHotData only ───────────────────────────────────
@@ -567,38 +666,38 @@ impl SigmaEngine {
                 HashMap::with_capacity(compiled.identifiers.len());
             for ident in &compiled.identifiers {
                 let id_eval = if compiled.has_regex {
-                    match_identifier_with_cache(ident, &enriched, &self.rule_regex_maps[rule_idx])
+                    match_identifier_with_cache_on_view(
+                        ident,
+                        &mut view,
+                        &self.rule_regex_maps[rule_idx],
+                    )
                 } else {
-                    match_identifier(ident, &enriched)
+                    match_identifier_on_view(ident, &mut view)
                 };
                 id_results.insert(ident.name.clone(), id_eval);
             }
 
             // Evaluate each condition expression
-            let mut matched_conditions: Vec<usize> = Vec::with_capacity(compiled.conditions.len());
+            if collect_details {
+                let mut matched_conditions: Vec<usize> =
+                    Vec::with_capacity(compiled.conditions.len());
 
-            for (cond_idx, condition) in compiled.conditions.iter().enumerate() {
-                if condition.evaluate(&id_results) {
-                    matched_conditions.push(cond_idx);
+                for (cond_idx, condition) in compiled.conditions.iter().enumerate() {
+                    if condition.evaluate(&id_results) {
+                        matched_conditions.push(cond_idx);
+                    }
                 }
-            }
 
-            if !matched_conditions.is_empty() {
-                // Only identifiers that matched are included in the result.
-                let matched_identifiers: Vec<String> = id_results
-                    .iter()
-                    .filter_map(|(name, &matched)| if matched { Some(name.clone()) } else { None })
-                    .collect();
-
-                matches.push(RuleMatch {
-                    rule_id: compiled.rule.id.clone(),
-                    rule_title: compiled.rule.title.clone(),
-                    rule_level: compiled.rule.level,
-                    matched_conditions,
-                    matched_identifiers,
-                    tags: compiled.rule.tags.clone(),
-                    score: compiled.rule.level.to_score(),
-                });
+                if !matched_conditions.is_empty() {
+                    matches += 1;
+                    on_match(compiled, &id_results, &matched_conditions);
+                }
+            } else if compiled
+                .conditions
+                .iter()
+                .any(|condition| condition.evaluate(&id_results))
+            {
+                matches += 1;
             }
         }
 
@@ -632,6 +731,26 @@ impl SigmaEngine {
     /// Run the AC automaton across all event field values.
     /// Returns a dense boolean bitmap indexed by pattern ID.
     /// Single indexed load (`hits[idx]`) instead of hash lookup per membership check.
+    ///
+    /// # Overlap soundness
+    ///
+    /// The prefilter needs the hit bit set for EVERY pattern that occurs
+    /// anywhere in the value — but `find_iter` reports non-overlapping
+    /// matches only: after one pattern matches, occurrences of other
+    /// patterns overlapping the consumed span are silently skipped, their
+    /// hit bits stay false, and fully-AC-covered rules relying on them get
+    /// prefilter-skipped. (A real false negative found by the head-to-head
+    /// cross-check: `shell32.dll` consumed the span covering `.dll,`, which
+    /// masked a co-loaded rule.) A full `find_overlapping_iter` scan fixes
+    /// this but disables the SIMD prefilter and cost ~10× on noisy values.
+    ///
+    /// The overlapping scan costs nothing measurable on pattern-free values
+    /// (the dominant real-world case — the automaton's prefilter still
+    /// applies; the zero-match benchmark actually improved), and on values
+    /// with hits it reports the truth. A windowed hybrid
+    /// (`find_iter` + bounded overlapping rescan around match ends) was
+    /// benchmarked and was slower in every scenario because matched regions
+    /// get scanned twice.
     fn run_ac_scan(&self, event: &HashMap<String, String>) -> Vec<bool> {
         let Some(ac) = &self.ac_automaton else {
             return vec![false; self.ac_patterns.len()];
@@ -640,7 +759,7 @@ impl SigmaEngine {
         let mut hits = vec![false; self.ac_patterns.len()];
 
         for value in event.values() {
-            for mat in ac.find_iter(value) {
+            for mat in ac.find_overlapping_iter(value) {
                 hits[mat.pattern().as_usize()] = true;
             }
         }
@@ -652,6 +771,27 @@ impl SigmaEngine {
 impl Default for SigmaEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn finalize_identifiers(identifiers: &mut [SearchIdentifier]) {
+    for ident in identifiers {
+        for group in &mut ident.groups {
+            for cond in &mut group.conditions {
+                cond.field_folded = fold_key(&cond.field);
+                cond.values_folded = cond
+                    .values
+                    .iter()
+                    .map(|value| match value {
+                        crate::types::SigmaValue::String(s) => Some(fold_value(s)),
+                        crate::types::SigmaValue::Integer(i) => Some(i.to_string()),
+                        crate::types::SigmaValue::Float(f) => Some(f.to_string()),
+                        crate::types::SigmaValue::Boolean(b) => Some(b.to_string()),
+                        crate::types::SigmaValue::Null => Some(String::new()),
+                    })
+                    .collect();
+            }
+        }
     }
 }
 
@@ -700,20 +840,51 @@ fn is_ac_eligible(condition: &FieldCondition) -> bool {
     !has_regex && !has_cidr && !has_numeric && !has_exists && !has_fieldref && !has_transform
 }
 
-/// Return true when a rule cannot match unless at least one AC-eligible
-/// identifier has matched.
-fn conditions_require_ac_hit(
+/// Return true when the rule cannot match unless at least one AC-gated
+/// identifier is true.
+///
+/// Proof obligation: with every gated identifier pinned false, the condition
+/// must evaluate false under EVERY truth assignment of the ungated
+/// identifiers (their values are unknowable from the AC scan — wildcards,
+/// regexes, null checks…). All assignments are enumerated exhaustively;
+/// rules with more than `MAX_UNGATED` ungated identifiers (2^n load-time
+/// evaluations) conservatively return false, disabling the prefilter for
+/// that rule rather than risking a false negative.
+fn conditions_require_gated_hit(
     conditions: &[ConditionNode],
     identifiers: &[SearchIdentifier],
+    gated_flags: &[bool],
 ) -> bool {
-    let all_false_results: HashMap<String, bool> = identifiers
+    const MAX_UNGATED: usize = 12;
+
+    let ungated: Vec<&str> = identifiers
+        .iter()
+        .zip(gated_flags)
+        .filter(|(_, &gated)| !gated)
+        .map(|(ident, _)| ident.name.as_str())
+        .collect();
+    if ungated.len() > MAX_UNGATED {
+        return false;
+    }
+
+    let mut results: HashMap<String, bool> = identifiers
         .iter()
         .map(|ident| (ident.name.clone(), false))
         .collect();
 
-    conditions
-        .iter()
-        .all(|condition| !condition.evaluate(&all_false_results))
+    // Enumerate every truth assignment of the ungated identifiers.
+    for assignment in 0u32..(1u32 << ungated.len()) {
+        for (bit, name) in ungated.iter().enumerate() {
+            *results.get_mut(*name).expect("name present") = (assignment >> bit) & 1 == 1;
+        }
+        if conditions
+            .iter()
+            .any(|condition| condition.evaluate(&results))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Pre-compile all `|re` regex patterns from a set of identifiers into a

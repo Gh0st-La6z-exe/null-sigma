@@ -1,6 +1,6 @@
 # null-sigma — Performance Engineering Report
 
-**Date:** 2026-07-01
+**Date:** 2026-07-01 (updated 2026-07-07)
 **Crate:** `null-sigma` v0.1.0
 **Rust:** edition 2021, release profile
 **Platform:** Apple M4 (arm64), macOS — 64 KB L1d cache, 4 MB L2
@@ -259,21 +259,70 @@ The primary target — 100k events/sec × 1,000 rules — is exceeded by **3.18�
 
 ## 6. Industry Comparison
 
-| Engine | Language | ~Events/sec @ 1000 rules |
-|---|---|---|
-| pySigma / sigma-cli | Python | 1k–10k |
-| Chainsaw (Windows evtx) | Rust | 50k–80k |
-| **Hayabusa** (best public Rust Sigma) | **Rust** | **60k–100k** |
-| **null-sigma (this crate)** | **Rust** | **318k** |
+**Important:** throughput depends heavily on *which rules* and *which measurement tier*
+you use. The microbenchmark suite (`cargo bench --bench sigma_bench`) uses synthetic
+rules optimised for prefilter demonstration; the head-to-head harness
+(`harness/`, §11) uses real SigmaHQ `process_creation` rules. **Do not mix the two
+when comparing engines.**
 
-null-sigma is **3–5× faster** than the fastest known published Rust Sigma evaluator at
-the 1,000-rule scale.
+### 6a. Microbenchmark suite — synthetic rules (Tier 0)
+
+Criterion medians, Apple M4, release, 2026-07-07:
+
+| Benchmark | Median | Events/sec |
+|---|---|---|
+| `1000_rules_single_event` | 3.22 µs | **311k** |
+| `1000_rules_logsource_mismatch` | 1.20 µs | 835k |
+| `1000_rules_ac_prefilter_zero_match` | 1.97 µs | 508k |
+| `100_rules_100_events_batch` | 147 µs | 680k |
+
+These numbers show prefilter scaling on uniform, AC-friendly rules. They are **not**
+representative of a full SigmaHQ corpus where most rules contain wildcards, `|exists`,
+`|fieldref`, or multi-identifier conditions that bypass or weaken the AC gate.
+
+### 6b. Head-to-head harness — real SigmaHQ rules (Tier A)
+
+Same 1 102 rules (common subset all three library engines load), same 1 000 seeded
+events, matcher-level timing with pre-built native event representations.
+See §11 for methodology.
+
+| Engine | Single benign event | 1 000-event batch | Notes |
+|---|---|---|---|
+| **null-sigma** | **541 µs** (~1 850/s) | 602 ms (~1 660/s) | 1 182/1 182 rules load |
+| **tau-engine** (Chainsaw core) | **139 µs** (~7 200/s) | 142 ms (~7 000/s) | 1 102/1 182 via Chainsaw converter |
+| **sigma-rust** | 4.61 ms (~217/s) | 3.94 s (~254/s) | 1 181/1 182 load |
+
+On this realistic rule set, tau-engine is **~3.9× faster** than null-sigma per event.
+null-sigma is **~8.5× faster** than sigma-rust.
+
+Correctness cross-check (2 000 events × 1 102 rules = 2.2M cells): null-sigma vs
+sigma-rust **0 disagreements**; null-sigma vs tau-engine **13 cells (0.0006%)** —
+all on one rule (`Suspicious SYSTEM User Process Creation`), attributable to
+Chainsaw conversion semantics.
+
+### 6c. CLI end-to-end — full tools (Tier B)
+
+100 000 flat JSONL events, SigmaHQ `process_creation` rules only, Apple M4,
+hyperfine 5 runs (see `harness/data/tier_b_results.md`). Tier B includes each tool's
+full pipeline (parse, enrich, output) — not comparable to Tier A matcher numbers.
+
+| Tool | Wall time | Events/sec |
+|---|---|---|
+| Hayabusa (default threads) | 17.7 s | **5 650** |
+| Hayabusa (1 thread) | 54.1 s | 1 850 |
+| Chainsaw hunt (Rosetta x86_64) | 31.5 s | 3 170 |
+| null-sigma runner | 120.4 s | 831 |
+
+Hayabusa's multi-threaded CLI is fastest end-to-end. null-sigma's Tier B runner is
+currently a minimal reference implementation (single-threaded, count-only, no output
+pipeline) and is not yet optimised for ingest — see §11.4 for planned Phase 3 work.
 
 ---
 
 ## 7. Test Coverage Summary
 
-`cargo test -p null-sigma` — **120 tests, 0 failures, 0 ignored.**
+`cargo test -p null-sigma` — **177 integration tests + 3 lib tests** (237 with
+`json` feature), 0 failures.
 
 | Test module | Count | Coverage scope |
 |---|---|---|
@@ -440,3 +489,121 @@ Two takeaways for consumers:
    multiple engines, or events arrive already parsed as `serde_json::Value`,
    use `flatten_value` once and call `evaluate_event` directly —
    `evaluate_preflattened` shows the engine-only cost is 2.66 µs.
+
+---
+
+## 11. Addendum — 2026-07-07 Head-to-Head Harness & Phase 1 EventView
+
+A dedicated benchmark harness (`harness/`, roadmap item 3) plus a second round of
+core optimisations closed the gap between synthetic microbench numbers and
+real-world SigmaHQ performance. All changes were gated: `cargo test` green,
+`cargo clippy -- -D warnings` green, cross-check recorded before publishing.
+
+### 11.1 Head-to-head harness
+
+Standalone workspace crate comparing three library engines on the same rule set
+and event stream:
+
+| Component | Purpose |
+|---|---|
+| `harness/src/lib.rs` | Rule compatibility report, engine wrappers |
+| `harness/src/convert.rs` | Sigma → tau-engine via Chainsaw's converter path |
+| `harness/src/gen.rs` | Deterministic event generator (seed 42) |
+| `harness/benches/head_to_head.rs` | **Tier A** — Criterion, matcher-level |
+| `harness/src/bin/null_sigma_run.rs` | **Tier B** — CLI runner over JSONL |
+| `harness/scripts/run_cli_bench.sh` | **Tier B** — hyperfine vs Hayabusa/Chainsaw |
+| `harness/src/bin/cross_check.rs` | Correctness gate — must pass before publishing |
+
+**Rule set:** SigmaHQ `rules/windows/process_creation` (1 182 files). Common subset
+for library comparison: **1 102 rules** (80 tau-engine conversion failures on
+unsupported modifiers; 1 sigma-rust failure on bare `|i`).
+
+**Reproduce:**
+
+```bash
+git clone --depth 1 https://github.com/SigmaHQ/sigma.git corpus/sigmahq
+
+# Correctness gate
+cd harness && cargo run --release --bin cross_check
+
+# Tier A (Criterion)
+cargo bench --bench head_to_head
+
+# Tier B (hyperfine — downloads pinned Hayabusa/Chainsaw binaries)
+./scripts/run_cli_bench.sh
+```
+
+### 11.2 Correctness fixes discovered by the harness
+
+| Fix | File | Impact |
+|---|---|---|
+| AC overlapping scan | `engine.rs` | `find_overlapping_iter` replaces `find_iter`; duplicate pattern bytes at the same position no longer suppress later pattern IDs |
+| AC pattern interning | `engine.rs` | `ac_pattern_lookup` deduplicates identical pattern strings so interned indices are stable across rules |
+| Per-identifier AC gating | `engine.rs` | `conditions_require_gated_hit()` — 1 044/1 102 real rules gated; rules where an identifier can be true without any AC hit are never prefilter-skipped |
+| Bulk rule load in bench | `harness/src/lib.rs` | `load_rules` (single AC rebuild) replaces per-rule `load_rule` in harness setup — fixes O(n²) load timing artefact |
+
+Cross-check after all fixes: **0 disagreements** vs sigma-rust on 2.2M cells;
+**13 cells (0.0006%)** vs tau-engine (one rule, converter semantics).
+
+### 11.3 Phase 1 — EventView + fold-once matching
+
+New modules `src/fold.rs` and `src/event_view.rs`. At rule load,
+`field_folded` and `values_folded` are populated in `FieldCondition`. Per event,
+`EventView::from_map()` builds a folded-key index once; the matcher looks up
+fields and pre-folded literals without repeated `to_lowercase()` scans.
+
+| Change | File |
+|---|---|
+| `fold_key` / `fold_value` helpers | `fold.rs` |
+| Per-event folded field index | `event_view.rs` |
+| Load-time folded fields | `types.rs`, `engine.rs` (`finalize_identifiers`) |
+| View-based matcher paths | `matcher.rs` |
+| Count-only hot API | `engine.rs` (`evaluate_event_count`, `evaluate_json_count`) |
+
+**Measured impact (Tier A, SigmaHQ 1 102 rules, single benign event):**
+
+| Stage | null-sigma latency | Δ vs pre-Phase-1 |
+|---|---|---|
+| Before EventView (post-AC-fix) | ~3.3 ms | — |
+| After EventView + count-only | **541 µs** | **~6× faster** |
+| tau-engine (same workload) | 139 µs | reference |
+
+Synthetic microbench (`1000_rules_single_event`) moved from 2.34 µs (§9) to
+**3.22 µs** — within noise of the AC correctness changes; the real-corpus win is
+the meaningful signal.
+
+### 11.4 Tier A results (2026-07-07, Apple M4, release)
+
+Criterion medians, 1 102 common rules, seed-42 events:
+
+| Benchmark | null-sigma | tau-engine | sigma-rust |
+|---|---|---|---|
+| `single_benign_event` | **541 µs** | **139 µs** | 4.61 ms |
+| `single_suspicious_event` | ~1.0 ms | ~150 µs | ~5.3 ms |
+| `batch_1000_events` | 602 ms | 142 ms | 3.94 s |
+| `rule_load` | 71 ms | 200 ms | 43 ms |
+
+null-sigma loads rules **2.8× faster** than tau-engine (71 ms vs 200 ms for
+1 102 rules) thanks to a single AC automaton rebuild via `load_rules`.
+
+### 11.5 Tier B results (2026-07-07, 100k events)
+
+| Command | Mean | Events/sec |
+|---|---|---|
+| `null-sigma-runner` | 120.4 s | 831 |
+| `hayabusa-1-thread` | 54.1 s | 1 850 |
+| `hayabusa-default-threads` | 17.7 s | 5 650 |
+| `chainsaw-hunt` | 31.5 s | 3 170 |
+
+Chainsaw binary runs under Rosetta 2 on Apple Silicon (no native aarch64 build);
+its Tier A representation is tau-engine natively.
+
+### 11.6 Remaining work (not yet implemented)
+
+| Phase | Target | Expected gain |
+|---|---|---|
+| Phase 2 — `EvalScratch` | Reuse `ac_hits` / `id_results` buffers per event | ~15–30% |
+| Phase 3 — ingest streaming | Reused line buffer, flat JSONL fast-path, optional rayon | Tier B parity |
+
+Fieldref/transform cold paths still call `to_lowercase()` once per field value in
+`eval_field`; a full EventView value cache was deferred from Phase 1.

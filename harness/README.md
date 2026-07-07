@@ -1,0 +1,140 @@
+# null-sigma head-to-head benchmark harness
+
+Roadmap item 3. Compares **null-sigma**, **tau-engine** (Chainsaw's matching
+core), and **sigma-rust** on the same SigmaHQ rules and seeded event stream.
+Also measures CLI end-to-end wall-clock vs Hayabusa and Chainsaw.
+
+The harness is a standalone workspace crate — it does not modify the core
+library except to consume it.
+
+## Prerequisites
+
+```bash
+# SigmaHQ corpus (dev-only, gitignored)
+git clone --depth 1 https://github.com/SigmaHQ/sigma.git corpus/sigmahq
+
+# Tier B only
+brew install hyperfine
+```
+
+## Measurement tiers
+
+| Tier | What | Command | Comparable? |
+|---|---|---|---|
+| **0** | Synthetic micro-rules (prefilter scaling) | `cargo bench --bench sigma_bench` (root crate) | Internal only |
+| **A** | Matcher-level, real rules, library APIs | `cargo bench --bench head_to_head` | null-sigma vs tau vs sigma-rust |
+| **B** | Full CLI wall-clock | `./scripts/run_cli_bench.sh` | Includes parse/enrich/output |
+
+**Never conflate Tier A and Tier B.** Tier A times only the matching call with
+pre-built native event representations. Tier B includes JSON parsing, field
+enrichment, alert formatting, and (for Hayabusa) multi-threading.
+
+## Correctness gate (run first)
+
+```bash
+cd harness
+cargo run --release --bin cross_check
+```
+
+Loads SigmaHQ `rules/windows/process_creation` (1 182 files) into all three
+engines, evaluates every common rule against 2 000 seeded events, and reports
+pairwise disagreements.
+
+Latest result (2026-07-07):
+
+| Pair | Disagreements | Rate |
+|---|---|---|
+| null-sigma vs sigma-rust | **0** | 0.0000% |
+| null-sigma vs tau-engine | 13 | 0.0006% |
+| tau-engine vs sigma-rust | 13 | 0.0006% |
+
+The 13 cells are all on `Suspicious SYSTEM User Process Creation` — attributable
+to Chainsaw converter semantics, not an engine bug in null-sigma.
+
+Load compatibility:
+
+| Engine | Loaded | Rate |
+|---|---|---|
+| null-sigma | 1 182 | 100.0% |
+| tau-engine (Chainsaw converter) | 1 102 | 93.2% |
+| sigma-rust | 1 181 | 99.9% |
+
+## Tier A — Criterion (matcher-level)
+
+```bash
+cd harness
+cargo bench --bench head_to_head
+```
+
+Benchmarks (1 102 common rules, seed-42 events, Apple M4, release, 2026-07-07):
+
+| Benchmark | null-sigma | tau-engine | sigma-rust |
+|---|---|---|---|
+| `single_benign_event` | **541 µs** | **139 µs** | 4.61 ms |
+| `batch_1000_events` | 602 ms | 142 ms | 3.94 s |
+| `rule_load` | 71 ms | 200 ms | 43 ms |
+
+null-sigma also benchmarks `null_sigma_full` with all 1 182 rules it loads.
+
+Interactive HTML: `harness/target/criterion/report/index.html`
+
+## Tier B — CLI end-to-end (hyperfine)
+
+```bash
+cd harness
+./scripts/run_cli_bench.sh          # default: 100k events, seed 42
+EVENTS=10000 ./scripts/run_cli_bench.sh   # smaller smoke run
+```
+
+Downloads pinned binaries to `harness/bin/` (gitignored):
+
+- Hayabusa **3.9.0** (native aarch64)
+- Chainsaw **2.13.1** (x86_64 under Rosetta 2 on Apple Silicon — noted in report)
+
+Dataset: deterministic flat JSONL (`gen_dataset` binary, seed 42).
+
+Latest result (100k events, 2026-07-07):
+
+| Command | Mean | Events/sec |
+|---|---|---|
+| `hayabusa-default-threads` | 17.7 s | 5 650 |
+| `hayabusa-1-thread` | 54.1 s | 1 850 |
+| `chainsaw-hunt` | 31.5 s | 3 170 |
+| `null-sigma-runner` | 120.4 s | 831 |
+
+Written to `harness/data/tier_b_results.md`.
+
+### Chainsaw JSON mapping
+
+Chainsaw's bundled EVTX mapping expects nested `Event.System.*` documents.
+For JSONL input we ship `config/chainsaw-json-mapping.yml` (`kind: json`) so
+flat nxlog-style records produce non-zero detections. Without it, Chainsaw
+silently matches nothing on JSONL and looks artificially fast.
+
+## Binaries
+
+| Binary | Purpose |
+|---|---|
+| `cross_check` | Correctness gate — run before publishing numbers |
+| `null_sigma_run` | Tier B reference CLI (`rule_dir events.jsonl`) |
+| `gen_dataset` | Deterministic JSONL event generator |
+
+## Layout
+
+```
+harness/
+├── benches/head_to_head.rs    # Tier A
+├── src/
+│   ├── lib.rs                 # Engine wrappers, rule compatibility
+│   ├── convert.rs             # Sigma → tau (Chainsaw path)
+│   └── gen.rs                 # Event generator
+├── src/bin/
+│   ├── cross_check.rs
+│   ├── null_sigma_run.rs
+│   └── gen_dataset.rs
+├── scripts/run_cli_bench.sh   # Tier B
+├── config/chainsaw-json-mapping.yml
+└── data/tier_b_results.md     # Latest Tier B output
+```
+
+Full performance analysis: `../PERFORMANCE.md` §11.

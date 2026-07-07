@@ -3,3 +3,10 @@ Cargo.lock
 
 # Vendored rule corpora for compatibility testing (dev-only, never committed)
 /corpus/
+
+# Benchmark harness artifacts: build output, downloaded competitor binaries,
+# generated datasets (all reproducible; see harness/README.md)
+/harness/target/
+/harness/bin/
+/harness/data/
+/harness/Cargo.lock
