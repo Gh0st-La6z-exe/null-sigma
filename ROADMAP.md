@@ -70,10 +70,11 @@ Delivered:
 Measured (Apple M4, release, 2026-07-08):
 - Tier A single benign event: null-sigma **309 µs** (314 µs after Phase 2;
   541 µs after Phase 1), tau-engine **136 µs**, sigma-rust 4.61 ms.
-- Tier B (100k events, post-0.1.3 instrumented runner): null-sigma **~45 s /
-  ~2.2k eps** (99% eval; read+parse+flat ≤1%). Pre–Phase-2 hyperfine still
-  shows Hayabusa default **17.7 s** / null-sigma **120.4 s** — re-bench needed
-  for a fair wall-clock compare.
+- Tier B hyperfine (100k events, refreshed post-0.1.3):
+  Hayabusa default **17.2 s**, null-sigma **47.7 s**, Hayabusa-1-thread
+  **59.3 s**, Chainsaw **34.2 s**. **Single-thread win vs Hayabusa (~1.24×)**;
+  multi-thread gap **~2.8×** wall (~6× Hayabusa user/wall). Tax split: eval
+  **99%**.
 
 Core fixes discovered/enabled by the harness:
 - AC overlapping scan + pattern interning (false-negative elimination).
@@ -82,13 +83,14 @@ Core fixes discovered/enabled by the harness:
 - Phase 2 EvalScratch + load-time `ValueMatchCache` (~1.7× on top of Phase 1).
 - EventView value cache (lazy fold + wildcard char cache; ~1.5–2% on top).
 - Count-only API (`evaluate_event_count`).
-- Tier B tax split (`null_sigma_run` stderr) — proved ingest is not the drag.
+- Tier B tax split + refreshed hyperfine baseline (no phantom 120 s).
 
 Full numbers and reproduction steps: `harness/README.md`, `PERFORMANCE.md` §11,
 `harness/data/tier_b_results.md`.
 
-Follow-up: direction open — matcher structural work and/or parallel CLI;
-ingest Phase 3 deprioritized (`PERFORMANCE.md` §11.5a / §11.6).
+Follow-up: direction open — Rayon CLI (≥~3 workers to match Hayabusa default)
+and/or matcher structural work; ingest Phase 3 deprioritized
+(`PERFORMANCE.md` §11.5a / §11.6).
 
 ## 3b. Phase 2 — EvalScratch + pattern cache (DONE — 2026-07-07)
 

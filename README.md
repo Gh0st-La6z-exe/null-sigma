@@ -399,18 +399,18 @@ vs tau-engine **13 cells (0.0006%)** on one rule (Chainsaw converter semantics).
 On real SigmaHQ rules, tau-engine is **~2.3× faster** per event; null-sigma is
 **~15× faster** than sigma-rust. See `harness/README.md` and `PERFORMANCE.md` §11.
 
-**Tier B** — CLI end-to-end, 100 000 JSONL events (hyperfine, 5 runs):
+**Tier B** — CLI end-to-end, 100 000 JSONL events (hyperfine, 5 runs, 2026-07-08):
 
 | Tool | Wall time | Events/sec |
 |---|---|---|
-| Hayabusa (default threads) | 17.7 s | 5 650 |
-| Hayabusa (1 thread) | 54.1 s | 1 850 |
-| Chainsaw hunt | 31.5 s | 3 170 |
-| null-sigma runner | 120.4 s | 831 |
+| Hayabusa (default threads) | **17.2 s** | **5 800** |
+| null-sigma runner (1 thread) | **47.7 s** | **2 100** |
+| Chainsaw hunt | 34.2 s | 2 925 |
+| Hayabusa (1 thread) | 59.3 s | 1 690 |
 
-Tier B includes each tool's full pipeline. The null-sigma runner is a minimal
-reference implementation (single-threaded, count-only); ingest optimisation is
-planned (Phase 3 in `PERFORMANCE.md` §11.6).
+Single-thread: null-sigma **beats** Hayabusa (~1.24×). Multi-thread Hayabusa
+remains ~2.8× faster wall-clock. Tax split shows eval is **99%** of our scan —
+see `PERFORMANCE.md` §11.5 / §11.5a.
 
 These figures include the correctness hardening and AC prefilter fixes added in
 July 2026 — traded for eliminating several false-negative classes and enabling

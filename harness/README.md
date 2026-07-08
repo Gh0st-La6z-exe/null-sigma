@@ -112,19 +112,21 @@ Downloads pinned binaries to `harness/bin/` (gitignored):
 
 Dataset: deterministic flat JSONL (`gen_dataset` binary, seed 42).
 
-Latest hyperfine (100k events, 2026-07-07 — pre–Phase 2):
+Latest hyperfine (100k events, 2026-07-08, post-0.1.3; warmup 1 + 5 runs):
 
 | Command | Mean | Events/sec |
 |---|---|---|
-| `hayabusa-default-threads` | 17.7 s | 5 650 |
-| `hayabusa-1-thread` | 54.1 s | 1 850 |
-| `chainsaw-hunt` | 31.5 s | 3 170 |
-| `null-sigma-runner` | 120.4 s | 831 |
+| `hayabusa-default-threads` | **17.2 s ± 0.6** | **5 800** |
+| `chainsaw-hunt` | 34.2 s ± 2.8 | 2 925 |
+| `null-sigma-runner` | **47.7 s ± 1.6** | **2 100** |
+| `hayabusa-1-thread` | 59.3 s ± 4.5 | 1 690 |
 
-Post-0.1.3 solo runner (same flat JSONL, 1 182 rules): **~45 s / ~2.2k eps**.
-Tax split: **eval 99%**; read+parse+flat ≤1% — see `PERFORMANCE.md` §11.5a.
+**Single-thread win:** null-sigma ~1.24× faster than Hayabusa `--threads 1`.
+**Thread gap:** Hayabusa default ~2.76× faster wall (≈6× user/wall); Rayon
+needs roughly ≥3 efficient workers to match from our ST base.
+Tax split: **eval 99%** — see `PERFORMANCE.md` §11.5a.
 
-Written to `harness/data/tier_b_results.md`.
+Written to `harness/data/tier_b_results.md` (gitignored).
 
 ### Chainsaw JSON mapping
 

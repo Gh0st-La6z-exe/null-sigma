@@ -308,14 +308,15 @@ full pipeline (parse, enrich, output) — not comparable to Tier A matcher numbe
 
 | Tool | Wall time | Events/sec |
 |---|---|---|
-| Hayabusa (default threads) | 17.7 s | **5 650** |
-| Hayabusa (1 thread) | 54.1 s | 1 850 |
-| Chainsaw hunt (Rosetta x86_64) | 31.5 s | 3 170 |
-| null-sigma runner | 120.4 s | 831 |
+| Hayabusa (default threads) | **17.2 s** | **5 800** |
+| null-sigma runner (1 thread) | **47.7 s** | **2 100** |
+| Chainsaw hunt (Rosetta x86_64) | 34.2 s | 2 925 |
+| Hayabusa (1 thread) | 59.3 s | 1 690 |
 
-Hayabusa's multi-threaded CLI is fastest end-to-end. null-sigma's Tier B runner is
-currently a minimal reference implementation (single-threaded, count-only, no output
-pipeline) and is not yet optimised for ingest — see §11.6 for planned Phase 3 work.
+**Single-thread:** null-sigma beats Hayabusa **~1.24×** (47.7 s vs 59.3 s).
+**Multi-thread gap:** Hayabusa default is **~2.8×** faster wall-clock (~6× user-CPU
+over wall); Rayon needs roughly **≥3 efficient workers** to match that wall clock
+from our single-thread base, more to clear it. See §11.5.
 
 ---
 
@@ -630,41 +631,49 @@ Phase 2 (`EvalScratch` + `ValueMatchCache`) moved `single_benign_event` from
 541 µs → **314 µs**. The EventView value cache then moved **314 µs → 309 µs**.
 tau-engine gap is **~2.3×**.
 
-### 11.5 Tier B results (2026-07-07, 100k events)
+### 11.5 Tier B results (2026-07-08, 100k events, post-0.1.3)
+
+Fresh `run_cli_bench.sh` (hyperfine warmup 1 + 5 runs, Apple M4, 10 logical
+cores, Hayabusa 3.9.0, Chainsaw 2.13.1 Rosetta, **1 182** `process_creation`
+YAML rules, seed-42 flat/EVTX JSONL):
 
 | Command | Mean | Events/sec |
 |---|---|---|
-| `null-sigma-runner` | 120.4 s | 831 |
-| `hayabusa-1-thread` | 54.1 s | 1 850 |
-| `hayabusa-default-threads` | 17.7 s | 5 650 |
-| `chainsaw-hunt` | 31.5 s | 3 170 |
+| `hayabusa-default-threads` | **17.2 s ± 0.6** | **5 800** |
+| `chainsaw-hunt` | 34.2 s ± 2.8 | 2 925 |
+| `null-sigma-runner` | **47.7 s ± 1.6** | **2 100** |
+| `hayabusa-1-thread` | 59.3 s ± 4.5 | 1 690 |
 
-Chainsaw binary runs under Rosetta 2 on Apple Silicon (no native aarch64 build);
-its Tier A representation is tau-engine natively.
+**Core-for-core:** null-sigma single-thread **wins vs Hayabusa-1-thread**
+(~1.24×; 47.7 s vs 59.3 s). Pre–Phase-2 phantom (null-sigma 120.4 s) is
+retired.
 
-Re-run after 0.1.3 (same machine, `events_flat_100000.jsonl`, all
-`process_creation` YAML → **1 182** rules): **~45.0 s / ~2 225 eps**.
-Older 120.4 s predates Phase 2 + value cache; not directly comparable to
-Hayabusa/Chainsaw numbers above until `run_cli_bench.sh` is re-run.
+**Thread advantage:** Hayabusa default wall is **~2.76×** faster than our
+single-thread mean; its run used **~102.7 s user / 17.2 s wall ≈ 6.0×**
+effective concurrency. Ideal Rayon workers to *match* default wall from our
+base ≈ **ceil(47.7 / 17.2) = 3**; beating it needs more headroom (or still-
+faster single-thread).
+
+Chainsaw remains Rosetta-penalised on Apple Silicon; Tier A via tau-engine is
+the native matcher comparison.
 
 ### 11.5a Tier B tax split (2026-07-08, post-0.1.3)
 
-`null_sigma_run` now prints a wall-clock split on stderr. Flat JSONL fixture
-(17 already-flat keys per line, seed 42, 100k events):
+`null_sigma_run` prints a wall-clock split on stderr. Flat JSONL fixture
+(17 already-flat keys per line, seed 42, 100k events; smoke concurrent with
+hyperfine):
 
 | Stage | Seconds | Share of scan |
 |---|---|---|
-| read (`read_line` reuse) | 0.057 | 0.1% |
+| read (`read_line` reuse) | 0.044 | 0.1% |
 | parse (`serde_json::from_str`) | 0.169 | 0.4% |
-| flatten (`flatten_value`) | 0.136 | 0.3% |
-| **eval** (`evaluate_event_count`) | **44.5** | **99.0%** |
+| flatten (`flatten_value`) | 0.133 | 0.3% |
+| **eval** (`evaluate_event_count`) | **44.0** | **99.0%** |
 | other | 0.089 | 0.2% |
 
-**Verdict:** on this Tier B workload, ingest is not the drag — matcher eval
-is. Phase 3 line-buffer / flat-JSONL ingest work would at best shave
-sub-second. Closing toward Hayabusa means either faster single-thread
-matching (structural matcher work / fewer rules touched) or rayon/threads
-like Hayabusa's multi-thread CLI.
+**Verdict:** ingest ≤1% — Phase 3 flat-JSONL ingest deprioritized. Wall clock
+to beat is Hayabusa **multi-thread** (17.2 s), not ingest; Rayon (or further
+single-thread matcher work) is the remaining lever.
 
 ### 11.6 Remaining work
 
@@ -673,8 +682,8 @@ like Hayabusa's multi-thread CLI.
 | Phase 2 — `EvalScratch` + pattern cache | Reuse `ac_hits` / `id_results`; load-time `ValueMatchCache` | **DONE** (2026-07-07) |
 | EventView value cache | Lazy fold + wildcard char cache per event field | **DONE** (2026-07-08) |
 | Phase 3 — ingest streaming | Reused line buffer, flat JSONL fast-path | **Deprioritized** — tax split shows ≤1% of Tier B |
-| Parallel Tier B / CLI | Optional rayon or multi-thread runner | Open — main lever vs Hayabusa wall clock |
-| Matcher structural gap | vs tau-engine ~2.3× on Tier A | Open — single-thread ceiling |
+| Parallel Tier B / CLI | Optional rayon (≥~3 workers to match Hayabusa default wall) | Open — primary Tier B lever |
+| Matcher structural gap | vs tau-engine ~2.3× on Tier A | Open — raises ST base further |
 
 Remaining matcher-level room vs tau-engine (~2.3×) is largely structural
 (compiled matcher vs condition-tree eval), not more fold/alloc micro-opts.
