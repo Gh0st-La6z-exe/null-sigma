@@ -642,13 +642,39 @@ tau-engine gap is **~2.3×**.
 Chainsaw binary runs under Rosetta 2 on Apple Silicon (no native aarch64 build);
 its Tier A representation is tau-engine natively.
 
+Re-run after 0.1.3 (same machine, `events_flat_100000.jsonl`, all
+`process_creation` YAML → **1 182** rules): **~45.0 s / ~2 225 eps**.
+Older 120.4 s predates Phase 2 + value cache; not directly comparable to
+Hayabusa/Chainsaw numbers above until `run_cli_bench.sh` is re-run.
+
+### 11.5a Tier B tax split (2026-07-08, post-0.1.3)
+
+`null_sigma_run` now prints a wall-clock split on stderr. Flat JSONL fixture
+(17 already-flat keys per line, seed 42, 100k events):
+
+| Stage | Seconds | Share of scan |
+|---|---|---|
+| read (`read_line` reuse) | 0.057 | 0.1% |
+| parse (`serde_json::from_str`) | 0.169 | 0.4% |
+| flatten (`flatten_value`) | 0.136 | 0.3% |
+| **eval** (`evaluate_event_count`) | **44.5** | **99.0%** |
+| other | 0.089 | 0.2% |
+
+**Verdict:** on this Tier B workload, ingest is not the drag — matcher eval
+is. Phase 3 line-buffer / flat-JSONL ingest work would at best shave
+sub-second. Closing toward Hayabusa means either faster single-thread
+matching (structural matcher work / fewer rules touched) or rayon/threads
+like Hayabusa's multi-thread CLI.
+
 ### 11.6 Remaining work
 
 | Phase | Target | Status |
 |---|---|---|
 | Phase 2 — `EvalScratch` + pattern cache | Reuse `ac_hits` / `id_results`; load-time `ValueMatchCache` | **DONE** (2026-07-07) |
 | EventView value cache | Lazy fold + wildcard char cache per event field | **DONE** (2026-07-08) |
-| Phase 3 — ingest streaming | Reused line buffer, flat JSONL fast-path, optional rayon | Planned — Tier B parity |
+| Phase 3 — ingest streaming | Reused line buffer, flat JSONL fast-path | **Deprioritized** — tax split shows ≤1% of Tier B |
+| Parallel Tier B / CLI | Optional rayon or multi-thread runner | Open — main lever vs Hayabusa wall clock |
+| Matcher structural gap | vs tau-engine ~2.3× on Tier A | Open — single-thread ceiling |
 
 Remaining matcher-level room vs tau-engine (~2.3×) is largely structural
 (compiled matcher vs condition-tree eval), not more fold/alloc micro-opts.

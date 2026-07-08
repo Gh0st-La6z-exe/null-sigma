@@ -112,7 +112,7 @@ Downloads pinned binaries to `harness/bin/` (gitignored):
 
 Dataset: deterministic flat JSONL (`gen_dataset` binary, seed 42).
 
-Latest result (100k events, 2026-07-07):
+Latest hyperfine (100k events, 2026-07-07 — pre–Phase 2):
 
 | Command | Mean | Events/sec |
 |---|---|---|
@@ -120,6 +120,9 @@ Latest result (100k events, 2026-07-07):
 | `hayabusa-1-thread` | 54.1 s | 1 850 |
 | `chainsaw-hunt` | 31.5 s | 3 170 |
 | `null-sigma-runner` | 120.4 s | 831 |
+
+Post-0.1.3 solo runner (same flat JSONL, 1 182 rules): **~45 s / ~2.2k eps**.
+Tax split: **eval 99%**; read+parse+flat ≤1% — see `PERFORMANCE.md` §11.5a.
 
 Written to `harness/data/tier_b_results.md`.
 
