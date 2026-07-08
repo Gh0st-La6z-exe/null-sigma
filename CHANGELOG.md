@@ -8,7 +8,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### (next release)
+---
+
+## [0.1.3] — 2026-07-08
+
+### Added
+
+- **EventView value cache.** Lazily caches folded (lowercased) event field
+  values and, for active-wildcard conditions only, a char vector of the folded
+  string. Shared across all rules for one event evaluation — including
+  `|fieldref`. Removes per-condition `to_lowercase` on event fields and avoids
+  repeated `Vec<char>` allocation in `wildcard_match_impl`.
+
+### Changed
+
+- **Tier A performance (SigmaHQ 1 102 rules, benign event).** Single-event
+  latency **314 µs → 309 µs** (~1.5–2% vs Phase 2). Batch ~373 ms (noise vs
+  prior 378 ms).
 
 ---
 

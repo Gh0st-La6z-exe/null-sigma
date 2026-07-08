@@ -114,14 +114,31 @@ pub(crate) fn match_field_condition_on_view(
 
     // Determine if "all" modifier is present (changes OR to AND for values)
     let require_all = condition.modifiers.contains(&ValueModifier::All);
+    let needs_chars = condition_needs_char_cache(condition, &transformed_values);
 
-    let mut matched_any_field = false;
-    let eval_field = |field_value: &str| -> bool {
-        let field_lower = field_value.to_lowercase();
-        if require_all {
-            transformed_values.iter().enumerate().all(|(idx, val)| {
+    // Collect indices so we can mutably cache folded/char values on the view.
+    // Reuse a small stack-friendly path: most fields have 0–1 values.
+    let mut indices: Vec<usize> = Vec::with_capacity(4);
+    if condition.field.is_empty() {
+        view.collect_indices_all(&mut indices);
+    } else {
+        view.collect_indices_for_field(&field_folded, &mut indices);
+    }
+    if indices.is_empty() {
+        return false;
+    }
+
+    for idx in indices {
+        prepare_view_value(view, idx, needs_chars);
+        let (field_value, field_lower, field_chars) = view.match_inputs(idx, needs_chars);
+
+        let matched = if require_all {
+            transformed_values.iter().enumerate().all(|(v_idx, val)| {
                 let sigma_folded = if use_precomputed_folds {
-                    condition.values_folded.get(idx).and_then(|v| v.as_deref())
+                    condition
+                        .values_folded
+                        .get(v_idx)
+                        .and_then(|v| v.as_deref())
                 } else {
                     None
                 };
@@ -130,17 +147,21 @@ pub(crate) fn match_field_condition_on_view(
                     sigma_folded,
                     condition
                         .values_match_cache
-                        .get(idx)
+                        .get(v_idx)
                         .filter(|c| c.is_populated()),
                     field_value,
-                    &field_lower,
+                    field_lower,
+                    field_chars,
                     &condition.modifiers,
                 )
             })
         } else {
-            transformed_values.iter().enumerate().any(|(idx, val)| {
+            transformed_values.iter().enumerate().any(|(v_idx, val)| {
                 let sigma_folded = if use_precomputed_folds {
-                    condition.values_folded.get(idx).and_then(|v| v.as_deref())
+                    condition
+                        .values_folded
+                        .get(v_idx)
+                        .and_then(|v| v.as_deref())
                 } else {
                     None
                 };
@@ -149,37 +170,73 @@ pub(crate) fn match_field_condition_on_view(
                     sigma_folded,
                     condition
                         .values_match_cache
-                        .get(idx)
+                        .get(v_idx)
                         .filter(|c| c.is_populated()),
                     field_value,
-                    &field_lower,
+                    field_lower,
+                    field_chars,
                     &condition.modifiers,
                 )
             })
+        };
+        if matched {
+            return true;
         }
-    };
-
-    if condition.field.is_empty() {
-        for (_, field_value) in view.values_all() {
-            matched_any_field = true;
-            if eval_field(field_value) {
-                return true;
-            }
-        }
-    } else {
-        for (_, field_value) in view.values_for_field(&field_folded) {
-            matched_any_field = true;
-            if eval_field(field_value) {
-                return true;
-            }
-        }
-    }
-
-    if !matched_any_field {
-        return false;
     }
 
     false
+}
+
+/// True when matching may need a char vector of the folded field value.
+///
+/// Only active-wildcard (`*`/`?`) paths need chars. Escaped backslashes and
+/// pure literals use string ops via `ValueMatchCache::literal` — forcing a
+/// char cache for every Windows path (contains `\`) was a measured regression.
+fn condition_needs_char_cache(condition: &FieldCondition, transformed: &[SigmaValue]) -> bool {
+    if condition.modifiers.iter().any(|m| {
+        matches!(
+            m,
+            ValueModifier::Regex
+                | ValueModifier::Cidr
+                | ValueModifier::Gt
+                | ValueModifier::Gte
+                | ValueModifier::Lt
+                | ValueModifier::Lte
+                | ValueModifier::Exists
+                | ValueModifier::FieldRef
+        )
+    }) {
+        return false;
+    }
+
+    // Engine path: cache populated at load — only tokenized wildcards need chars.
+    if condition
+        .values_match_cache
+        .iter()
+        .any(ValueMatchCache::is_populated)
+    {
+        return condition
+            .values_match_cache
+            .iter()
+            .any(|c| c.tokens.is_some());
+    }
+
+    // Hand-built / uncached conditions (tests): active wildcards only.
+    transformed.iter().any(|v| match v {
+        SigmaValue::String(s) => {
+            // Active `*`/`?`, or escape sequences that don't reduce to a literal.
+            (s.contains('*') || s.contains('?') || s.contains('\\')) && pattern_literal(s).is_none()
+        }
+        _ => false,
+    })
+}
+
+fn prepare_view_value(view: &mut EventView<'_>, idx: usize, needs_chars: bool) {
+    if needs_chars {
+        view.ensure_chars(idx);
+    } else {
+        view.ensure_folded(idx);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -244,46 +301,52 @@ fn handle_fieldref<S: BuildHasher>(
 }
 
 fn handle_fieldref_on_view(condition: &FieldCondition, view: &mut EventView<'_>) -> bool {
-    // Case-insensitive lookup of a field's value, matching the engine's
-    // field-name semantics elsewhere.
-    let lookup = |name: &str| -> Option<&str> {
-        let name_lower = fold_key(name);
-        view.first_value_for_folded_field(&name_lower)
-    };
-
-    let Some(subject) = lookup(condition_field_folded(condition).as_ref()) else {
+    let subject_field = condition_field_folded(condition);
+    let Some(subject_idx) = view.first_index_for_folded_field(subject_field.as_ref()) else {
         return false;
     };
+    view.ensure_folded(subject_idx);
 
     let has_contains = condition.modifiers.contains(&ValueModifier::Contains);
     let has_startswith = condition.modifiers.contains(&ValueModifier::StartsWith);
     let has_endswith = condition.modifiers.contains(&ValueModifier::EndsWith);
     let require_all = condition.modifiers.contains(&ValueModifier::All);
 
-    let subject_lower = subject.to_lowercase();
-    let check = |value: &SigmaValue| -> bool {
-        let referenced_field = value.as_str_lossy();
-        let Some(referenced) = lookup(&referenced_field) else {
+    // Resolve referenced field indices up-front and cache their folds, then
+    // compare using borrowed strings (no per-check to_lowercase).
+    let mut referenced: Vec<Option<usize>> = Vec::with_capacity(condition.values.len());
+    for value in &condition.values {
+        let name_lower = fold_key(&value.as_str_lossy());
+        let idx = view.first_index_for_folded_field(&name_lower);
+        if let Some(i) = idx {
+            view.ensure_folded(i);
+        }
+        referenced.push(idx);
+    }
+
+    let subject_lower = view.folded_at(subject_idx);
+    let check = |ref_idx: Option<usize>| -> bool {
+        let Some(i) = ref_idx else {
             return false;
         };
         // The referenced value is DATA, not a pattern — wildcards in event
         // values must compare literally, so plain string ops are correct.
-        let referenced_lower = referenced.to_lowercase();
+        let referenced_lower = view.folded_at(i);
         if has_contains {
-            subject_lower.contains(&referenced_lower)
+            subject_lower.contains(referenced_lower)
         } else if has_startswith {
-            subject_lower.starts_with(&referenced_lower)
+            subject_lower.starts_with(referenced_lower)
         } else if has_endswith {
-            subject_lower.ends_with(&referenced_lower)
+            subject_lower.ends_with(referenced_lower)
         } else {
             subject_lower == referenced_lower
         }
     };
 
     if require_all {
-        condition.values.iter().all(check)
+        referenced.iter().copied().all(check)
     } else {
-        condition.values.iter().any(check)
+        referenced.iter().copied().any(check)
     }
 }
 
@@ -492,6 +555,7 @@ fn value_matches(
     match_cache: Option<&ValueMatchCache>,
     field_value: &str,
     field_lower: &str,
+    field_chars: Option<&[char]>,
     modifiers: &[ValueModifier],
 ) -> bool {
     // Null matches empty/missing fields only
@@ -534,15 +598,15 @@ fn value_matches(
 
     // String matching with modifier-determined mode
     if has_contains {
-        return value_matches_contains(sigma_lower, match_cache, field_lower);
+        return value_matches_contains(sigma_lower, match_cache, field_lower, field_chars);
     }
 
     if has_startswith {
-        return value_matches_startswith(sigma_lower, match_cache, field_lower);
+        return value_matches_startswith(sigma_lower, match_cache, field_lower, field_chars);
     }
 
     if has_endswith {
-        return value_matches_endswith(sigma_lower, match_cache, field_lower);
+        return value_matches_endswith(sigma_lower, match_cache, field_lower, field_chars);
     }
 
     // Default: full match with wildcard support.
@@ -550,7 +614,7 @@ fn value_matches(
     // escape characters so `\*` / `\\` sequences compare by their unescaped
     // literal form, per the Sigma escaping rules.
     if sigma_value.has_wildcards() || sigma_lower.contains('\\') {
-        value_matches_wildcard(sigma_lower, match_cache, field_lower)
+        value_matches_wildcard(sigma_lower, match_cache, field_lower, field_chars)
     } else {
         sigma_lower == field_lower
     }
@@ -560,64 +624,68 @@ fn value_matches_contains(
     sigma_lower: &str,
     match_cache: Option<&ValueMatchCache>,
     field_lower: &str,
+    field_chars: Option<&[char]>,
 ) -> bool {
     if let Some(cache) = match_cache {
         if let Some(literal) = &cache.literal {
             return field_lower.contains(literal.as_str());
         }
         if let Some(tokens) = &cache.tokens {
-            return wildcard_match_wrapped_tokens(tokens, field_lower, true, true);
+            return wildcard_match_wrapped_tokens(tokens, field_lower, field_chars, true, true);
         }
     }
-    wildcard_contains(sigma_lower, field_lower)
+    wildcard_contains(sigma_lower, field_lower, field_chars)
 }
 
 fn value_matches_startswith(
     sigma_lower: &str,
     match_cache: Option<&ValueMatchCache>,
     field_lower: &str,
+    field_chars: Option<&[char]>,
 ) -> bool {
     if let Some(cache) = match_cache {
         if let Some(literal) = &cache.literal {
             return field_lower.starts_with(literal.as_str());
         }
         if let Some(tokens) = &cache.tokens {
-            return wildcard_match_wrapped_tokens(tokens, field_lower, false, true);
+            return wildcard_match_wrapped_tokens(tokens, field_lower, field_chars, false, true);
         }
     }
-    wildcard_startswith(sigma_lower, field_lower)
+    wildcard_startswith(sigma_lower, field_lower, field_chars)
 }
 
 fn value_matches_endswith(
     sigma_lower: &str,
     match_cache: Option<&ValueMatchCache>,
     field_lower: &str,
+    field_chars: Option<&[char]>,
 ) -> bool {
     if let Some(cache) = match_cache {
         if let Some(literal) = &cache.literal {
             return field_lower.ends_with(literal.as_str());
         }
         if let Some(tokens) = &cache.tokens {
-            return wildcard_match_wrapped_tokens(tokens, field_lower, true, false);
+            return wildcard_match_wrapped_tokens(tokens, field_lower, field_chars, true, false);
         }
     }
-    wildcard_endswith(sigma_lower, field_lower)
+    wildcard_endswith(sigma_lower, field_lower, field_chars)
 }
 
 fn value_matches_wildcard(
     sigma_lower: &str,
     match_cache: Option<&ValueMatchCache>,
     field_lower: &str,
+    field_chars: Option<&[char]>,
 ) -> bool {
     if let Some(cache) = match_cache {
         if let Some(literal) = &cache.literal {
             return literal == field_lower;
         }
         if let Some(tokens) = &cache.tokens {
-            return wildcard_match_tokens(tokens, field_lower);
+            return wildcard_match_tokens(tokens, field_lower, field_chars);
         }
     }
-    wildcard_match(sigma_lower, field_lower)
+    wildcard_match(sigma_lower, field_lower, field_chars)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -682,13 +750,16 @@ pub(crate) fn pattern_literal(pattern: &str) -> Option<String> {
 }
 
 /// Full wildcard match: `*` matches any sequence, `?` matches single char.
-fn wildcard_match(pattern: &str, text: &str) -> bool {
-    wildcard_match_tokens(&tokenize_pattern(pattern), text)
+fn wildcard_match(pattern: &str, text: &str, text_chars: Option<&[char]>) -> bool {
+    wildcard_match_tokens(&tokenize_pattern(pattern), text, text_chars)
 }
 
-fn wildcard_match_tokens(tokens: &[PatToken], text: &str) -> bool {
-    let text_chars: Vec<char> = text.chars().collect();
-    wildcard_match_impl(tokens, &text_chars)
+fn wildcard_match_tokens(tokens: &[PatToken], text: &str, text_chars: Option<&[char]>) -> bool {
+    if let Some(chars) = text_chars {
+        return wildcard_match_impl(tokens, chars);
+    }
+    let owned: Vec<char> = text.chars().collect();
+    wildcard_match_impl(tokens, &owned)
 }
 
 /// Two-pointer wildcard matching over tokenized patterns.
@@ -733,7 +804,13 @@ fn wildcard_match_impl(pattern: &[PatToken], text: &[char]) -> bool {
 
 /// Match tokenized pattern against text with implicit `*` anchors.
 /// `star_before`/`star_after` add unanchored ends for contains/startswith/endswith.
-fn wildcard_match_wrapped(pattern: &str, text: &str, star_before: bool, star_after: bool) -> bool {
+fn wildcard_match_wrapped(
+    pattern: &str,
+    text: &str,
+    text_chars: Option<&[char]>,
+    star_before: bool,
+    star_after: bool,
+) -> bool {
     // Fast path: pure literal after unescaping → plain substring operations.
     if let Some(literal) = pattern_literal(pattern) {
         return match (star_before, star_after) {
@@ -752,12 +829,13 @@ fn wildcard_match_wrapped(pattern: &str, text: &str, star_before: bool, star_aft
     if star_after {
         tokens.push(PatToken::Star);
     }
-    wildcard_match_tokens(&tokens, text)
+    wildcard_match_tokens(&tokens, text, text_chars)
 }
 
 fn wildcard_match_wrapped_tokens(
     tokens: &[PatToken],
     text: &str,
+    text_chars: Option<&[char]>,
     star_before: bool,
     star_after: bool,
 ) -> bool {
@@ -769,22 +847,22 @@ fn wildcard_match_wrapped_tokens(
     if star_after {
         wrapped.push(PatToken::Star);
     }
-    wildcard_match_tokens(&wrapped, text)
+    wildcard_match_tokens(&wrapped, text, text_chars)
 }
 
 /// Contains with wildcard support in the pattern.
-fn wildcard_contains(pattern: &str, text: &str) -> bool {
-    wildcard_match_wrapped(pattern, text, true, true)
+fn wildcard_contains(pattern: &str, text: &str, text_chars: Option<&[char]>) -> bool {
+    wildcard_match_wrapped(pattern, text, text_chars, true, true)
 }
 
 /// Starts-with with wildcard support.
-fn wildcard_startswith(pattern: &str, text: &str) -> bool {
-    wildcard_match_wrapped(pattern, text, false, true)
+fn wildcard_startswith(pattern: &str, text: &str, text_chars: Option<&[char]>) -> bool {
+    wildcard_match_wrapped(pattern, text, text_chars, false, true)
 }
 
 /// Ends-with with wildcard support.
-fn wildcard_endswith(pattern: &str, text: &str) -> bool {
-    wildcard_match_wrapped(pattern, text, true, false)
+fn wildcard_endswith(pattern: &str, text: &str, text_chars: Option<&[char]>) -> bool {
+    wildcard_match_wrapped(pattern, text, text_chars, true, false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1023,18 +1101,30 @@ fn match_field_condition_with_cache_on_view<S2: BuildHasher>(
     let has_regex = condition.modifiers.contains(&ValueModifier::Regex);
     let use_precomputed_folds = !condition.modifiers.iter().any(ValueModifier::is_transform)
         && transformed_values.len() == condition.values_folded.len();
+    let needs_chars = !has_regex && condition_needs_char_cache(condition, &transformed_values);
 
-    let mut matched_any_field = false;
-    let eval_field = |field_value: &str| {
-        let field_lower = field_value.to_lowercase();
-        let check = |val: &SigmaValue| -> bool {
-            if has_regex {
-                // Look up the pre-compiled Regex; fall back to on-demand compile
-                // only if the cache is missing the pattern (should not happen in
-                // normal operation — indicates a bug in collect_compiled_regexes).
-                // Cache key mirrors collect_compiled_regexes: raw pattern for
-                // plain |re (zero-allocation hot path), full flagged pattern
-                // only when |m/|s sub-modifiers are present.
+    let mut indices: Vec<usize> = Vec::with_capacity(4);
+    if condition.field.is_empty() {
+        view.collect_indices_all(&mut indices);
+    } else {
+        view.collect_indices_for_field(&field_folded, &mut indices);
+    }
+    if indices.is_empty() {
+        return false;
+    }
+
+    for idx in indices {
+        // Regex paths compare the raw field; still fold when non-regex matching
+        // shares this view (chars/fold only when needed).
+        if has_regex {
+            // No fold/chars needed for |re; match against the raw string.
+        } else {
+            prepare_view_value(view, idx, needs_chars);
+        }
+        let field_value = view.raw_at(idx);
+
+        let matched = if has_regex {
+            let check = |val: &SigmaValue| -> bool {
                 let pattern = val.as_str_lossy();
                 let cached = if has_regex_flag_modifiers(&condition.modifiers) {
                     regex_cache.get(&regex_pattern_with_flags(&pattern, &condition.modifiers))
@@ -1045,57 +1135,48 @@ fn match_field_condition_with_cache_on_view<S2: BuildHasher>(
                     Some(re) => re.is_match(field_value),
                     None => regex_matches(&pattern, field_value, &condition.modifiers),
                 }
+            };
+            if require_all {
+                transformed_values.iter().all(check)
             } else {
+                transformed_values.iter().any(check)
+            }
+        } else {
+            let (field_value, field_lower, field_chars) = view.match_inputs(idx, needs_chars);
+            let check = |val: &SigmaValue| -> bool {
                 let value_idx = condition
                     .values
                     .iter()
                     .position(|candidate| candidate == val);
                 let sigma_folded = if use_precomputed_folds {
                     value_idx
-                        .and_then(|idx| condition.values_folded.get(idx))
+                        .and_then(|i| condition.values_folded.get(i))
                         .and_then(|v| v.as_deref())
                 } else {
                     None
                 };
                 let match_cache = value_idx
-                    .and_then(|idx| condition.values_match_cache.get(idx))
+                    .and_then(|i| condition.values_match_cache.get(i))
                     .filter(|c| c.is_populated());
                 value_matches(
                     val,
                     sigma_folded,
                     match_cache,
                     field_value,
-                    &field_lower,
+                    field_lower,
+                    field_chars,
                     &condition.modifiers,
                 )
+            };
+            if require_all {
+                transformed_values.iter().all(check)
+            } else {
+                transformed_values.iter().any(check)
             }
         };
-
-        if require_all {
-            transformed_values.iter().all(check)
-        } else {
-            transformed_values.iter().any(check)
+        if matched {
+            return true;
         }
-    };
-
-    if condition.field.is_empty() {
-        for (_, field_value) in view.values_all() {
-            matched_any_field = true;
-            if eval_field(field_value) {
-                return true;
-            }
-        }
-    } else {
-        for (_, field_value) in view.values_for_field(&field_folded) {
-            matched_any_field = true;
-            if eval_field(field_value) {
-                return true;
-            }
-        }
-    }
-
-    if !matched_any_field {
-        return false;
     }
 
     false

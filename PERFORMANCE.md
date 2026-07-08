@@ -1,7 +1,7 @@
 # null-sigma — Performance Engineering Report
 
-**Date:** 2026-07-01 (updated 2026-07-07)
-**Crate:** `null-sigma` v0.1.0
+**Date:** 2026-07-01 (updated 2026-07-08)
+**Crate:** `null-sigma` v0.1.3
 **Rust:** edition 2021, release profile
 **Platform:** Apple M4 (arm64), macOS — 64 KB L1d cache, 4 MB L2
 
@@ -288,7 +288,7 @@ See §11 for methodology.
 
 | Engine | Single benign event | 1 000-event batch | Notes |
 |---|---|---|---|
-| **null-sigma** | **314 µs** (~3 180/s) | 378 ms (~2 650/s) | 1 182/1 182 rules load |
+| **null-sigma** | **309 µs** (~3 230/s) | 373 ms (~2 680/s) | 1 182/1 182 rules load |
 | **tau-engine** (Chainsaw core) | **136 µs** (~7 350/s) | 142 ms (~7 000/s) | 1 102/1 182 via Chainsaw converter |
 | **sigma-rust** | 4.61 ms (~217/s) | 3.94 s (~254/s) | 1 181/1 182 load |
 
@@ -315,13 +315,13 @@ full pipeline (parse, enrich, output) — not comparable to Tier A matcher numbe
 
 Hayabusa's multi-threaded CLI is fastest end-to-end. null-sigma's Tier B runner is
 currently a minimal reference implementation (single-threaded, count-only, no output
-pipeline) and is not yet optimised for ingest — see §11.4 for planned Phase 3 work.
+pipeline) and is not yet optimised for ingest — see §11.6 for planned Phase 3 work.
 
 ---
 
 ## 7. Test Coverage Summary
 
-`cargo test -p null-sigma` — **181 integration tests + 3 lib tests** (241 with
+`cargo test -p null-sigma` — **183 integration tests + 5 lib tests** (243 with
 `json` feature), 0 failures.
 
 | Test module | Count | Coverage scope |
@@ -418,6 +418,22 @@ correctness bugs, not performance details:
 **already-folded** strings (`values_folded` / `fold_value`). Never tokenize the
 raw YAML casing — the runtime compares against `field_lower`. Transform
 modifiers skip cache population; `apply_transforms` still runs at eval time.
+
+### EventView value cache (post–Phase 2)
+
+`EventView` lazily caches per-field folded strings and (when needed) char
+vectors for the lifetime of one event evaluation:
+
+1. **`ensure_folded(idx)`** — lowercases once; subsequent rules reuse the slot
+   (including `|fieldref` subject / referenced fields).
+2. **`ensure_chars(idx)`** — builds `Vec<char>` of the *folded* string only
+   when a condition has active wildcards (`ValueMatchCache::tokens` or an
+   uncached pattern that is not a pure literal after escape resolution).
+   Windows paths that only contain `\` must **not** trigger this — that was a
+   measured regression.
+
+Matcher hot paths borrow via `match_inputs(idx, with_chars)` after the ensure
+calls; never call `to_lowercase()` on event field values in the common path.
 
 ---
 
@@ -596,23 +612,23 @@ Synthetic microbench (`1000_rules_single_event`) moved from 2.34 µs (§9) to
 **3.22 µs** — within noise of the AC correctness changes; the real-corpus win is
 the meaningful signal.
 
-### 11.4 Tier A results (2026-07-07, Apple M4, release)
+### 11.4 Tier A results (2026-07-08, Apple M4, release)
 
 Criterion medians, 1 102 common rules, seed-42 events:
 
 | Benchmark | null-sigma | tau-engine | sigma-rust |
 |---|---|---|---|
-| `single_benign_event` | **314 µs** | **136 µs** | 4.61 ms |
+| `single_benign_event` | **309 µs** | **136 µs** | 4.61 ms |
 | `single_suspicious_event` | ~1.0 ms | ~150 µs | ~5.3 ms |
-| `batch_1000_events` | 378 ms | 142 ms | 3.94 s |
+| `batch_1000_events` | 373 ms | 142 ms | 3.94 s |
 | `rule_load` | 71 ms | 200 ms | 43 ms |
 
 null-sigma loads rules **2.8× faster** than tau-engine (71 ms vs 200 ms for
 1 102 rules) thanks to a single AC automaton rebuild via `load_rules`.
 
 Phase 2 (`EvalScratch` + `ValueMatchCache`) moved `single_benign_event` from
-541 µs → **314 µs** (~42% faster, ~1.7× vs Phase 1). tau-engine gap narrowed
-from ~3.9× to **~2.3×**.
+541 µs → **314 µs**. The EventView value cache then moved **314 µs → 309 µs**.
+tau-engine gap is **~2.3×**.
 
 ### 11.5 Tier B results (2026-07-07, 100k events)
 
@@ -631,12 +647,11 @@ its Tier A representation is tau-engine natively.
 | Phase | Target | Status |
 |---|---|---|
 | Phase 2 — `EvalScratch` + pattern cache | Reuse `ac_hits` / `id_results`; load-time `ValueMatchCache` | **DONE** (2026-07-07) |
+| EventView value cache | Lazy fold + wildcard char cache per event field | **DONE** (2026-07-08) |
 | Phase 3 — ingest streaming | Reused line buffer, flat JSONL fast-path, optional rayon | Planned — Tier B parity |
 
-Fieldref/transform cold paths still call `to_lowercase()` once per field value in
-`eval_field`; a full EventView value cache is the next matcher-level target.
-`wildcard_match_impl` still allocates `Vec<char>` per comparison — address via
-EventView value cache or byte-wise matcher.
+Remaining matcher-level room vs tau-engine (~2.3×) is largely structural
+(compiled matcher vs condition-tree eval), not more fold/alloc micro-opts.
 
 ### 11.7 Phase 2 — EvalScratch + load-time pattern cache (2026-07-07)
 
@@ -665,3 +680,26 @@ Phase 2 eliminates both without changing match semantics.
 
 Correctness gate unchanged: `cross_check` **0** disagreements vs sigma-rust;
 **13 cells** vs tau-engine (known converter rule).
+
+### 11.8 EventView value cache (2026-07-08)
+
+Closes the post–Phase-2 fold / `Vec<char>` leftovers called out in §11.6.
+
+| Change | File | What |
+|---|---|---|
+| Lazy `value_folded` / `value_chars` | `event_view.rs` | Once per field per event |
+| `match_inputs` / index collect helpers | `event_view.rs` | Hot-path borrows without re-folding |
+| Matcher uses view caches | `matcher.rs` | Drops per-eval `to_lowercase` on event fields |
+| `|fieldref` via folded slots | `matcher.rs` | Subject + referenced fields share cache |
+| Char cache only for active wildcards | `matcher.rs` | Avoids `\`-path false positives |
+| Regression tests | `tests/sigma_tests.rs`, `event_view.rs` | Fold + fieldref + shared-cache paths |
+
+**Measured impact (Tier A, 1 102 rules, single benign event):**
+
+| Stage | null-sigma latency | Δ |
+|---|---|---|
+| Phase 2 | 314 µs | baseline |
+| + EventView value cache | **309 µs** | ~1.5–2% |
+| tau-engine (reference) | 136 µs | ~2.3× faster than null-sigma |
+
+Correctness gate unchanged: `cross_check` **0** vs sigma-rust; **13** vs tau.

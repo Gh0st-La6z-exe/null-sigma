@@ -4,7 +4,7 @@
 //! representation, then evaluate streams of security events against the full
 //! rule set at **311 000+ events/second × 1 000 synthetic rules on a single core**
 //! (Apple M4, release, microbenchmark suite). Against real `SigmaHQ`
-//! `process_creation` rules: **~3 180 events/second** (see `harness/` and
+//! `process_creation` rules: **~3 230 events/second** (see `harness/` and
 //! `PERFORMANCE.md` §11).
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

@@ -12,7 +12,7 @@ Parse YAML rules once, compile them into an optimised internal representation,
 then evaluate streams of security events against the full rule set at
 **311 000 events/sec × 1 000 synthetic rules on a single core** (Apple M4,
 release, microbenchmark suite). Against 1 102 real SigmaHQ `process_creation`
-rules the measured rate is **~3 180 events/sec** — see
+rules the measured rate is **~3 230 events/sec** — see
 [Head-to-head benchmarks](#head-to-head-benchmarks) below.
 
 ```toml
@@ -288,6 +288,7 @@ The matcher looks up pre-folded values via the view — no per-lookup allocation
 | Pre-EventView (post-AC-fix) | ~3.3 ms |
 | After EventView + count-only API | **541 µs** |
 | After EvalScratch + pattern cache (Phase 2) | **314 µs** |
+| After EventView value cache | **309 µs** |
 | tau-engine (Chainsaw core, same workload) | 136 µs |
 
 Details in `PERFORMANCE.md` §11.
@@ -313,6 +314,21 @@ eval time.
 
 Together, Phase 2 delivers **~1.7×** on top of Phase 1 (541 µs → **314 µs**);
 the tau-engine gap narrowed from ~3.9× to **~2.3×** on the same workload.
+
+---
+
+### 7 — EventView value cache
+
+After Phase 2, field values were still folded (`to_lowercase`) once per
+condition evaluation, and `wildcard_match_impl` still allocated a fresh
+`Vec<char>` whenever active wildcards ran. EventView now caches both:
+
+- **Folded string** — lazy `ensure_folded`; shared across all rules for that
+  event (including `|fieldref` comparisons).
+- **Char vector** — lazy `ensure_chars`, only when a condition has active
+  wildcards (not for every Windows path containing `\`).
+
+Measured on the same Tier A benign event: **314 µs → 309 µs**.
 
 ---
 
@@ -372,11 +388,11 @@ cd harness && cargo run --release --bin cross_check
 Cross-check (2.2M rule×event cells): null-sigma vs sigma-rust **0 disagreements**;
 vs tau-engine **13 cells (0.0006%)** on one rule (Chainsaw converter semantics).
 
-**Tier A** — matcher-level, pre-built native event representations (2026-07-07):
+**Tier A** — matcher-level, pre-built native event representations (2026-07-08):
 
 | Engine | Single benign event | 1 000-event batch |
 |---|---|---|
-| null-sigma | **314 µs** (~3 180/s) | 378 ms (~2 650/s) |
+| null-sigma | **309 µs** (~3 230/s) | 373 ms (~2 680/s) |
 | tau-engine | **136 µs** (~7 350/s) | 142 ms (~7 000/s) |
 | sigma-rust | 4.61 ms (~217/s) | 3.94 s (~254/s) |
 

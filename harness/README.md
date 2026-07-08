@@ -66,16 +66,16 @@ cd harness
 cargo bench --bench head_to_head
 ```
 
-Benchmarks (1 102 common rules, seed-42 events, Apple M4, release, 2026-07-07):
+Benchmarks (1 102 common rules, seed-42 events, Apple M4, release, 2026-07-08):
 
 | Benchmark | null-sigma | tau-engine | sigma-rust |
 |---|---|---|---|
-| `single_benign_event` | **314 µs** | **136 µs** | 4.61 ms |
-| `batch_1000_events` | 378 ms | 142 ms | 3.94 s |
+| `single_benign_event` | **309 µs** | **136 µs** | 4.61 ms |
+| `batch_1000_events` | 373 ms | 142 ms | 3.94 s |
 | `rule_load` | 71 ms | 200 ms | 43 ms |
 
 null-sigma also benchmarks `null_sigma_full` with all 1 182 rules it loads
-(`single_benign_event/null_sigma_full`: ~374 µs).
+(`single_benign_event/null_sigma_full`: ~369 µs).
 
 Interactive HTML: `harness/target/criterion/report/index.html`
 
@@ -135,7 +135,7 @@ silently matches nothing on JSONL and looks artificially fast.
 | Binary | Purpose |
 |---|---|
 | `cross_check` | Correctness gate — run before publishing numbers |
-| `null_sigma_run` | Tier B reference CLI (`rule_dir events.jsonl`) |
+| `null_sigma_run` | Tier B reference CLI (`rule_dir events.jsonl`); prints `tier_b_tax` read/parse/flat/eval split on stderr |
 | `gen_dataset` | Deterministic JSONL event generator |
 | `prof_benign` | Tier A profiling target (`--profile prof`) |
 

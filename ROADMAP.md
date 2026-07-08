@@ -67,9 +67,9 @@ Delivered:
 - Deterministic event generator (`gen.rs`, seed 42), Chainsaw JSON mapping fix
   (`config/chainsaw-json-mapping.yml`), `null_sigma_run` reference CLI.
 
-Measured (Apple M4, release, 2026-07-07):
-- Tier A single benign event: null-sigma **314 µs** (was 541 µs pre-Phase 2),
-  tau-engine **136 µs**, sigma-rust 4.61 ms.
+Measured (Apple M4, release, 2026-07-08):
+- Tier A single benign event: null-sigma **309 µs** (314 µs after Phase 2;
+  541 µs after Phase 1), tau-engine **136 µs**, sigma-rust 4.61 ms.
 - Tier B (100k events): Hayabusa default **17.7 s**, null-sigma runner 120.4 s.
 
 Core fixes discovered/enabled by the harness:
@@ -77,6 +77,7 @@ Core fixes discovered/enabled by the harness:
 - Per-identifier AC gating (`conditions_require_gated_hit`).
 - Phase 1 EventView + fold-once matching (~6× on real corpus).
 - Phase 2 EvalScratch + load-time `ValueMatchCache` (~1.7× on top of Phase 1).
+- EventView value cache (lazy fold + wildcard char cache; ~1.5–2% on top).
 - Count-only API (`evaluate_event_count`).
 
 Full numbers and reproduction steps: `harness/README.md`, `PERFORMANCE.md` §11,
@@ -98,6 +99,15 @@ repeated wildcard tokenization as top hotspots. Shipped in two coupled changes:
 Measured: **541 µs → 314 µs** per benign event (1 102 SigmaHQ rules); tau-engine
 gap **3.9× → 2.3×**. Four regression tests guard stale-state bleed and
 case-folding alignment. Documented in `PERFORMANCE.md` §11.7.
+
+## 3c. EventView value cache (DONE — 2026-07-08)
+
+Lazy per-field fold + optional char-vector caches on `EventView`, shared across
+all rules for one event. Char cache gates on active wildcards only (Windows `\`
+paths do not force it). `|fieldref` uses the same folded slots.
+
+Measured: **314 µs → 309 µs** on Tier A benign; `cross_check` unchanged.
+Documented in `PERFORMANCE.md` §11.8.
 
 ## 4. CLI binary (`null-sigma-cli`)
 

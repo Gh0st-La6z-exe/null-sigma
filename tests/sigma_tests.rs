@@ -1956,6 +1956,67 @@ detection:
                 "wildcard token cache must be built from fold_value, not raw YAML casing"
             );
         }
+
+        #[test]
+        fn event_view_value_cache_preserves_wildcard_and_literal_matches() {
+            // Same event should match both a literal |contains and a wildcard
+            // rule without re-case-folding semantics drifting.
+            let literal = r#"
+title: Literal Cache Path
+logsource: {}
+detection:
+    sel:
+        CommandLine|contains: '-ENC'
+    condition: sel
+"#;
+            let wildcard = r#"
+title: Wildcard Cache Path
+logsource: {}
+detection:
+    sel:
+        Image: '*\\PowerShell.EXE'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(literal).unwrap();
+            engine.load_rule(wildcard).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert(
+                "CommandLine".to_string(),
+                "powershell.exe -enc SQBFAFgA".to_string(),
+            );
+            event.insert(
+                "Image".to_string(),
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            );
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(matches.len(), 2, "both cache paths must match");
+        }
+
+        #[test]
+        fn event_view_value_cache_fieldref_uses_folded_values() {
+            let yaml = r#"
+title: FieldRef Fold Cache
+logsource: {}
+detection:
+    sel:
+        Image|fieldref|endswith: ParentImage
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut hit = HashMap::new();
+            hit.insert("Image".to_string(), "C:\\Temp\\Tool.EXE".to_string());
+            hit.insert("ParentImage".to_string(), "Tool.exe".to_string());
+            assert_eq!(engine.evaluate_event_count(&hit), 1);
+
+            let mut miss = HashMap::new();
+            miss.insert("Image".to_string(), "C:\\Temp\\Tool.EXE".to_string());
+            miss.insert("ParentImage".to_string(), "Other.exe".to_string());
+            assert_eq!(engine.evaluate_event_count(&miss), 0);
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════

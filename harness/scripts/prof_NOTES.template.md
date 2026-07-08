@@ -11,7 +11,8 @@
 | Metric | Value |
 |---|---|
 | µs/event (100k loop) | |
-| Tier A Criterion reference (post-Phase 2) | ~314 µs |
+| Tier A Criterion reference (post–value cache) | ~309 µs |
+| Tier A Criterion reference (Phase 2) | ~314 µs |
 | Tier A Criterion reference (Phase 1 baseline) | ~541 µs |
 
 ## Top frames (self time / total time)
@@ -28,20 +29,18 @@ Fill from Firefox Profiler after `prof_benign.sh`:
 
 ## Hypothesis checklist
 
-| Area | Pre-Phase 2 | Post-Phase 2 | Next action |
+| Area | Pre–value-cache | Post–value-cache | Next action |
 |---|---|---|---|
-| `tokenize_pattern` / `pattern_literal` | ~16% self | should drop | Re-profile after cache |
-| malloc/free churn | ~20% | should drop | EvalScratch shipped |
-| `HashMap` alloc (`id_results`) | medium | should drop | EvalScratch shipped |
-| `to_lowercase` / field folding | ~2% | | EventView value cache |
-| `wildcard_match_impl` `Vec<char>` | medium | | EventView value cache |
-| `apply_transforms` | ~2% | | Pre-expand at load |
+| `tokenize_pattern` / `pattern_literal` | dropped (Phase 2) | | — |
+| malloc/free (`EvalScratch`) | dropped (Phase 2) | | — |
+| `to_lowercase` on event fields | present | should drop | value cache shipped |
+| `wildcard_match_impl` `Vec<char>` | per-call | should reuse cache | value cache shipped |
+| `apply_transforms` | medium | | Pre-expand at load |
 | AC scan | <1% | | No action |
-| tau-engine structural gap | ~2.3× | | Architecture review |
+| tau-engine structural gap | ~2.3× | | Architecture / Phase 3 |
 
 ## Decision (fill after review)
 
-- [ ] EventView value cache next
 - [ ] Transform pre-expansion at load
 - [ ] Phase 3 ingest (Tier B)
 - [ ] Defer; structural gap vs tau-engine needs architecture work
