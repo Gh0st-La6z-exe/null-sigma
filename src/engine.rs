@@ -24,11 +24,16 @@ use crate::matcher::{match_identifier_on_view, match_identifier_with_cache_on_vi
 use crate::parser::{parse_rule, parse_rules, ParseError};
 use crate::types::{
     ConditionExpr, EvalResult, FieldCondition, RuleMatch, SearchIdentifier, SigmaRule,
-    ValueModifier,
+    ValueMatchCache, ValueModifier,
 };
 
 use aho_corasick::AhoCorasick;
+use std::cell::RefCell;
 use std::collections::HashMap;
+
+thread_local! {
+    static EVAL_SCRATCH: RefCell<EvalScratch> = RefCell::new(EvalScratch::new());
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compiled Rule — Fully parsed, validated, and ready for evaluation
@@ -48,11 +53,52 @@ struct CompiledRule {
     /// When false the hot-path uses `match_identifier` (no cache lookup overhead).
     /// When true `evaluate_event` looks up `SigmaEngine::rule_regex_maps[rule_idx]`.
     has_regex: bool,
+    /// Identifier name → dense index for `EvalScratch::id_results`.
+    ident_index: HashMap<String, usize>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Engine Errors
+// EvalScratch — Reusable per-evaluation buffers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Reusable scratch buffers for hot-path evaluation.
+///
+/// Avoids per-event allocation of AC hit bitmaps and per-rule `HashMap` identifier
+/// results. Typically obtained via thread-local storage inside
+/// [`SigmaEngine::evaluate_event`]; batch callers may reuse one instance across events.
+#[derive(Debug, Default)]
+pub struct EvalScratch {
+    ac_hits: Vec<bool>,
+    id_results: Vec<bool>,
+}
+
+impl EvalScratch {
+    /// Create an empty scratch buffer.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ensure AC and identifier buffers are sized for this engine.
+    pub(crate) fn prepare_ac(&mut self, ac_len: usize) {
+        self.ac_hits.resize(ac_len, false);
+    }
+
+    /// Zero the AC hit bitmap before a new event scan.
+    ///
+    /// Callers must not use `.clear()` — the slice length must remain `ac_len`.
+    pub(crate) fn reset_ac_hits(&mut self) {
+        self.ac_hits.fill(false);
+    }
+
+    /// Resize and zero identifier results before evaluating a rule.
+    pub(crate) fn reset_id_results(&mut self, ident_count: usize) {
+        self.id_results.resize(ident_count, false);
+        if ident_count > 0 {
+            self.id_results[..ident_count].fill(false);
+        }
+    }
+}
 
 /// Errors that can occur when loading or compiling a Sigma rule into the engine.
 #[derive(Debug)]
@@ -383,12 +429,19 @@ impl SigmaEngine {
         let fully_ac_covered = !ac_indices.is_empty()
             && conditions_require_gated_hit(&conditions, &identifiers, &gated_flags);
 
+        let ident_index = identifiers
+            .iter()
+            .enumerate()
+            .map(|(idx, ident)| (ident.name.clone(), idx))
+            .collect();
+
         self.rules.push(CompiledRule {
             rule,
             identifiers,
             conditions,
             ac_pattern_indices: ac_indices,
             has_regex,
+            ident_index,
         });
         // Push regex map, hot data in lockstep: index i ↔ rules[i].
         self.rule_regex_maps.push(regex_map);
@@ -536,7 +589,11 @@ impl SigmaEngine {
     /// allocation — use for throughput-sensitive paths that only need a hit count.
     #[must_use = "returns the number of matching rules — discarding it silently suppresses detection counts"]
     pub fn evaluate_event_count(&self, event: &HashMap<String, String>) -> usize {
-        self.evaluate_event_inner(event, false, &mut |_, _, _| {})
+        EVAL_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            scratch.prepare_ac(self.ac_patterns.len());
+            self.evaluate_event_inner(event, false, &mut scratch, &mut |_, _, _| {})
+        })
     }
 
     /// Evaluate a single event against all loaded rules.
@@ -555,26 +612,39 @@ impl SigmaEngine {
     #[must_use = "returns all threat detections — discarding them silently suppresses security alerts"]
     pub fn evaluate_event(&self, event: &HashMap<String, String>) -> Vec<RuleMatch> {
         let mut matches = Vec::new();
-        self.evaluate_event_inner(
-            event,
-            true,
-            &mut |compiled, id_results, matched_conditions| {
-                let matched_identifiers: Vec<String> = id_results
-                    .iter()
-                    .filter_map(|(name, &matched)| if matched { Some(name.clone()) } else { None })
-                    .collect();
+        EVAL_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            scratch.prepare_ac(self.ac_patterns.len());
+            self.evaluate_event_inner(
+                event,
+                true,
+                &mut scratch,
+                &mut |compiled, id_results, matched_conditions| {
+                    let matched_identifiers: Vec<String> = compiled
+                        .identifiers
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, ident)| {
+                            if id_results.get(idx).copied().unwrap_or(false) {
+                                Some(ident.name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
 
-                matches.push(RuleMatch {
-                    rule_id: compiled.rule.id.clone(),
-                    rule_title: compiled.rule.title.clone(),
-                    rule_level: compiled.rule.level,
-                    matched_conditions: matched_conditions.to_vec(),
-                    matched_identifiers,
-                    tags: compiled.rule.tags.clone(),
-                    score: compiled.rule.level.to_score(),
-                });
-            },
-        );
+                    matches.push(RuleMatch {
+                        rule_id: compiled.rule.id.clone(),
+                        rule_title: compiled.rule.title.clone(),
+                        rule_level: compiled.rule.level,
+                        matched_conditions: matched_conditions.to_vec(),
+                        matched_identifiers,
+                        tags: compiled.rule.tags.clone(),
+                        score: compiled.rule.level.to_score(),
+                    });
+                },
+            );
+        });
         matches
     }
 
@@ -587,7 +657,8 @@ impl SigmaEngine {
         &self,
         event: &HashMap<String, String>,
         collect_details: bool,
-        on_match: &mut dyn FnMut(&CompiledRule, &HashMap<String, bool>, &[usize]),
+        scratch: &mut EvalScratch,
+        on_match: &mut dyn FnMut(&CompiledRule, &[bool], &[usize]),
     ) -> usize {
         // Enrich the event with Sigma-canonical field names so rules can
         // match regardless of naming convention.
@@ -617,7 +688,8 @@ impl SigmaEngine {
         let event_svc_hash = event_service.map_or(0, hash_logsource);
 
         // Run Aho-Corasick scan across all event field values
-        let ac_hits = self.run_ac_scan(&enriched);
+        scratch.reset_ac_hits();
+        self.run_ac_scan_into(&enriched, &mut scratch.ac_hits);
 
         let mut matches = 0usize;
 
@@ -640,10 +712,14 @@ impl SigmaEngine {
             if hot.fully_ac_covered && hot.ac_len > 0 {
                 let start = hot.ac_start as usize;
                 let end = start + hot.ac_len as usize;
-                if !self.flat_ac_indices[start..end]
-                    .iter()
-                    .any(|&idx| ac_hits[idx as usize])
-                {
+                let mut any_hit = false;
+                for &idx in &self.flat_ac_indices[start..end] {
+                    if scratch.ac_hits[idx as usize] {
+                        any_hit = true;
+                        break;
+                    }
+                }
+                if !any_hit {
                     continue;
                 }
             }
@@ -667,9 +743,8 @@ impl SigmaEngine {
             // Full evaluation: check each identifier against the event.
             // Hot path: rules without |re use match_identifier directly (no HashMap lookup).
             // Regex path: rules with |re use the pre-compiled cache from the side-table.
-            let mut id_results: HashMap<String, bool> =
-                HashMap::with_capacity(compiled.identifiers.len());
-            for ident in &compiled.identifiers {
+            scratch.reset_id_results(compiled.identifiers.len());
+            for (idx, ident) in compiled.identifiers.iter().enumerate() {
                 let id_eval = if compiled.has_regex {
                     match_identifier_with_cache_on_view(
                         ident,
@@ -679,8 +754,10 @@ impl SigmaEngine {
                 } else {
                     match_identifier_on_view(ident, &mut view)
                 };
-                id_results.insert(ident.name.clone(), id_eval);
+                scratch.id_results[idx] = id_eval;
             }
+
+            let id_results = &scratch.id_results;
 
             // Evaluate each condition expression
             if collect_details {
@@ -688,19 +765,19 @@ impl SigmaEngine {
                     Vec::with_capacity(compiled.conditions.len());
 
                 for (cond_idx, condition) in compiled.conditions.iter().enumerate() {
-                    if condition.evaluate(&id_results) {
+                    if condition.evaluate_vec(id_results, &compiled.ident_index) {
                         matched_conditions.push(cond_idx);
                     }
                 }
 
                 if !matched_conditions.is_empty() {
                     matches += 1;
-                    on_match(compiled, &id_results, &matched_conditions);
+                    on_match(compiled, id_results, &matched_conditions);
                 }
             } else if compiled
                 .conditions
                 .iter()
-                .any(|condition| condition.evaluate(&id_results))
+                .any(|condition| condition.evaluate_vec(id_results, &compiled.ident_index))
             {
                 matches += 1;
             }
@@ -733,43 +810,24 @@ impl SigmaEngine {
 
     // ─── Aho-Corasick Batch Scan ────────────────────────────────────────
 
-    /// Run the AC automaton across all event field values.
-    /// Returns a dense boolean bitmap indexed by pattern ID.
-    /// Single indexed load (`hits[idx]`) instead of hash lookup per membership check.
+    /// Run the AC automaton across all event field values, writing into `hits`.
+    ///
+    /// The caller must zero `hits` before calling — see [`EvalScratch::reset_ac_hits`].
     ///
     /// # Overlap soundness
     ///
-    /// The prefilter needs the hit bit set for EVERY pattern that occurs
-    /// anywhere in the value — but `find_iter` reports non-overlapping
-    /// matches only: after one pattern matches, occurrences of other
-    /// patterns overlapping the consumed span are silently skipped, their
-    /// hit bits stay false, and fully-AC-covered rules relying on them get
-    /// prefilter-skipped. (A real false negative found by the head-to-head
-    /// cross-check: `shell32.dll` consumed the span covering `.dll,`, which
-    /// masked a co-loaded rule.) A full `find_overlapping_iter` scan fixes
-    /// this but disables the SIMD prefilter and cost ~10× on noisy values.
-    ///
-    /// The overlapping scan costs nothing measurable on pattern-free values
-    /// (the dominant real-world case — the automaton's prefilter still
-    /// applies; the zero-match benchmark actually improved), and on values
-    /// with hits it reports the truth. A windowed hybrid
-    /// (`find_iter` + bounded overlapping rescan around match ends) was
-    /// benchmarked and was slower in every scenario because matched regions
-    /// get scanned twice.
-    fn run_ac_scan(&self, event: &HashMap<String, String>) -> Vec<bool> {
+    /// Uses `find_overlapping_iter` so every pattern occurrence sets its hit bit.
+    /// See the soundness argument in `PERFORMANCE.md` §4.
+    fn run_ac_scan_into(&self, event: &HashMap<String, String>, hits: &mut [bool]) {
         let Some(ac) = &self.ac_automaton else {
-            return vec![false; self.ac_patterns.len()];
+            return;
         };
-
-        let mut hits = vec![false; self.ac_patterns.len()];
 
         for value in event.values() {
             for mat in ac.find_overlapping_iter(value) {
                 hits[mat.pattern().as_usize()] = true;
             }
         }
-
-        hits
     }
 }
 
@@ -793,6 +851,20 @@ fn finalize_identifiers(identifiers: &mut [SearchIdentifier]) {
                         crate::types::SigmaValue::Float(f) => Some(f.to_string()),
                         crate::types::SigmaValue::Boolean(b) => Some(b.to_string()),
                         crate::types::SigmaValue::Null => Some(String::new()),
+                    })
+                    .collect();
+                cond.values_match_cache = cond
+                    .values_folded
+                    .iter()
+                    .map(|folded| {
+                        if cond.modifiers.iter().any(ValueModifier::is_transform) {
+                            ValueMatchCache::default()
+                        } else {
+                            folded
+                                .as_deref()
+                                .map(crate::matcher::build_value_match_cache)
+                                .unwrap_or_default()
+                        }
                     })
                     .collect();
             }

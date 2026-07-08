@@ -291,8 +291,42 @@ pub struct FieldCondition {
     /// regex/CIDR/numeric paths use `None`.
     pub values_folded: Vec<Option<String>>,
 
+    /// Load-time pattern cache parallel to `values`. Filled by the engine at
+    /// rule load; empty entries fall back to runtime tokenization (tests).
+    #[doc(hidden)]
+    pub values_match_cache: Vec<ValueMatchCache>,
+
     /// Modifiers applied to this field check.
     pub modifiers: Vec<ValueModifier>,
+}
+
+/// One element of a tokenized Sigma wildcard pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum PatToken {
+    /// `*` — matches any run of characters (including empty).
+    Star,
+    /// `?` — matches exactly one character.
+    Question,
+    /// A literal character (escapes already resolved).
+    Lit(char),
+}
+
+/// Load-time cache for a single string match value.
+#[derive(Debug, Clone, Default)]
+#[doc(hidden)]
+pub struct ValueMatchCache {
+    /// Unescaped literal when the pattern has no active wildcards.
+    pub literal: Option<String>,
+    /// Pre-tokenized pattern when active wildcards require the wildcard matcher.
+    pub tokens: Option<Vec<PatToken>>,
+}
+
+impl ValueMatchCache {
+    #[must_use]
+    pub(crate) fn is_populated(&self) -> bool {
+        self.literal.is_some() || self.tokens.is_some()
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -103,6 +103,50 @@ impl ConditionNode {
             }
         }
     }
+
+    /// Evaluate against a dense `results` slice indexed by identifier position.
+    ///
+    /// `index` maps identifier name → position in `results`. Used by the engine
+    /// hot path to avoid per-rule `HashMap` allocation.
+    #[must_use]
+    pub(crate) fn evaluate_vec(&self, results: &[bool], index: &HashMap<String, usize>) -> bool {
+        match self {
+            ConditionNode::Identifier(name) => index
+                .get(name)
+                .and_then(|&i| results.get(i))
+                .copied()
+                .unwrap_or(false),
+
+            ConditionNode::And(left, right) => {
+                left.evaluate_vec(results, index) && right.evaluate_vec(results, index)
+            }
+
+            ConditionNode::Or(left, right) => {
+                left.evaluate_vec(results, index) || right.evaluate_vec(results, index)
+            }
+
+            ConditionNode::Not(inner) => !inner.evaluate_vec(results, index),
+
+            ConditionNode::OneOf { count, identifiers } => {
+                let matched = identifiers
+                    .iter()
+                    .filter(|name| {
+                        index
+                            .get(name.as_str())
+                            .and_then(|&i| results.get(i))
+                            .copied()
+                            .unwrap_or(false)
+                    })
+                    .count();
+
+                if *count == 0 {
+                    matched == identifiers.len() && !identifiers.is_empty()
+                } else {
+                    matched >= *count
+                }
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -70,18 +70,20 @@ Benchmarks (1 102 common rules, seed-42 events, Apple M4, release, 2026-07-07):
 
 | Benchmark | null-sigma | tau-engine | sigma-rust |
 |---|---|---|---|
-| `single_benign_event` | **541 µs** | **139 µs** | 4.61 ms |
-| `batch_1000_events` | 602 ms | 142 ms | 3.94 s |
+| `single_benign_event` | **314 µs** | **136 µs** | 4.61 ms |
+| `batch_1000_events` | 378 ms | 142 ms | 3.94 s |
 | `rule_load` | 71 ms | 200 ms | 43 ms |
 
-null-sigma also benchmarks `null_sigma_full` with all 1 182 rules it loads.
+null-sigma also benchmarks `null_sigma_full` with all 1 182 rules it loads
+(`single_benign_event/null_sigma_full`: ~374 µs).
 
 Interactive HTML: `harness/target/criterion/report/index.html`
 
-## Profiling gate (local only, before Phase 2)
+## Profiling gate (local only)
 
-Tier A `prof_benign` — same workload as `single_benign_event`. Output under
-`harness/prof/` (gitignored).
+Tier A `prof_benign` — same workload as `single_benign_event`. Run before and
+after matcher changes to validate hotspot shifts. Output under `harness/prof/`
+(gitignored).
 
 ```bash
 cargo install samply   # once

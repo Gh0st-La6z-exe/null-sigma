@@ -12,7 +12,7 @@ Parse YAML rules once, compile them into an optimised internal representation,
 then evaluate streams of security events against the full rule set at
 **311 000 events/sec × 1 000 synthetic rules on a single core** (Apple M4,
 release, microbenchmark suite). Against 1 102 real SigmaHQ `process_creation`
-rules the measured rate is **~1 850 events/sec** — see
+rules the measured rate is **~3 180 events/sec** — see
 [Head-to-head benchmarks](#head-to-head-benchmarks) below.
 
 ```toml
@@ -287,9 +287,32 @@ The matcher looks up pre-folded values via the view — no per-lookup allocation
 |---|---|
 | Pre-EventView (post-AC-fix) | ~3.3 ms |
 | After EventView + count-only API | **541 µs** |
-| tau-engine (Chainsaw core, same workload) | 139 µs |
+| After EvalScratch + pattern cache (Phase 2) | **314 µs** |
+| tau-engine (Chainsaw core, same workload) | 136 µs |
 
 Details in `PERFORMANCE.md` §11.
+
+---
+
+### 6 — EvalScratch + load-time pattern cache
+
+Profiling on the Tier A benign workload showed allocator churn (`ac_hits`,
+per-rule `id_results` `HashMap`) and repeated `tokenize_pattern` calls as the
+top Rust hotspots. Phase 2 addresses both:
+
+**EvalScratch** — thread-local reusable buffers for `ac_hits` (zeroed with
+`fill(false)` once per event) and dense `id_results: Vec<bool>` (zeroed once
+per rule). Condition evaluation uses `evaluate_vec` with a load-time
+`ident_index` instead of `HashMap<String, bool>` inserts.
+
+**ValueMatchCache** — at rule load, each string value is folded (`fold_value`)
+then pre-classified as an unescaped literal or pre-tokenized wildcard pattern
+(`values_match_cache` parallel to `values_folded`). The matcher skips runtime
+tokenization on the hot path; transform-modifier conditions still expand at
+eval time.
+
+Together, Phase 2 delivers **~1.7×** on top of Phase 1 (541 µs → **314 µs**);
+the tau-engine gap narrowed from ~3.9× to **~2.3×** on the same workload.
 
 ---
 
@@ -353,12 +376,12 @@ vs tau-engine **13 cells (0.0006%)** on one rule (Chainsaw converter semantics).
 
 | Engine | Single benign event | 1 000-event batch |
 |---|---|---|
-| null-sigma | **541 µs** (~1 850/s) | 602 ms (~1 660/s) |
-| tau-engine | **139 µs** (~7 200/s) | 142 ms (~7 000/s) |
+| null-sigma | **314 µs** (~3 180/s) | 378 ms (~2 650/s) |
+| tau-engine | **136 µs** (~7 350/s) | 142 ms (~7 000/s) |
 | sigma-rust | 4.61 ms (~217/s) | 3.94 s (~254/s) |
 
-On real SigmaHQ rules, tau-engine is **~3.9× faster** per event; null-sigma is
-**~8.5× faster** than sigma-rust. See `harness/README.md` and `PERFORMANCE.md` §11.
+On real SigmaHQ rules, tau-engine is **~2.3× faster** per event; null-sigma is
+**~15× faster** than sigma-rust. See `harness/README.md` and `PERFORMANCE.md` §11.
 
 **Tier B** — CLI end-to-end, 100 000 JSONL events (hyperfine, 5 runs):
 

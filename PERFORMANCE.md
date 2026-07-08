@@ -288,12 +288,12 @@ See §11 for methodology.
 
 | Engine | Single benign event | 1 000-event batch | Notes |
 |---|---|---|---|
-| **null-sigma** | **541 µs** (~1 850/s) | 602 ms (~1 660/s) | 1 182/1 182 rules load |
-| **tau-engine** (Chainsaw core) | **139 µs** (~7 200/s) | 142 ms (~7 000/s) | 1 102/1 182 via Chainsaw converter |
+| **null-sigma** | **314 µs** (~3 180/s) | 378 ms (~2 650/s) | 1 182/1 182 rules load |
+| **tau-engine** (Chainsaw core) | **136 µs** (~7 350/s) | 142 ms (~7 000/s) | 1 102/1 182 via Chainsaw converter |
 | **sigma-rust** | 4.61 ms (~217/s) | 3.94 s (~254/s) | 1 181/1 182 load |
 
-On this realistic rule set, tau-engine is **~3.9× faster** than null-sigma per event.
-null-sigma is **~8.5× faster** than sigma-rust.
+On this realistic rule set, tau-engine is **~2.3× faster** than null-sigma per event.
+null-sigma is **~15× faster** than sigma-rust.
 
 Correctness cross-check (2 000 events × 1 102 rules = 2.2M cells): null-sigma vs
 sigma-rust **0 disagreements**; null-sigma vs tau-engine **13 cells (0.0006%)** —
@@ -321,7 +321,7 @@ pipeline) and is not yet optimised for ingest — see §11.4 for planned Phase 3
 
 ## 7. Test Coverage Summary
 
-`cargo test -p null-sigma` — **177 integration tests + 3 lib tests** (237 with
+`cargo test -p null-sigma` — **181 integration tests + 3 lib tests** (241 with
 `json` feature), 0 failures.
 
 | Test module | Count | Coverage scope |
@@ -394,6 +394,30 @@ usage on 64-bit platforms. Cast to `usize` when indexing: `ac_hits[idx as usize]
 The maximum valid index is `ac_patterns.len() - 1`. For a single engine instance,
 `ac_patterns` is bounded by rules × patterns/rule; u32 overflow would require >4 billion
 patterns, which is not a realistic scenario.
+
+### EvalScratch reset invariants (Phase 2)
+
+`EvalScratch` is reused via thread-local storage in `evaluate_event` /
+`evaluate_event_count`. Stale state produces **false positives** — treat these as
+correctness bugs, not performance details:
+
+1. **`ac_hits`** — `reset_ac_hits()` must `fill(false)` the full
+   `ac_patterns.len()` slice **once per event** before `run_ac_scan_into`.
+   Never `.clear()` (drops length). `run_ac_scan_into` only sets `true` bits.
+2. **`id_results`** — `reset_id_results(n)` must `resize(n, false)` then
+   `fill(false)` on `..n` **once per rule** before identifier evaluation.
+   Growing from a smaller rule reuses slots that may hold the previous rule's
+   results.
+3. **`ident_index`** — built at load time on `CompiledRule`; must stay in sync
+   with `identifiers` order. `ConditionNode::evaluate_vec` indexes into
+   `id_results` by name via this map.
+
+### ValueMatchCache case-folding (Phase 2)
+
+`values_match_cache` is populated in `finalize_identifiers()` from
+**already-folded** strings (`values_folded` / `fold_value`). Never tokenize the
+raw YAML casing — the runtime compares against `field_lower`. Transform
+modifiers skip cache population; `apply_transforms` still runs at eval time.
 
 ---
 
@@ -578,13 +602,17 @@ Criterion medians, 1 102 common rules, seed-42 events:
 
 | Benchmark | null-sigma | tau-engine | sigma-rust |
 |---|---|---|---|
-| `single_benign_event` | **541 µs** | **139 µs** | 4.61 ms |
+| `single_benign_event` | **314 µs** | **136 µs** | 4.61 ms |
 | `single_suspicious_event` | ~1.0 ms | ~150 µs | ~5.3 ms |
-| `batch_1000_events` | 602 ms | 142 ms | 3.94 s |
+| `batch_1000_events` | 378 ms | 142 ms | 3.94 s |
 | `rule_load` | 71 ms | 200 ms | 43 ms |
 
 null-sigma loads rules **2.8× faster** than tau-engine (71 ms vs 200 ms for
 1 102 rules) thanks to a single AC automaton rebuild via `load_rules`.
+
+Phase 2 (`EvalScratch` + `ValueMatchCache`) moved `single_benign_event` from
+541 µs → **314 µs** (~42% faster, ~1.7× vs Phase 1). tau-engine gap narrowed
+from ~3.9× to **~2.3×**.
 
 ### 11.5 Tier B results (2026-07-07, 100k events)
 
@@ -598,12 +626,42 @@ null-sigma loads rules **2.8× faster** than tau-engine (71 ms vs 200 ms for
 Chainsaw binary runs under Rosetta 2 on Apple Silicon (no native aarch64 build);
 its Tier A representation is tau-engine natively.
 
-### 11.6 Remaining work (not yet implemented)
+### 11.6 Remaining work
 
-| Phase | Target | Expected gain |
+| Phase | Target | Status |
 |---|---|---|
-| Phase 2 — `EvalScratch` | Reuse `ac_hits` / `id_results` buffers per event | ~15–30% |
-| Phase 3 — ingest streaming | Reused line buffer, flat JSONL fast-path, optional rayon | Tier B parity |
+| Phase 2 — `EvalScratch` + pattern cache | Reuse `ac_hits` / `id_results`; load-time `ValueMatchCache` | **DONE** (2026-07-07) |
+| Phase 3 — ingest streaming | Reused line buffer, flat JSONL fast-path, optional rayon | Planned — Tier B parity |
 
 Fieldref/transform cold paths still call `to_lowercase()` once per field value in
-`eval_field`; a full EventView value cache was deferred from Phase 1.
+`eval_field`; a full EventView value cache is the next matcher-level target.
+`wildcard_match_impl` still allocates `Vec<char>` per comparison — address via
+EventView value cache or byte-wise matcher.
+
+### 11.7 Phase 2 — EvalScratch + load-time pattern cache (2026-07-07)
+
+Profiling (`harness/scripts/prof_benign.sh`) on Tier A identified allocator
+churn and `tokenize_pattern` / `pattern_literal` as the top Rust hotspots.
+Phase 2 eliminates both without changing match semantics.
+
+| Change | File | What |
+|---|---|---|
+| `EvalScratch` buffers | `engine.rs` | Thread-local reuse of `ac_hits` + dense `id_results` |
+| `reset_ac_hits` / `reset_id_results` | `engine.rs` | `fill(false)` per event / per rule — no stale-state bleed |
+| `ident_index` + `evaluate_vec` | `engine.rs`, `condition.rs` | Drop per-rule `HashMap<String, bool>` |
+| `run_ac_scan_into` | `engine.rs` | In-place AC bitmap writes |
+| `ValueMatchCache` / `PatToken` | `types.rs` | Load-time literal or tokenized wildcard |
+| `build_value_match_cache` | `matcher.rs` | Tokenize **folded** strings only |
+| `finalize_identifiers` | `engine.rs` | Populate `values_match_cache` parallel to `values_folded` |
+| Regression guards | `tests/sigma_tests.rs` | Stale scratch + case-folding tests |
+
+**Measured impact (Tier A, 1 102 rules, single benign event):**
+
+| Stage | null-sigma latency | Δ |
+|---|---|---|
+| Phase 1 (EventView) | 541 µs | baseline |
+| Phase 2 (EvalScratch + cache) | **314 µs** | **~42% faster** |
+| tau-engine (reference) | 136 µs | ~2.3× faster than null-sigma |
+
+Correctness gate unchanged: `cross_check` **0** disagreements vs sigma-rust;
+**13 cells** vs tau-engine (known converter rule).

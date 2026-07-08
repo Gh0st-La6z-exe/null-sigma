@@ -218,6 +218,7 @@ fn parse_search_identifier(
                         field_folded: String::new(),
                         values,
                         values_folded: Vec::new(),
+                        values_match_cache: Vec::new(),
                         modifiers: vec![ValueModifier::Contains],
                     }],
                 }]
@@ -232,6 +233,7 @@ fn parse_search_identifier(
                     field_folded: String::new(),
                     values: vec![SigmaValue::from_yaml(value)],
                     values_folded: Vec::new(),
+                    values_match_cache: Vec::new(),
                     modifiers: vec![ValueModifier::Contains],
                 }],
             }]
@@ -275,6 +277,7 @@ fn parse_field_map(
             field_folded: field.to_lowercase(),
             values,
             values_folded: Vec::new(),
+            values_match_cache: Vec::new(),
             modifiers,
         });
     }

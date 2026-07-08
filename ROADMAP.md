@@ -68,21 +68,37 @@ Delivered:
   (`config/chainsaw-json-mapping.yml`), `null_sigma_run` reference CLI.
 
 Measured (Apple M4, release, 2026-07-07):
-- Tier A single benign event: null-sigma **541 µs**, tau-engine **139 µs**,
-  sigma-rust 4.61 ms.
+- Tier A single benign event: null-sigma **314 µs** (was 541 µs pre-Phase 2),
+  tau-engine **136 µs**, sigma-rust 4.61 ms.
 - Tier B (100k events): Hayabusa default **17.7 s**, null-sigma runner 120.4 s.
 
 Core fixes discovered/enabled by the harness:
 - AC overlapping scan + pattern interning (false-negative elimination).
 - Per-identifier AC gating (`conditions_require_gated_hit`).
 - Phase 1 EventView + fold-once matching (~6× on real corpus).
+- Phase 2 EvalScratch + load-time `ValueMatchCache` (~1.7× on top of Phase 1).
 - Count-only API (`evaluate_event_count`).
 
 Full numbers and reproduction steps: `harness/README.md`, `PERFORMANCE.md` §11,
 `harness/data/tier_b_results.md`.
 
-Follow-up: Phase 2 (`EvalScratch` buffer reuse) and Phase 3 (ingest streaming,
-optional rayon) — see `PERFORMANCE.md` §11.6.
+Follow-up: Phase 3 (ingest streaming, optional rayon) — see `PERFORMANCE.md` §11.6.
+
+## 3b. Phase 2 — EvalScratch + pattern cache (DONE — 2026-07-07)
+
+Profiling gate on Tier A (`prof_benign`) identified allocator churn and
+repeated wildcard tokenization as top hotspots. Shipped in two coupled changes:
+
+- **`EvalScratch`** — thread-local reuse of `ac_hits` and dense `id_results`;
+  `fill(false)` reset per event / per rule; `ConditionNode::evaluate_vec`.
+- **`ValueMatchCache`** — load-time literal / pre-tokenized wildcard patterns
+  built from `fold_value` (case-folding aligned with runtime); matcher fast path
+  skips `tokenize_pattern` on hot comparisons.
+
+Measured: **541 µs → 314 µs** per benign event (1 102 SigmaHQ rules); tau-engine
+gap **3.9× → 2.3×**. Four regression tests guard stale-state bleed and
+case-folding alignment. Documented in `PERFORMANCE.md` §11.7.
+
 ## 4. CLI binary (`null-sigma-cli`)
 
 Tail a JSON log file or read stdin, emit alerts. Demo-able artifact; ten

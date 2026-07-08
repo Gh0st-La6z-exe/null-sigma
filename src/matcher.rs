@@ -23,7 +23,8 @@
 use crate::event_view::EventView;
 use crate::fold::fold_key;
 use crate::types::{
-    FieldCondition, FieldConditionGroup, SearchIdentifier, SigmaValue, ValueModifier,
+    FieldCondition, FieldConditionGroup, PatToken, SearchIdentifier, SigmaValue, ValueMatchCache,
+    ValueModifier,
 };
 use regex::Regex;
 use std::borrow::Cow;
@@ -127,6 +128,10 @@ pub(crate) fn match_field_condition_on_view(
                 value_matches(
                     val,
                     sigma_folded,
+                    condition
+                        .values_match_cache
+                        .get(idx)
+                        .filter(|c| c.is_populated()),
                     field_value,
                     &field_lower,
                     &condition.modifiers,
@@ -142,6 +147,10 @@ pub(crate) fn match_field_condition_on_view(
                 value_matches(
                     val,
                     sigma_folded,
+                    condition
+                        .values_match_cache
+                        .get(idx)
+                        .filter(|c| c.is_populated()),
                     field_value,
                     &field_lower,
                     &condition.modifiers,
@@ -448,6 +457,25 @@ fn base64_encode(input: &str) -> String {
 // Value Matching — Per-modifier logic
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Build a load-time match cache from a case-folded pattern string.
+///
+/// The input must already be lowercased (`fold_value`) so cached tokens and
+/// literals align with the runtime `field_lower` comparison path.
+#[must_use]
+pub(crate) fn build_value_match_cache(folded: &str) -> ValueMatchCache {
+    if let Some(literal) = pattern_literal(folded) {
+        ValueMatchCache {
+            literal: Some(literal),
+            tokens: None,
+        }
+    } else {
+        ValueMatchCache {
+            literal: None,
+            tokens: Some(tokenize_pattern(folded)),
+        }
+    }
+}
+
 /// Does a single Sigma value match an event field value, given the modifiers?
 ///
 /// Modifiers change HOW the comparison works:
@@ -461,6 +489,7 @@ fn base64_encode(input: &str) -> String {
 fn value_matches(
     sigma_value: &SigmaValue,
     sigma_folded: Option<&str>,
+    match_cache: Option<&ValueMatchCache>,
     field_value: &str,
     field_lower: &str,
     modifiers: &[ValueModifier],
@@ -505,16 +534,15 @@ fn value_matches(
 
     // String matching with modifier-determined mode
     if has_contains {
-        // Substring match (with wildcard support within the pattern)
-        return wildcard_contains(sigma_lower, field_lower);
+        return value_matches_contains(sigma_lower, match_cache, field_lower);
     }
 
     if has_startswith {
-        return wildcard_startswith(sigma_lower, field_lower);
+        return value_matches_startswith(sigma_lower, match_cache, field_lower);
     }
 
     if has_endswith {
-        return wildcard_endswith(sigma_lower, field_lower);
+        return value_matches_endswith(sigma_lower, match_cache, field_lower);
     }
 
     // Default: full match with wildcard support.
@@ -522,10 +550,74 @@ fn value_matches(
     // escape characters so `\*` / `\\` sequences compare by their unescaped
     // literal form, per the Sigma escaping rules.
     if sigma_value.has_wildcards() || sigma_lower.contains('\\') {
-        wildcard_match(sigma_lower, field_lower)
+        value_matches_wildcard(sigma_lower, match_cache, field_lower)
     } else {
         sigma_lower == field_lower
     }
+}
+
+fn value_matches_contains(
+    sigma_lower: &str,
+    match_cache: Option<&ValueMatchCache>,
+    field_lower: &str,
+) -> bool {
+    if let Some(cache) = match_cache {
+        if let Some(literal) = &cache.literal {
+            return field_lower.contains(literal.as_str());
+        }
+        if let Some(tokens) = &cache.tokens {
+            return wildcard_match_wrapped_tokens(tokens, field_lower, true, true);
+        }
+    }
+    wildcard_contains(sigma_lower, field_lower)
+}
+
+fn value_matches_startswith(
+    sigma_lower: &str,
+    match_cache: Option<&ValueMatchCache>,
+    field_lower: &str,
+) -> bool {
+    if let Some(cache) = match_cache {
+        if let Some(literal) = &cache.literal {
+            return field_lower.starts_with(literal.as_str());
+        }
+        if let Some(tokens) = &cache.tokens {
+            return wildcard_match_wrapped_tokens(tokens, field_lower, false, true);
+        }
+    }
+    wildcard_startswith(sigma_lower, field_lower)
+}
+
+fn value_matches_endswith(
+    sigma_lower: &str,
+    match_cache: Option<&ValueMatchCache>,
+    field_lower: &str,
+) -> bool {
+    if let Some(cache) = match_cache {
+        if let Some(literal) = &cache.literal {
+            return field_lower.ends_with(literal.as_str());
+        }
+        if let Some(tokens) = &cache.tokens {
+            return wildcard_match_wrapped_tokens(tokens, field_lower, true, false);
+        }
+    }
+    wildcard_endswith(sigma_lower, field_lower)
+}
+
+fn value_matches_wildcard(
+    sigma_lower: &str,
+    match_cache: Option<&ValueMatchCache>,
+    field_lower: &str,
+) -> bool {
+    if let Some(cache) = match_cache {
+        if let Some(literal) = &cache.literal {
+            return literal == field_lower;
+        }
+        if let Some(tokens) = &cache.tokens {
+            return wildcard_match_tokens(tokens, field_lower);
+        }
+    }
+    wildcard_match(sigma_lower, field_lower)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -541,17 +633,6 @@ fn value_matches(
 //   `\x` (any other char) → plain backslash followed by `x` — single
 //         backslashes before non-wildcards need no escaping, so Windows
 //         paths like `\cmd.exe` keep their backslash.
-
-/// One element of a tokenized Sigma wildcard pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PatToken {
-    /// `*` — matches any run of characters (including empty).
-    Star,
-    /// `?` — matches exactly one character.
-    Question,
-    /// A literal character (escapes already resolved).
-    Lit(char),
-}
 
 /// Tokenize a Sigma pattern, resolving escape sequences per the spec above.
 fn tokenize_pattern(pattern: &str) -> Vec<PatToken> {
@@ -601,11 +682,13 @@ pub(crate) fn pattern_literal(pattern: &str) -> Option<String> {
 }
 
 /// Full wildcard match: `*` matches any sequence, `?` matches single char.
-/// Uses a two-pointer algorithm — O(m*n) worst case but fast for typical patterns.
 fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let tokens = tokenize_pattern(pattern);
-    let text: Vec<char> = text.chars().collect();
-    wildcard_match_impl(&tokens, &text)
+    wildcard_match_tokens(&tokenize_pattern(pattern), text)
+}
+
+fn wildcard_match_tokens(tokens: &[PatToken], text: &str) -> bool {
+    let text_chars: Vec<char> = text.chars().collect();
+    wildcard_match_impl(tokens, &text_chars)
 }
 
 /// Two-pointer wildcard matching over tokenized patterns.
@@ -669,8 +752,24 @@ fn wildcard_match_wrapped(pattern: &str, text: &str, star_before: bool, star_aft
     if star_after {
         tokens.push(PatToken::Star);
     }
-    let text_chars: Vec<char> = text.chars().collect();
-    wildcard_match_impl(&tokens, &text_chars)
+    wildcard_match_tokens(&tokens, text)
+}
+
+fn wildcard_match_wrapped_tokens(
+    tokens: &[PatToken],
+    text: &str,
+    star_before: bool,
+    star_after: bool,
+) -> bool {
+    let mut wrapped = Vec::with_capacity(tokens.len() + 2);
+    if star_before {
+        wrapped.push(PatToken::Star);
+    }
+    wrapped.extend_from_slice(tokens);
+    if star_after {
+        wrapped.push(PatToken::Star);
+    }
+    wildcard_match_tokens(&wrapped, text)
 }
 
 /// Contains with wildcard support in the pattern.
@@ -947,19 +1046,24 @@ fn match_field_condition_with_cache_on_view<S2: BuildHasher>(
                     None => regex_matches(&pattern, field_value, &condition.modifiers),
                 }
             } else {
+                let value_idx = condition
+                    .values
+                    .iter()
+                    .position(|candidate| candidate == val);
                 let sigma_folded = if use_precomputed_folds {
-                    condition
-                        .values
-                        .iter()
-                        .position(|candidate| candidate == val)
+                    value_idx
                         .and_then(|idx| condition.values_folded.get(idx))
                         .and_then(|v| v.as_deref())
                 } else {
                     None
                 };
+                let match_cache = value_idx
+                    .and_then(|idx| condition.values_match_cache.get(idx))
+                    .filter(|c| c.is_populated());
                 value_matches(
                     val,
                     sigma_folded,
+                    match_cache,
                     field_value,
                     &field_lower,
                     &condition.modifiers,

@@ -8,6 +8,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### (next release)
+
+---
+
+## [0.1.2] — 2026-07-08
+
+### Added
+
+- **EvalScratch (Phase 2).** Thread-local reusable buffers for the AC hit bitmap
+  and dense per-rule identifier results. Eliminates per-event `Vec<bool>` and
+  per-rule `HashMap<String, bool>` allocation on the hot path. Exported as
+  [`EvalScratch`](https://docs.rs/null-sigma/latest/null_sigma/struct.EvalScratch.html).
+
+- **Load-time `ValueMatchCache` (Phase 2).** String match values are
+  case-folded and pre-classified at rule load as unescaped literals or
+  pre-tokenized wildcard patterns (`PatToken`). The matcher skips runtime
+  `tokenize_pattern` on contains/startswith/endswith/exact paths. Transform
+  modifiers (`|base64`, `|wide`, `|windash`) still expand at eval time.
+
+- **Phase 2 regression tests.** Guards for `ac_hits` / `id_results` stale-state
+  bleed across events and rules, and case-folding alignment for cached patterns.
+
+### Changed
+
+- **Tier A performance (SigmaHQ 1 102 rules, benign event).** Single-event
+  latency **541 µs → 314 µs** (~42% faster, ~1.7× vs Phase 1). Gap vs
+  tau-engine narrowed from ~3.9× to ~2.3×. Batch 1 000 events: **602 ms →
+  378 ms**.
+
 ---
 
 ## [0.1.1] — 2026-07-07

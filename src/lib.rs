@@ -4,7 +4,7 @@
 //! representation, then evaluate streams of security events against the full
 //! rule set at **311 000+ events/second × 1 000 synthetic rules on a single core**
 //! (Apple M4, release, microbenchmark suite). Against real `SigmaHQ`
-//! `process_creation` rules: **~1 850 events/second** (see `harness/` and
+//! `process_creation` rules: **~3 180 events/second** (see `harness/` and
 //! `PERFORMANCE.md` §11).
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -44,13 +44,13 @@
 //! | [`condition`] | Condition expression → boolean AST |
 //! | [`matcher`] | Event field matching — all 19 Sigma modifiers |
 //! | [`fieldmap`] | Sigma field-name translation |
-//! | [`engine`] | Multi-rule evaluation with Aho-Corasick optimisation |
+//! | [`engine`] | Multi-rule evaluation, Aho-Corasick prefilter, [`EvalScratch`] reuse |
 
 /// Condition expression compiler: Sigma condition strings → boolean AST
 /// ([`condition::ConditionNode`]).
 pub mod condition;
-/// Multi-rule evaluation engine with Aho-Corasick batch prefilter and
-/// cache-friendly hot/cold struct split.
+/// Multi-rule evaluation engine with Aho-Corasick batch prefilter,
+/// [`EvalScratch`] buffer reuse, and cache-friendly hot/cold struct split.
 pub mod engine;
 mod event_view;
 /// Sigma field-name translation and enrichment.
@@ -72,7 +72,7 @@ pub mod types;
 
 // Re-export the primary public API
 pub use condition::{compile_condition, CompileError, ConditionNode};
-pub use engine::{EngineError, SigmaEngine};
+pub use engine::{EngineError, EvalScratch, SigmaEngine};
 pub use fieldmap::FieldMapping;
 #[cfg(feature = "json")]
 pub use json::{flatten_str, flatten_value, FlattenError, FlattenOptions};

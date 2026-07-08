@@ -619,6 +619,7 @@ detection:
                     .map(|v| SigmaValue::String(v.to_string()))
                     .collect(),
                 values_folded: values.iter().map(|v| Some(v.to_lowercase())).collect(),
+                values_match_cache: Vec::new(),
                 modifiers: mods.to_vec(),
             }
         }
@@ -1107,6 +1108,7 @@ detection:
                 field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(80)],
                 values_folded: vec![Some("80".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Gt],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1120,6 +1122,7 @@ detection:
                 field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(80)],
                 values_folded: vec![Some("80".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Gt],
             };
             assert!(!match_field_condition(&cond, &event));
@@ -1133,6 +1136,7 @@ detection:
                 field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(80)],
                 values_folded: vec![Some("80".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Gte],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1146,6 +1150,7 @@ detection:
                 field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(10)],
                 values_folded: vec![Some("10".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Lt],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1159,6 +1164,7 @@ detection:
                 field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(10)],
                 values_folded: vec![Some("10".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Lte],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1172,6 +1178,7 @@ detection:
                 field_folded: "score".to_string(),
                 values: vec![SigmaValue::Integer(10)],
                 values_folded: vec![Some("10".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Gt],
             };
             assert!(!match_field_condition(&cond, &event));
@@ -1187,6 +1194,7 @@ detection:
                 field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::Boolean(true)],
                 values_folded: vec![Some("true".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Exists],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1200,6 +1208,7 @@ detection:
                 field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::Boolean(true)],
                 values_folded: vec![Some("true".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Exists],
             };
             assert!(!match_field_condition(&cond, &event));
@@ -1213,6 +1222,7 @@ detection:
                 field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::Boolean(false)],
                 values_folded: vec![Some("false".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Exists],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1261,6 +1271,7 @@ detection:
                 field_folded: "field".to_string(),
                 values: vec![SigmaValue::Null],
                 values_folded: vec![Some(String::new())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![],
             };
             assert!(match_field_condition(&cond, &event));
@@ -1274,6 +1285,7 @@ detection:
                 field_folded: "field".to_string(),
                 values: vec![SigmaValue::Null],
                 values_folded: vec![Some(String::new())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![],
             };
             assert!(!match_field_condition(&cond, &event));
@@ -1806,6 +1818,144 @@ detection:
             event2.insert("event_product".to_string(), "windows".to_string());
             assert!(engine.evaluate_event(&event2).is_empty());
         }
+
+        // ─── EvalScratch + match-cache regression guards ───────────────
+
+        #[test]
+        fn eval_scratch_ac_hits_do_not_bleed_across_events() {
+            let yaml = r#"
+title: AC Hit Bleed Guard
+logsource: {}
+detection:
+    sel:
+        CommandLine|contains: 'needle-unique-xyzzy'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut hit = HashMap::new();
+            hit.insert(
+                "CommandLine".to_string(),
+                "contains needle-unique-xyzzy here".to_string(),
+            );
+            assert_eq!(engine.evaluate_event_count(&hit), 1);
+
+            let mut miss = HashMap::new();
+            miss.insert(
+                "CommandLine".to_string(),
+                "benign chrome browsing".to_string(),
+            );
+            assert_eq!(
+                engine.evaluate_event_count(&miss),
+                0,
+                "stale ac_hits must not carry pattern hits into the next event"
+            );
+        }
+
+        #[test]
+        fn eval_scratch_id_results_do_not_bleed_across_rules() {
+            let rule_a = r#"
+title: Rule A Many Idents
+logsource: {}
+detection:
+    sel_a:
+        CommandLine|contains: 'rule-a-marker'
+    sel_b:
+        Image|endswith: '\rulea.exe'
+    sel_c:
+        User: 'SYSTEM'
+    sel_d:
+        ParentImage|endswith: '\explorer.exe'
+    sel_e:
+        IntegrityLevel: 'High'
+    condition: sel_a
+"#;
+            let rule_b = r#"
+title: Rule B And Gate
+logsource: {}
+detection:
+    sel_a:
+        CommandLine|contains: 'rule-b-never'
+    sel_b:
+        Image|endswith: '\ruleb.exe'
+    condition: sel_a and sel_b
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(rule_a).unwrap();
+            engine.load_rule(rule_b).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert(
+                "CommandLine".to_string(),
+                "rule-a-marker in command".to_string(),
+            );
+            event.insert("Image".to_string(), "C:\\Windows\\rulea.exe".to_string());
+            event.insert("User".to_string(), "SYSTEM".to_string());
+            event.insert(
+                "ParentImage".to_string(),
+                "C:\\Windows\\explorer.exe".to_string(),
+            );
+            event.insert("IntegrityLevel".to_string(), "High".to_string());
+
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(
+                matches.len(),
+                1,
+                "only Rule A should match; Rule B must not inherit stale id_results"
+            );
+            assert_eq!(matches[0].rule_title, "Rule A Many Idents");
+        }
+
+        #[test]
+        fn match_cache_honors_case_folding_for_contains() {
+            let yaml = r#"
+title: Mixed Case Contains Cache
+logsource: {}
+detection:
+    sel:
+        CommandLine|contains: '-ENCodedCommand'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert(
+                "CommandLine".to_string(),
+                "powershell.exe -encodedcommand abc".to_string(),
+            );
+            assert_eq!(
+                engine.evaluate_event_count(&event),
+                1,
+                "load-time cache must fold pattern before literal/contains matching"
+            );
+        }
+
+        #[test]
+        fn match_cache_honors_case_folding_for_wildcard_contains() {
+            let yaml = r#"
+title: Mixed Case Wildcard Cache
+logsource: {}
+detection:
+    sel:
+        Image|contains: 'TeSt*.exe'
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert(
+                "Image".to_string(),
+                "C:\\Windows\\System32\\mytesttool.exe".to_string(),
+            );
+            assert_eq!(
+                engine.evaluate_event_count(&event),
+                1,
+                "wildcard token cache must be built from fold_value, not raw YAML casing"
+            );
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -1823,6 +1973,7 @@ detection:
                 field_folded: "f".to_string(),
                 values: vec![SigmaValue::String(pattern.to_string())],
                 values_folded: vec![Some(pattern.to_lowercase())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![],
             };
             match_field_condition(&cond, &event)
@@ -2387,6 +2538,7 @@ detection:
                     .map(|v| SigmaValue::String(v.to_string()))
                     .collect(),
                 values_folded: values.iter().map(|v| Some(v.to_lowercase())).collect(),
+                values_match_cache: Vec::new(),
                 modifiers: mods.to_vec(),
             }
         }
@@ -2491,6 +2643,7 @@ detection:
                 field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::String("-enc".to_string())],
                 values_folded: vec![Some("-enc".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
             };
 
@@ -2518,6 +2671,7 @@ detection:
                 field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::String("-enc".to_string())],
                 values_folded: vec![Some("-enc".to_string())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
             };
 
@@ -2543,6 +2697,7 @@ detection:
                 field_folded: "cmd".to_string(),
                 values: vec![SigmaValue::String("\u{2013}enc".to_string())],
                 values_folded: vec![Some("\u{2013}enc".to_lowercase())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
             };
             let event_dash = make_event("cmd", "powershell -enc SQBFAFg=");
@@ -2772,6 +2927,7 @@ detection:
                 field_folded: "ip".to_string(),
                 values: vec![SigmaValue::String(cidr.to_string())],
                 values_folded: vec![Some(cidr.to_lowercase())],
+                values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Cidr],
             }
         }
