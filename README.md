@@ -1,4 +1,4 @@
-# null-sigma
+# null-sigma — Sigma engine (Tier B wall-clock winner)
 <img width="736" height="1000" alt="Gemini_Generated_Image_" src="https://github.com/user-attachments/assets/15821532-452d-4e03-b951-79c8bbf306c5" />
 
 [![CI](https://github.com/Gh0st-La6z-exe/null-sigma/actions/workflows/ci.yml/badge.svg)](https://github.com/Gh0st-La6z-exe/null-sigma/actions/workflows/ci.yml)
@@ -346,6 +346,12 @@ Two measurement tiers — do not conflate them:
 
 The left panel shows prefilter sublinear scaling on the **microbench** suite.
 The chart is generated from Criterion medians by `scripts/gen_benchmark_chart.py`.
+
+![Tier B wall-clock chart (hyperfine): null-sigma beats Hayabusa default threads on 100k events](assets/tier_b.svg)
+
+The Tier B chart is generated from the latest hyperfine results by
+`scripts/gen_tier_b_chart.py` (update the hardcoded numbers from
+`harness/data/tier_b_results.md`).
 
 ### Microbenchmark suite
 
