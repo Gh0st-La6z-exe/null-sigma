@@ -70,11 +70,10 @@ Delivered:
 Measured (Apple M4, release, 2026-07-08):
 - Tier A single benign event: null-sigma **309 µs** (314 µs after Phase 2;
   541 µs after Phase 1), tau-engine **136 µs**, sigma-rust 4.61 ms.
-- Tier B hyperfine (100k events, refreshed post-0.1.3):
-  Hayabusa default **17.2 s**, null-sigma **47.7 s**, Hayabusa-1-thread
-  **59.3 s**, Chainsaw **34.2 s**. **Single-thread win vs Hayabusa (~1.24×)**;
-  multi-thread gap **~2.8×** wall (~6× Hayabusa user/wall). Tax split: eval
-  **99%**.
+- Tier B hyperfine (100k events, Rayon prototype):
+  null-sigma default threads **15.2 s**, Hayabusa default **23.9 s**,
+  null-sigma ST **45.2 s**, Hayabusa ST **57.3 s**. **Wins ST (~1.27×) and
+  MT (~1.57×)** vs Hayabusa. Tax split: eval **99%**.
 
 Core fixes discovered/enabled by the harness:
 - AC overlapping scan + pattern interning (false-negative elimination).
@@ -84,13 +83,13 @@ Core fixes discovered/enabled by the harness:
 - EventView value cache (lazy fold + wildcard char cache; ~1.5–2% on top).
 - Count-only API (`evaluate_event_count`).
 - Tier B tax split + refreshed hyperfine baseline (no phantom 120 s).
+- Rayon parallel Tier B runner (`--threads`) — beats Hayabusa default wall.
 
 Full numbers and reproduction steps: `harness/README.md`, `PERFORMANCE.md` §11,
 `harness/data/tier_b_results.md`.
 
-Follow-up: direction open — Rayon CLI (≥~3 workers to match Hayabusa default)
-and/or matcher structural work; ingest Phase 3 deprioritized
-(`PERFORMANCE.md` §11.5a / §11.6).
+Follow-up: CLI binary hardening (roadmap §4); matcher structural gap vs
+tau-engine remains open for Tier A.
 
 ## 3b. Phase 2 — EvalScratch + pattern cache (DONE — 2026-07-07)
 
@@ -115,6 +114,17 @@ paths do not force it). `|fieldref` uses the same folded slots.
 
 Measured: **314 µs → 309 µs** on Tier A benign; `cross_check` unchanged.
 Documented in `PERFORMANCE.md` §11.8.
+
+## 3d. Parallel Tier B runner (DONE — 2026-07-08)
+
+Rayon `--threads` on harness `null_sigma_run`: sequential ingest, parallel
+`evaluate_event_count` via `Arc<SigmaEngine>` (thread-local `EvalScratch` per
+worker). Parity smoke at 1/2/4/8/0 threads on 10k events.
+
+Measured (Tier B hyperfine, 100k events): null-sigma default threads **15.2 s**
+vs Hayabusa default **23.9 s** (~1.57× wall-clock win). Single-thread still
+wins vs Hayabusa-1-thread (45.2 s vs 57.3 s). Documented in `PERFORMANCE.md`
+§11.9.
 
 ## 4. CLI binary (`null-sigma-cli`)
 

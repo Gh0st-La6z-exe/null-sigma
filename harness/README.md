@@ -112,18 +112,20 @@ Downloads pinned binaries to `harness/bin/` (gitignored):
 
 Dataset: deterministic flat JSONL (`gen_dataset` binary, seed 42).
 
-Latest hyperfine (100k events, 2026-07-08, post-0.1.3; warmup 1 + 5 runs):
+Latest hyperfine (100k events, 2026-07-08, Rayon prototype; warmup 1 + 5 runs):
 
 | Command | Mean | Events/sec |
 |---|---|---|
-| `hayabusa-default-threads` | **17.2 s ± 0.6** | **5 800** |
-| `chainsaw-hunt` | 34.2 s ± 2.8 | 2 925 |
-| `null-sigma-runner` | **47.7 s ± 1.6** | **2 100** |
-| `hayabusa-1-thread` | 59.3 s ± 4.5 | 1 690 |
+| `null-sigma-runner-default-threads` | **15.2 s ± 0.3** | **6 560** |
+| `hayabusa-default-threads` | 23.9 s ± 0.3 | 4 190 |
+| `null-sigma-runner-4-thread` | 18.0 s ± 2.0 | 5 550 |
+| `chainsaw-hunt` | 37.3 s ± 1.0 | 2 680 |
+| `null-sigma-runner` | **45.2 s ± 0.2** | **2 210** |
+| `hayabusa-1-thread` | 57.3 s ± 0.8 | 1 750 |
 
-**Single-thread win:** null-sigma ~1.24× faster than Hayabusa `--threads 1`.
-**Thread gap:** Hayabusa default ~2.76× faster wall (≈6× user/wall); Rayon
-needs roughly ≥3 efficient workers to match from our ST base.
+**Single-thread win:** null-sigma ~1.27× faster than Hayabusa `--threads 1`.
+**Multi-thread win:** null-sigma `--threads 0` ~1.57× faster than Hayabusa default.
+Parity gate: `./scripts/smoke_parallel.sh` (10k events, threads 1/2/4/8/0).
 Tax split: **eval 99%** — see `PERFORMANCE.md` §11.5a.
 
 Written to `harness/data/tier_b_results.md` (gitignored).
@@ -140,9 +142,11 @@ silently matches nothing on JSONL and looks artificially fast.
 | Binary | Purpose |
 |---|---|
 | `cross_check` | Correctness gate — run before publishing numbers |
-| `null_sigma_run` | Tier B reference CLI (`rule_dir events.jsonl`); prints `tier_b_tax` read/parse/flat/eval split on stderr |
+| `null_sigma_run` | Tier B reference CLI (`[--threads N] rule_dir events.jsonl`); prints `tier_b_tax` split on stderr |
 | `gen_dataset` | Deterministic JSONL event generator |
 | `prof_benign` | Tier A profiling target (`--profile prof`) |
+
+Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events).
 
 ## Layout
 
@@ -160,6 +164,7 @@ harness/
 │   └── prof_benign.rs         # Profiling gate (local)
 ├── scripts/
 │   ├── run_cli_bench.sh       # Tier B
+│   ├── smoke_parallel.sh      # Thread-count parity (10k)
 │   └── prof_benign.sh         # samply profiling (local output → prof/)
 ├── prof/                      # gitignored — profiles + summary notes
 ├── config/chainsaw-json-mapping.yml

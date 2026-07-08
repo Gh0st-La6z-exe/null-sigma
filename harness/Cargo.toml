@@ -33,6 +33,8 @@ serde_norway = "0.9"
 base64 = "0.22"
 # For the profile_eval diagnostic (isolated AC scan timing).
 aho-corasick = "1.1"
+# Parallel Tier B eval phase in null_sigma_run (--threads N).
+rayon = "1.10"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

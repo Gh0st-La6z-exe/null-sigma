@@ -403,14 +403,15 @@ On real SigmaHQ rules, tau-engine is **~2.3× faster** per event; null-sigma is
 
 | Tool | Wall time | Events/sec |
 |---|---|---|
-| Hayabusa (default threads) | **17.2 s** | **5 800** |
-| null-sigma runner (1 thread) | **47.7 s** | **2 100** |
-| Chainsaw hunt | 34.2 s | 2 925 |
-| Hayabusa (1 thread) | 59.3 s | 1 690 |
+| null-sigma runner (default threads) | **15.2 s** | **6 560** |
+| Hayabusa (default threads) | 23.9 s | 4 190 |
+| null-sigma runner (1 thread) | **45.2 s** | **2 210** |
+| Hayabusa (1 thread) | 57.3 s | 1 750 |
+| Chainsaw hunt | 37.3 s | 2 680 |
 
-Single-thread: null-sigma **beats** Hayabusa (~1.24×). Multi-thread Hayabusa
-remains ~2.8× faster wall-clock. Tax split shows eval is **99%** of our scan —
-see `PERFORMANCE.md` §11.5 / §11.5a.
+Single-thread: null-sigma **beats** Hayabusa (~1.27×). With Rayon
+(`--threads 0`), null-sigma **beats** Hayabusa default (~1.57×).
+See `PERFORMANCE.md` §11.5 / §11.9.
 
 These figures include the correctness hardening and AC prefilter fixes added in
 July 2026 — traded for eliminating several false-negative classes and enabling
