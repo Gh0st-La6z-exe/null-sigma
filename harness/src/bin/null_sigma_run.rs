@@ -10,11 +10,13 @@
 //!   flat  — `flatten_value`
 //!   eval  — `evaluate_event_count` (parallel when `--threads` > 1)
 //!
-//! Usage: null_sigma_run [--threads N] <rule_dir> <events.jsonl>
+//! Usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] <rule_dir> <events.jsonl>
 //!
 //! `--threads 1` (default): single-threaded eval.
 //! `--threads 0`: Rayon pool sized to `available_parallelism()`.
 //! `--threads N` (N > 1): fixed Rayon pool of N workers.
+//! `--on-error continue` (default): count bad events and keep going.
+//! `--on-error fail-fast`: exit non-zero on first event-level error.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -25,13 +27,46 @@ use rayon::prelude::*;
 
 struct Args {
     threads: usize,
+    on_error: OnErrorMode,
     rule_dir: std::path::PathBuf,
     events_path: std::path::PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OnErrorMode {
+    Continue,
+    FailFast,
+}
+
+#[derive(Debug, Default)]
+struct ErrorCounters {
+    err_io_read: u64,
+    err_json_parse: u64,
+    err_flatten: u64,
+}
+
+impl ErrorCounters {
+    fn total(&self) -> u64 {
+        self.err_io_read + self.err_json_parse + self.err_flatten
+    }
+}
+
+#[derive(Debug, Default)]
+struct IngestStats {
+    events: Vec<HashMap<String, String>>,
+    events_total: u64,
+    events_ok: u64,
+    events_failed: u64,
+    t_read: Duration,
+    t_parse: Duration,
+    t_flat: Duration,
+    errors: ErrorCounters,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut iter = std::env::args().skip(1);
     let mut threads = 1usize;
+    let mut on_error = OnErrorMode::Continue;
 
     while let Some(arg) = iter.next() {
         if arg == "--threads" {
@@ -49,13 +84,26 @@ fn parse_args() -> Result<Args, String> {
             threads = n
                 .parse()
                 .map_err(|_| format!("invalid --threads value: {n}"))?;
+        } else if arg == "--on-error" {
+            let mode = iter
+                .next()
+                .ok_or_else(|| "--on-error requires a value".to_string())?;
+            on_error = parse_on_error_mode(&mode)?;
+        } else if arg.starts_with("--on-error=") {
+            let mode = arg
+                .split_once('=')
+                .map(|(_, v)| v)
+                .ok_or_else(|| "invalid --on-error syntax".to_string())?;
+            on_error = parse_on_error_mode(mode)?;
         } else if arg == "--help" || arg == "-h" {
             eprintln!(
-                "usage: null_sigma_run [--threads N] <rule_dir> <events.jsonl>\n\
+                "usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] <rule_dir> <events.jsonl>\n\
                  \n\
                  --threads 1   single-threaded eval (default)\n\
                  --threads 0   Rayon pool = available_parallelism()\n\
-                 --threads N   fixed Rayon pool of N workers"
+                 --threads N   fixed Rayon pool of N workers\n\
+                 --on-error continue   count bad events and continue (default)\n\
+                 --on-error fail-fast  exit non-zero on first event error"
             );
             std::process::exit(0);
         } else {
@@ -64,13 +112,14 @@ fn parse_args() -> Result<Args, String> {
                 .ok_or_else(|| format!("missing events path after {arg}"))?;
             return Ok(Args {
                 threads,
+                on_error,
                 rule_dir: std::path::PathBuf::from(arg),
                 events_path: std::path::PathBuf::from(events_path),
             });
         }
     }
 
-    Err("usage: null_sigma_run [--threads N] <rule_dir> <events.jsonl>".to_string())
+    Err("usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] <rule_dir> <events.jsonl>".to_string())
 }
 
 fn resolve_thread_count(requested: usize) -> usize {
@@ -83,22 +132,41 @@ fn resolve_thread_count(requested: usize) -> usize {
     }
 }
 
+fn parse_on_error_mode(raw: &str) -> Result<OnErrorMode, String> {
+    match raw {
+        "continue" => Ok(OnErrorMode::Continue),
+        "fail-fast" => Ok(OnErrorMode::FailFast),
+        _ => Err(format!(
+            "invalid --on-error value: {raw} (expected continue|fail-fast)"
+        )),
+    }
+}
+
 fn ingest_events(
     events_path: &std::path::Path,
-) -> (Vec<HashMap<String, String>>, u64, Duration, Duration, Duration) {
-    let mut reader = BufReader::new(std::fs::File::open(events_path).expect("cannot open events"));
+    on_error: OnErrorMode,
+) -> Result<IngestStats, String> {
+    let file = std::fs::File::open(events_path)
+        .map_err(|e| format!("cannot open events '{}': {e}", events_path.display()))?;
+    let mut reader = BufReader::new(file);
     let mut line = String::new();
-    let mut events = Vec::new();
-    let mut event_count = 0u64;
-    let mut t_read = Duration::ZERO;
-    let mut t_parse = Duration::ZERO;
-    let mut t_flat = Duration::ZERO;
+    let mut stats = IngestStats::default();
 
     loop {
         line.clear();
         let t0 = std::time::Instant::now();
-        let n = reader.read_line(&mut line).expect("read error");
-        t_read += t0.elapsed();
+        let n = match reader.read_line(&mut line) {
+            Ok(n) => n,
+            Err(e) => {
+                stats.errors.err_io_read += 1;
+                stats.events_failed += 1;
+                if on_error == OnErrorMode::FailFast {
+                    return Err(format!("read error: {e}"));
+                }
+                break;
+            }
+        };
+        stats.t_read += t0.elapsed();
         if n == 0 {
             break;
         }
@@ -106,21 +174,43 @@ fn ingest_events(
         if trimmed.is_empty() {
             continue;
         }
-        event_count += 1;
+        stats.events_total += 1;
 
         let t0 = std::time::Instant::now();
-        let value: serde_json::Value =
-            serde_json::from_str(trimmed).expect("bad event JSON");
-        t_parse += t0.elapsed();
+        let value: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(value) => value,
+            Err(_) => {
+                stats.t_parse += t0.elapsed();
+                stats.errors.err_json_parse += 1;
+                stats.events_failed += 1;
+                if on_error == OnErrorMode::FailFast {
+                    return Err("bad event JSON".to_string());
+                }
+                continue;
+            }
+        };
+        stats.t_parse += t0.elapsed();
 
         let t0 = std::time::Instant::now();
-        let event = null_sigma::flatten_value(&value).expect("flatten failed");
-        t_flat += t0.elapsed();
+        let event = match null_sigma::flatten_value(&value) {
+            Ok(event) => event,
+            Err(_) => {
+                stats.t_flat += t0.elapsed();
+                stats.errors.err_flatten += 1;
+                stats.events_failed += 1;
+                if on_error == OnErrorMode::FailFast {
+                    return Err("flatten failed".to_string());
+                }
+                continue;
+            }
+        };
+        stats.t_flat += t0.elapsed();
 
-        events.push(event);
+        stats.events_ok += 1;
+        stats.events.push(event);
     }
 
-    (events, event_count, t_read, t_parse, t_flat)
+    Ok(stats)
 }
 
 fn evaluate_events(
@@ -178,18 +268,21 @@ fn main() {
     let (loaded, skipped) = (loaded_ids.len(), errors.len());
     let load_ms = start.elapsed().as_millis();
 
-    let ingest_start = std::time::Instant::now();
-    let (events, event_count, t_read, t_parse, t_flat) =
-        ingest_events(&args.events_path);
-    let ingest = ingest_start.elapsed();
+    let ingest_stats = match ingest_events(&args.events_path, args.on_error) {
+        Ok(stats) => stats,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    };
 
     let eval_start = std::time::Instant::now();
     let engine = Arc::new(engine);
-    let matches = evaluate_events(engine, &events, threads);
+    let matches = evaluate_events(engine, &ingest_stats.events, threads);
     let t_eval = eval_start.elapsed();
 
-    let scan = ingest + t_eval;
-    let accounted = t_read + t_parse + t_flat + t_eval;
+    let scan = ingest_stats.t_read + ingest_stats.t_parse + ingest_stats.t_flat + t_eval;
+    let accounted = ingest_stats.t_read + ingest_stats.t_parse + ingest_stats.t_flat + t_eval;
     let other = scan.saturating_sub(accounted);
 
     let pct = |d: Duration| -> f64 {
@@ -201,24 +294,46 @@ fn main() {
     };
 
     eprintln!(
-        "rules: {loaded} loaded, {skipped} skipped ({load_ms} ms) | events: {event_count} | \
-         matches: {matches} | threads: {threads} | scan: {:.3}s ({:.0} events/sec)",
-        scan.as_secs_f64(),
-        event_count as f64 / scan.as_secs_f64()
+        "rules: {loaded} loaded, {skipped} skipped ({load_ms} ms) | events: {events_total} | \
+         ok: {events_ok} failed: {events_failed} | matches: {matches} | threads: {threads} | \
+         on_error: {on_error} | scan: {scan_s:.3}s ({eps:.0} events/sec)",
+        events_total = ingest_stats.events_total,
+        events_ok = ingest_stats.events_ok,
+        events_failed = ingest_stats.events_failed,
+        on_error = match args.on_error {
+            OnErrorMode::Continue => "continue",
+            OnErrorMode::FailFast => "fail-fast",
+        },
+        scan_s = scan.as_secs_f64(),
+        eps = ingest_stats.events_total as f64 / scan.as_secs_f64()
     );
     eprintln!(
         "tier_b_tax: read={:.3}s ({:.1}%) parse={:.3}s ({:.1}%) flat={:.3}s ({:.1}%) \
          eval={:.3}s ({:.1}%) other={:.3}s ({:.1}%)",
-        t_read.as_secs_f64(),
-        pct(t_read),
-        t_parse.as_secs_f64(),
-        pct(t_parse),
-        t_flat.as_secs_f64(),
-        pct(t_flat),
+        ingest_stats.t_read.as_secs_f64(),
+        pct(ingest_stats.t_read),
+        ingest_stats.t_parse.as_secs_f64(),
+        pct(ingest_stats.t_parse),
+        ingest_stats.t_flat.as_secs_f64(),
+        pct(ingest_stats.t_flat),
         t_eval.as_secs_f64(),
         pct(t_eval),
         other.as_secs_f64(),
         pct(other),
+    );
+    eprintln!(
+        "ingest_errors: io_read={} json_parse={} flatten={} total={}",
+        ingest_stats.errors.err_io_read,
+        ingest_stats.errors.err_json_parse,
+        ingest_stats.errors.err_flatten,
+        ingest_stats.errors.total()
+    );
+    eprintln!(
+        "ingest_accounting: events_total={} events_ok={} events_failed={} invariant_ok={}",
+        ingest_stats.events_total,
+        ingest_stats.events_ok,
+        ingest_stats.events_failed,
+        ingest_stats.events_total == (ingest_stats.events_ok + ingest_stats.events_failed)
     );
     println!("{matches}");
 }

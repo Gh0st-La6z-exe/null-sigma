@@ -103,6 +103,9 @@ Do not commit `harness/prof/` artifacts.
 cd harness
 ./scripts/run_cli_bench.sh          # default: 100k events, seed 42
 EVENTS=10000 ./scripts/run_cli_bench.sh   # smaller smoke run
+
+# Trust-policy smoke (mixed good/bad JSONL)
+./scripts/smoke_error_policy.sh
 ```
 
 Downloads pinned binaries to `harness/bin/` (gitignored):
@@ -142,11 +145,21 @@ silently matches nothing on JSONL and looks artificially fast.
 | Binary | Purpose |
 |---|---|
 | `cross_check` | Correctness gate — run before publishing numbers |
-| `null_sigma_run` | Tier B reference CLI (`[--threads N] rule_dir events.jsonl`); prints `tier_b_tax` split on stderr |
+| `null_sigma_run` | Tier B reference CLI (`[--threads N] [--on-error continue|fail-fast] rule_dir events.jsonl`); prints `tier_b_tax` + deterministic ingest error accounting |
 | `gen_dataset` | Deterministic JSONL event generator |
 | `prof_benign` | Tier A profiling target (`--profile prof`) |
 
-Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events).
+Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events),
+`scripts/smoke_error_policy.sh` (continue/fail-fast trust checks).
+
+### Trust-first ingestion policy
+
+- Default mode is `--on-error continue`: event-level parse/flatten/read errors
+  are counted and reported, and the run completes.
+- `--on-error fail-fast` exits non-zero on the first event-level error.
+- Startup/config errors (cannot read rules/events file) always exit non-zero.
+- Summary invariant is always reported:
+  `events_total = events_ok + events_failed`.
 
 ## Layout
 

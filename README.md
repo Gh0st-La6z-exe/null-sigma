@@ -419,6 +419,10 @@ Single-thread: null-sigma **beats** Hayabusa (~1.27×). With Rayon
 (`--threads 0`), null-sigma **beats** Hayabusa default (~1.57×).
 See `PERFORMANCE.md` §11.5 / §11.9.
 
+Trust policy (`null_sigma_run`): default `--on-error continue` reports deterministic
+event-level error counters (`io_read`, `json_parse`, `flatten`) and keeps
+processing; `--on-error fail-fast` exits non-zero on first event error.
+
 These figures include the correctness hardening and AC prefilter fixes added in
 July 2026 — traded for eliminating several false-negative classes and enabling
 honest head-to-head measurement.
