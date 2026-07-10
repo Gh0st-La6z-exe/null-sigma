@@ -154,7 +154,8 @@ silently matches nothing on JSONL and looks artificially fast.
 
 Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events),
 `scripts/smoke_error_policy.sh` (continue/fail-fast trust checks),
-`scripts/smoke_robustness.sh` (malformed corpus + guard checks).
+`scripts/smoke_robustness.sh` (malformed corpus + guard checks; asserts
+`ingest_errors` line parity across `--threads 1` and `--threads 0`).
 
 ### Trust-first ingestion policy
 
@@ -162,11 +163,16 @@ Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events),
   are counted and reported, and the run completes.
 - `--on-error fail-fast` exits non-zero on the first event-level error.
 - Startup/config errors (cannot read rules/events file) always exit non-zero.
-- Summary invariant is always reported:
-  `events_total = events_ok + events_failed`.
+- Summary accounting invariant (`events_total = events_ok + events_failed`) is
+  reported on stderr and **enforced**: violation prints `FATAL:` and exits 1
+  before match output.
 - Flatten failures are split honestly:
   `flatten_not_object`, `flatten_depth`, `flatten_fields`.
 - `--max-line-bytes` (default 8 MiB) rejects oversize JSONL lines before parse.
+  Enforced after `read_line`, so it blocks JSON parse/flatten heap growth but not
+  line-buffer allocation on pathological unterminated lines; bounded byte-loop
+  ingest is deferred to Phase 3 streaming rewrite.
+- Ingest error counters are single-threaded (no atomics); Rayon parallelizes eval only.
 - Malformed corpus fixtures live in `tests/fixtures/robustness/` (see README there).
 
 ## Layout

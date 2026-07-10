@@ -421,9 +421,12 @@ See `PERFORMANCE.md` §11.5 / §11.9.
 
 Trust policy (`null_sigma_run`): default `--on-error continue` reports deterministic
 event-level error counters (`io_read`, `line_too_large`, `json_parse`,
-`flatten_not_object`, `flatten_depth`, `flatten_fields`) and keeps processing;
-`--on-error fail-fast` exits non-zero on first event error. Malformed corpus:
-`tests/fixtures/robustness/`.
+`flatten_not_object`, `flatten_depth`, `flatten_fields`) on a single-threaded
+ingest path (Rayon parallelizes eval only); `--on-error fail-fast` exits non-zero
+on first event error. Accounting invariant `events_total = events_ok + events_failed`
+is enforced at end of run (violation exits 1). `--max-line-bytes` (default 8 MiB)
+blocks parse/flatten on oversize lines (see `harness/README.md` for `read_line`
+caveat). Malformed corpus: `tests/fixtures/robustness/`.
 
 These figures include the correctness hardening and AC prefilter fixes added in
 July 2026 — traded for eliminating several false-negative classes and enabling

@@ -407,12 +407,22 @@ fn main() {
         ingest_stats.errors.flatten_total(),
         ingest_stats.errors.total()
     );
+    let invariant_ok =
+        ingest_stats.events_total == ingest_stats.events_ok + ingest_stats.events_failed;
     eprintln!(
-        "ingest_accounting: events_total={} events_ok={} events_failed={} invariant_ok={}",
+        "ingest_accounting: events_total={} events_ok={} events_failed={} invariant_ok={invariant_ok}",
         ingest_stats.events_total,
         ingest_stats.events_ok,
         ingest_stats.events_failed,
-        ingest_stats.events_total == (ingest_stats.events_ok + ingest_stats.events_failed)
     );
+    if !invariant_ok {
+        eprintln!(
+            "FATAL: ingest accounting invariant violated: events_total={} != events_ok({}) + events_failed({})",
+            ingest_stats.events_total,
+            ingest_stats.events_ok,
+            ingest_stats.events_failed,
+        );
+        std::process::exit(1);
+    }
     println!("{matches}");
 }

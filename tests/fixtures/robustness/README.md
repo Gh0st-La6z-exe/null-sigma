@@ -11,3 +11,7 @@ Run via `harness/scripts/smoke_robustness.sh`.
 | `missing_fields_ok.jsonl` | 3 | total=3, ok=3, failed=0, all errors=0 |
 
 Guards use core defaults: `max_depth=64`, `max_fields=10000`.
+
+`smoke_robustness.sh` also asserts `ingest_errors` stderr is identical for
+`--threads 1` and `--threads 0` on `mixed_valid_invalid.jsonl` (ingest is
+single-threaded; eval parallelism must not affect error accounting).

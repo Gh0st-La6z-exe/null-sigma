@@ -48,11 +48,24 @@ OUT="$(run_continue "$FIXTURES/missing_fields_ok.jsonl")"
 assert_contains "$OUT" "ingest_errors: io_read=0 line_too_large=0 json_parse=0 flatten_not_object=0 flatten_depth=0 flatten_fields=0 flatten_total=0 total=0" "missing fields errors"
 assert_contains "$OUT" "ingest_accounting: events_total=3 events_ok=3 events_failed=0 invariant_ok=true" "missing fields accounting"
 
+extract_ingest_errors() {
+    "$RUNNER" "$@" 2>&1 | rg '^ingest_errors: ' | head -1
+}
+
 echo ">> thread parity on mixed fixture"
-COUNT_1="$("$RUNNER" --threads 1 --on-error continue "$RULE_DIR" "$FIXTURES/mixed_valid_invalid.jsonl" 2>/dev/null)"
-COUNT_0="$("$RUNNER" --threads 0 --on-error continue "$RULE_DIR" "$FIXTURES/mixed_valid_invalid.jsonl" 2>/dev/null)"
+MIXED="$FIXTURES/mixed_valid_invalid.jsonl"
+COUNT_1="$("$RUNNER" --threads 1 --on-error continue "$RULE_DIR" "$MIXED" 2>/dev/null)"
+COUNT_0="$("$RUNNER" --threads 0 --on-error continue "$RULE_DIR" "$MIXED" 2>/dev/null)"
 if [ "$COUNT_1" != "$COUNT_0" ]; then
     echo "FAIL: match count drift threads=1 ($COUNT_1) vs threads=0 ($COUNT_0)"
+    exit 1
+fi
+ERR_1="$(extract_ingest_errors --threads 1 --on-error continue "$RULE_DIR" "$MIXED")"
+ERR_0="$(extract_ingest_errors --threads 0 --on-error continue "$RULE_DIR" "$MIXED")"
+if [ "$ERR_1" != "$ERR_0" ]; then
+    echo "FAIL: ingest_errors drift threads=1 vs threads=0"
+    echo "  threads=1: $ERR_1"
+    echo "  threads=0: $ERR_0"
     exit 1
 fi
 
