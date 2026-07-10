@@ -7,27 +7,28 @@
 //! Timing breakdown (stderr) splits scan wall clock into:
 //!   read  — `BufRead::read_line` into a reused `String`
 //!   parse — `serde_json::from_str`
-//!   flat  — `flatten_value`
+//!   flat  — `flatten_value_with` (depth/field guards)
 //!   eval  — `evaluate_event_count` (parallel when `--threads` > 1)
 //!
-//! Usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] <rule_dir> <events.jsonl>
-//!
-//! `--threads 1` (default): single-threaded eval.
-//! `--threads 0`: Rayon pool sized to `available_parallelism()`.
-//! `--threads N` (N > 1): fixed Rayon pool of N workers.
-//! `--on-error continue` (default): count bad events and keep going.
-//! `--on-error fail-fast`: exit non-zero on first event-level error.
+//! Usage:
+//!   null_sigma_run [--threads N] [--on-error continue|fail-fast]
+//!                  [--max-line-bytes N] <rule_dir> <events.jsonl>
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use std::time::Duration;
 
+use null_sigma::json::{flatten_value_with, FlattenError, FlattenOptions};
 use rayon::prelude::*;
+
+/// Default max bytes per JSONL line (8 MiB) — rejects oversize before parse/alloc.
+const DEFAULT_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 struct Args {
     threads: usize,
     on_error: OnErrorMode,
+    max_line_bytes: usize,
     rule_dir: std::path::PathBuf,
     events_path: std::path::PathBuf,
 }
@@ -41,13 +42,23 @@ enum OnErrorMode {
 #[derive(Debug, Default)]
 struct ErrorCounters {
     err_io_read: u64,
+    err_line_too_large: u64,
     err_json_parse: u64,
-    err_flatten: u64,
+    err_flatten_not_object: u64,
+    err_flatten_depth: u64,
+    err_flatten_fields: u64,
 }
 
 impl ErrorCounters {
+    fn flatten_total(&self) -> u64 {
+        self.err_flatten_not_object + self.err_flatten_depth + self.err_flatten_fields
+    }
+
     fn total(&self) -> u64 {
-        self.err_io_read + self.err_json_parse + self.err_flatten
+        self.err_io_read
+            + self.err_line_too_large
+            + self.err_json_parse
+            + self.flatten_total()
     }
 }
 
@@ -67,6 +78,7 @@ fn parse_args() -> Result<Args, String> {
     let mut iter = std::env::args().skip(1);
     let mut threads = 1usize;
     let mut on_error = OnErrorMode::Continue;
+    let mut max_line_bytes = DEFAULT_MAX_LINE_BYTES;
 
     while let Some(arg) = iter.next() {
         if arg == "--threads" {
@@ -76,11 +88,7 @@ fn parse_args() -> Result<Args, String> {
             threads = n
                 .parse()
                 .map_err(|_| format!("invalid --threads value: {n}"))?;
-        } else if arg.starts_with("--threads=") {
-            let n = arg
-                .split_once('=')
-                .map(|(_, v)| v)
-                .ok_or_else(|| "invalid --threads syntax".to_string())?;
+        } else if let Some(n) = arg.strip_prefix("--threads=") {
             threads = n
                 .parse()
                 .map_err(|_| format!("invalid --threads value: {n}"))?;
@@ -89,22 +97,27 @@ fn parse_args() -> Result<Args, String> {
                 .next()
                 .ok_or_else(|| "--on-error requires a value".to_string())?;
             on_error = parse_on_error_mode(&mode)?;
-        } else if arg.starts_with("--on-error=") {
-            let mode = arg
-                .split_once('=')
-                .map(|(_, v)| v)
-                .ok_or_else(|| "invalid --on-error syntax".to_string())?;
+        } else if let Some(mode) = arg.strip_prefix("--on-error=") {
             on_error = parse_on_error_mode(mode)?;
+        } else if arg == "--max-line-bytes" {
+            let n = iter
+                .next()
+                .ok_or_else(|| "--max-line-bytes requires a value".to_string())?;
+            max_line_bytes = n
+                .parse()
+                .map_err(|_| format!("invalid --max-line-bytes value: {n}"))?;
+            if max_line_bytes == 0 {
+                return Err("--max-line-bytes must be > 0".to_string());
+            }
+        } else if let Some(n) = arg.strip_prefix("--max-line-bytes=") {
+            max_line_bytes = n
+                .parse()
+                .map_err(|_| format!("invalid --max-line-bytes value: {n}"))?;
+            if max_line_bytes == 0 {
+                return Err("--max-line-bytes must be > 0".to_string());
+            }
         } else if arg == "--help" || arg == "-h" {
-            eprintln!(
-                "usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] <rule_dir> <events.jsonl>\n\
-                 \n\
-                 --threads 1   single-threaded eval (default)\n\
-                 --threads 0   Rayon pool = available_parallelism()\n\
-                 --threads N   fixed Rayon pool of N workers\n\
-                 --on-error continue   count bad events and continue (default)\n\
-                 --on-error fail-fast  exit non-zero on first event error"
-            );
+            print_help();
             std::process::exit(0);
         } else {
             let events_path = iter
@@ -113,13 +126,27 @@ fn parse_args() -> Result<Args, String> {
             return Ok(Args {
                 threads,
                 on_error,
+                max_line_bytes,
                 rule_dir: std::path::PathBuf::from(arg),
                 events_path: std::path::PathBuf::from(events_path),
             });
         }
     }
 
-    Err("usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] <rule_dir> <events.jsonl>".to_string())
+    Err("usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] [--max-line-bytes N] <rule_dir> <events.jsonl>".to_string())
+}
+
+fn print_help() {
+    eprintln!(
+        "usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] [--max-line-bytes N] <rule_dir> <events.jsonl>\n\
+         \n\
+         --threads 1           single-threaded eval (default)\n\
+         --threads 0           Rayon pool = available_parallelism()\n\
+         --threads N           fixed Rayon pool of N workers\n\
+         --on-error continue   count bad events and continue (default)\n\
+         --on-error fail-fast  exit non-zero on first event error\n\
+         --max-line-bytes N    reject lines larger than N bytes (default {DEFAULT_MAX_LINE_BYTES})"
+    );
 }
 
 fn resolve_thread_count(requested: usize) -> usize {
@@ -142,9 +169,34 @@ fn parse_on_error_mode(raw: &str) -> Result<OnErrorMode, String> {
     }
 }
 
+fn record_flatten_error(counters: &mut ErrorCounters, err: &FlattenError) {
+    match err {
+        FlattenError::NotAnObject => counters.err_flatten_not_object += 1,
+        FlattenError::DepthExceeded { .. } => counters.err_flatten_depth += 1,
+        FlattenError::FieldsExceeded { .. } => counters.err_flatten_fields += 1,
+        // Parse errors are handled before flatten; defensive no-op.
+        FlattenError::Parse(_) => {}
+    }
+}
+
+fn fail_event(
+    stats: &mut IngestStats,
+    on_error: OnErrorMode,
+    msg: &str,
+) -> Result<(), String> {
+    stats.events_failed += 1;
+    if on_error == OnErrorMode::FailFast {
+        Err(msg.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 fn ingest_events(
     events_path: &std::path::Path,
     on_error: OnErrorMode,
+    max_line_bytes: usize,
+    flatten_options: FlattenOptions,
 ) -> Result<IngestStats, String> {
     let file = std::fs::File::open(events_path)
         .map_err(|e| format!("cannot open events '{}': {e}", events_path.display()))?;
@@ -159,10 +211,7 @@ fn ingest_events(
             Ok(n) => n,
             Err(e) => {
                 stats.errors.err_io_read += 1;
-                stats.events_failed += 1;
-                if on_error == OnErrorMode::FailFast {
-                    return Err(format!("read error: {e}"));
-                }
+                fail_event(&mut stats, on_error, &format!("read error: {e}"))?;
                 break;
             }
         };
@@ -176,31 +225,31 @@ fn ingest_events(
         }
         stats.events_total += 1;
 
+        if trimmed.len() > max_line_bytes {
+            stats.errors.err_line_too_large += 1;
+            fail_event(&mut stats, on_error, "line exceeds --max-line-bytes")?;
+            continue;
+        }
+
         let t0 = std::time::Instant::now();
         let value: serde_json::Value = match serde_json::from_str(trimmed) {
             Ok(value) => value,
             Err(_) => {
                 stats.t_parse += t0.elapsed();
                 stats.errors.err_json_parse += 1;
-                stats.events_failed += 1;
-                if on_error == OnErrorMode::FailFast {
-                    return Err("bad event JSON".to_string());
-                }
+                fail_event(&mut stats, on_error, "bad event JSON")?;
                 continue;
             }
         };
         stats.t_parse += t0.elapsed();
 
         let t0 = std::time::Instant::now();
-        let event = match null_sigma::flatten_value(&value) {
+        let event = match flatten_value_with(&value, flatten_options) {
             Ok(event) => event,
-            Err(_) => {
+            Err(err) => {
                 stats.t_flat += t0.elapsed();
-                stats.errors.err_flatten += 1;
-                stats.events_failed += 1;
-                if on_error == OnErrorMode::FailFast {
-                    return Err("flatten failed".to_string());
-                }
+                record_flatten_error(&mut stats.errors, &err);
+                fail_event(&mut stats, on_error, "flatten failed")?;
                 continue;
             }
         };
@@ -217,25 +266,50 @@ fn evaluate_events(
     engine: Arc<null_sigma::SigmaEngine>,
     events: &[HashMap<String, String>],
     threads: usize,
-) -> u64 {
+) -> Result<u64, String> {
     if threads == 1 {
-        events
+        return Ok(events
             .iter()
             .map(|event| engine.evaluate_event_count(event) as u64)
-            .sum()
-    } else {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .expect("failed to build Rayon thread pool");
-
-        pool.install(|| {
-            events
-                .par_iter()
-                .map(|event| engine.evaluate_event_count(event) as u64)
-                .sum()
-        })
+            .sum());
     }
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|e| format!("failed to build Rayon thread pool: {e}"))?;
+
+    Ok(pool.install(|| {
+        events
+            .par_iter()
+            .map(|event| engine.evaluate_event_count(event) as u64)
+            .sum()
+    }))
+}
+
+fn load_rules_from_dir(rule_dir: &std::path::Path) -> Result<(null_sigma::SigmaEngine, usize, usize, u128), String> {
+    let start = std::time::Instant::now();
+    let mut engine = null_sigma::SigmaEngine::new();
+    let entries = std::fs::read_dir(rule_dir)
+        .map_err(|e| format!("cannot read rule dir '{}': {e}", rule_dir.display()))?;
+    let mut paths: Vec<_> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "yml" || ext == "yaml"))
+        .collect();
+    paths.sort();
+
+    let joined = paths
+        .iter()
+        .map(|p| {
+            std::fs::read_to_string(p)
+                .map_err(|e| format!("cannot read rule '{}': {e}", p.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n---\n");
+
+    let (loaded_ids, errors) = engine.load_rules(&joined);
+    let load_ms = start.elapsed().as_millis();
+    Ok((engine, loaded_ids.len(), errors.len(), load_ms))
 }
 
 fn main() {
@@ -248,27 +322,20 @@ fn main() {
     };
     let threads = resolve_thread_count(args.threads);
 
-    let start = std::time::Instant::now();
-    let mut engine = null_sigma::SigmaEngine::new();
-    let mut paths: Vec<_> = std::fs::read_dir(&args.rule_dir)
-        .expect("cannot read rule dir")
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "yml" || e == "yaml"))
-        .collect();
-    paths.sort();
-    // Bulk load as one multi-document stream: the AC automaton is rebuilt
-    // once at the end instead of once per rule.
-    let joined = paths
-        .iter()
-        .map(|p| std::fs::read_to_string(p).expect("cannot read rule"))
-        .collect::<Vec<_>>()
-        .join("\n---\n");
-    let (loaded_ids, errors) = engine.load_rules(&joined);
-    let (loaded, skipped) = (loaded_ids.len(), errors.len());
-    let load_ms = start.elapsed().as_millis();
+    let (engine, loaded, skipped, load_ms) = match load_rules_from_dir(&args.rule_dir) {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    };
 
-    let ingest_stats = match ingest_events(&args.events_path, args.on_error) {
+    let ingest_stats = match ingest_events(
+        &args.events_path,
+        args.on_error,
+        args.max_line_bytes,
+        FlattenOptions::default(),
+    ) {
         Ok(stats) => stats,
         Err(msg) => {
             eprintln!("{msg}");
@@ -278,7 +345,13 @@ fn main() {
 
     let eval_start = std::time::Instant::now();
     let engine = Arc::new(engine);
-    let matches = evaluate_events(engine, &ingest_stats.events, threads);
+    let matches = match evaluate_events(engine, &ingest_stats.events, threads) {
+        Ok(m) => m,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    };
     let t_eval = eval_start.elapsed();
 
     let scan = ingest_stats.t_read + ingest_stats.t_parse + ingest_stats.t_flat + t_eval;
@@ -296,7 +369,7 @@ fn main() {
     eprintln!(
         "rules: {loaded} loaded, {skipped} skipped ({load_ms} ms) | events: {events_total} | \
          ok: {events_ok} failed: {events_failed} | matches: {matches} | threads: {threads} | \
-         on_error: {on_error} | scan: {scan_s:.3}s ({eps:.0} events/sec)",
+         on_error: {on_error} | max_line_bytes: {max_line_bytes} | scan: {scan_s:.3}s ({eps:.0} events/sec)",
         events_total = ingest_stats.events_total,
         events_ok = ingest_stats.events_ok,
         events_failed = ingest_stats.events_failed,
@@ -304,6 +377,7 @@ fn main() {
             OnErrorMode::Continue => "continue",
             OnErrorMode::FailFast => "fail-fast",
         },
+        max_line_bytes = args.max_line_bytes,
         scan_s = scan.as_secs_f64(),
         eps = ingest_stats.events_total as f64 / scan.as_secs_f64()
     );
@@ -322,10 +396,15 @@ fn main() {
         pct(other),
     );
     eprintln!(
-        "ingest_errors: io_read={} json_parse={} flatten={} total={}",
+        "ingest_errors: io_read={} line_too_large={} json_parse={} flatten_not_object={} \
+         flatten_depth={} flatten_fields={} flatten_total={} total={}",
         ingest_stats.errors.err_io_read,
+        ingest_stats.errors.err_line_too_large,
         ingest_stats.errors.err_json_parse,
-        ingest_stats.errors.err_flatten,
+        ingest_stats.errors.err_flatten_not_object,
+        ingest_stats.errors.err_flatten_depth,
+        ingest_stats.errors.err_flatten_fields,
+        ingest_stats.errors.flatten_total(),
         ingest_stats.errors.total()
     );
     eprintln!(

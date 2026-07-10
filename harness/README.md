@@ -106,6 +106,9 @@ EVENTS=10000 ./scripts/run_cli_bench.sh   # smaller smoke run
 
 # Trust-policy smoke (mixed good/bad JSONL)
 ./scripts/smoke_error_policy.sh
+
+# Day 2 robustness corpus (depth/field guards, line limit)
+./scripts/smoke_robustness.sh
 ```
 
 Downloads pinned binaries to `harness/bin/` (gitignored):
@@ -145,12 +148,13 @@ silently matches nothing on JSONL and looks artificially fast.
 | Binary | Purpose |
 |---|---|
 | `cross_check` | Correctness gate — run before publishing numbers |
-| `null_sigma_run` | Tier B reference CLI (`[--threads N] [--on-error continue|fail-fast] rule_dir events.jsonl`); prints `tier_b_tax` + deterministic ingest error accounting |
+| `null_sigma_run` | Tier B reference CLI (`[--threads N] [--on-error continue|fail-fast] [--max-line-bytes N] rule_dir events.jsonl`); prints `tier_b_tax` + honest ingest error accounting |
 | `gen_dataset` | Deterministic JSONL event generator |
 | `prof_benign` | Tier A profiling target (`--profile prof`) |
 
 Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events),
-`scripts/smoke_error_policy.sh` (continue/fail-fast trust checks).
+`scripts/smoke_error_policy.sh` (continue/fail-fast trust checks),
+`scripts/smoke_robustness.sh` (malformed corpus + guard checks).
 
 ### Trust-first ingestion policy
 
@@ -160,6 +164,10 @@ Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events),
 - Startup/config errors (cannot read rules/events file) always exit non-zero.
 - Summary invariant is always reported:
   `events_total = events_ok + events_failed`.
+- Flatten failures are split honestly:
+  `flatten_not_object`, `flatten_depth`, `flatten_fields`.
+- `--max-line-bytes` (default 8 MiB) rejects oversize JSONL lines before parse.
+- Malformed corpus fixtures live in `tests/fixtures/robustness/` (see README there).
 
 ## Layout
 
@@ -178,6 +186,8 @@ harness/
 ├── scripts/
 │   ├── run_cli_bench.sh       # Tier B
 │   ├── smoke_parallel.sh      # Thread-count parity (10k)
+│   ├── smoke_error_policy.sh  # continue/fail-fast policy
+│   ├── smoke_robustness.sh    # malformed corpus + guards
 │   └── prof_benign.sh         # samply profiling (local output → prof/)
 ├── prof/                      # gitignored — profiles + summary notes
 ├── config/chainsaw-json-mapping.yml

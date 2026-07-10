@@ -4,24 +4,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 HARNESS_DIR="$(pwd)"
-RULE_DIR="$HARNESS_DIR/../corpus/sigmahq/rules/windows/process_creation"
+REPO_ROOT="$HARNESS_DIR/.."
+RULE_DIR="$REPO_ROOT/corpus/sigmahq/rules/windows/process_creation"
+MIXED_FILE="$REPO_ROOT/tests/fixtures/robustness/mixed_valid_invalid.jsonl"
 
 cargo build --release --bin null_sigma_run >/dev/null
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 RUNNER="$TARGET_DIR/release/null_sigma_run"
 
 [ -d "$RULE_DIR" ] || { echo "SigmaHQ corpus missing at $RULE_DIR"; exit 1; }
-
-MIXED_FILE="$(mktemp)"
-trap 'rm -f "$MIXED_FILE"' EXIT
-
-cat >"$MIXED_FILE" <<'EOF'
-{"CommandLine":"C:\\Windows\\System32\\cmd.exe /c whoami","event_category":"process_creation","event_product":"windows"}
-{"CommandLine":"powershell -enc ZQBjAGgAbwAgAHgA","event_category":"process_creation","event_product":"windows"}
-{"CommandLine":"bad_json_line"
-[1,2,3]
-{"CommandLine":"C:\\Windows\\System32\\notepad.exe","event_category":"process_creation","event_product":"windows"}
-EOF
+[ -f "$MIXED_FILE" ] || { echo "fixture missing at $MIXED_FILE"; exit 1; }
 
 echo ">> continue mode should complete with non-zero error counters"
 CONT_OUT="$("$RUNNER" --on-error continue "$RULE_DIR" "$MIXED_FILE" 2>&1 >/tmp/null_sigma_count_continue.txt)"
@@ -30,7 +22,7 @@ if [ "$CONT_EXIT" -ne 0 ]; then
     echo "FAIL: continue mode exited non-zero ($CONT_EXIT)"
     exit 1
 fi
-echo "$CONT_OUT" | rg "ingest_errors: io_read=0 json_parse=1 flatten=1 total=2" >/dev/null \
+echo "$CONT_OUT" | rg "ingest_errors: io_read=0 line_too_large=0 json_parse=1 flatten_not_object=1 flatten_depth=0 flatten_fields=0 flatten_total=1 total=2" >/dev/null \
     || { echo "FAIL: continue mode error counters unexpected"; echo "$CONT_OUT"; exit 1; }
 echo "$CONT_OUT" | rg "ingest_accounting: events_total=5 events_ok=3 events_failed=2 invariant_ok=true" >/dev/null \
     || { echo "FAIL: continue mode accounting mismatch"; echo "$CONT_OUT"; exit 1; }
@@ -53,7 +45,7 @@ if [ "$FAIL_EXIT" -eq 0 ]; then
     echo "FAIL: fail-fast mode exited zero"
     exit 1
 fi
-echo "$FAIL_OUT" | rg "bad event JSON|flatten failed|read error" >/dev/null \
+echo "$FAIL_OUT" | rg "bad event JSON|flatten failed|read error|line exceeds" >/dev/null \
     || { echo "FAIL: fail-fast mode did not report first event error"; echo "$FAIL_OUT"; exit 1; }
 
 echo "PASS: error policy checks succeeded (continue + fail-fast)."

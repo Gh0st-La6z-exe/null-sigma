@@ -1,0 +1,3 @@
+{"event_category":"process_creation","event_product":"windows"}
+{"CommandLine":"C:\\Windows\\System32\\svchost.exe","event_category":"process_creation"}
+{"Image":"C:\\Windows\\explorer.exe"}

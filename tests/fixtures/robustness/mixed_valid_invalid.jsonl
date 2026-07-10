@@ -1,0 +1,5 @@
+{"CommandLine":"C:\\Windows\\System32\\cmd.exe /c whoami","event_category":"process_creation","event_product":"windows"}
+{"CommandLine":"powershell -enc ZQBjAGgAbwAgAHgA","event_category":"process_creation","event_product":"windows"}
+{"CommandLine":"bad_json_line"
+[1,2,3]
+{"CommandLine":"C:\\Windows\\System32\\notepad.exe","event_category":"process_creation","event_product":"windows"}

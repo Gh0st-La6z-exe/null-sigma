@@ -420,8 +420,10 @@ Single-thread: null-sigma **beats** Hayabusa (~1.27×). With Rayon
 See `PERFORMANCE.md` §11.5 / §11.9.
 
 Trust policy (`null_sigma_run`): default `--on-error continue` reports deterministic
-event-level error counters (`io_read`, `json_parse`, `flatten`) and keeps
-processing; `--on-error fail-fast` exits non-zero on first event error.
+event-level error counters (`io_read`, `line_too_large`, `json_parse`,
+`flatten_not_object`, `flatten_depth`, `flatten_fields`) and keeps processing;
+`--on-error fail-fast` exits non-zero on first event error. Malformed corpus:
+`tests/fixtures/robustness/`.
 
 These figures include the correctness hardening and AC prefilter fixes added in
 July 2026 — traded for eliminating several false-negative classes and enabling
