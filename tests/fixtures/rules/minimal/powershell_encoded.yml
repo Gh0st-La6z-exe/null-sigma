@@ -1,0 +1,12 @@
+title: Minimal Trust Fixture Powershell Encoded
+id: 00000000-0000-0000-0000-000000000002
+status: test
+description: Synthetic rule for harness trust smokes and CI (not SigmaHQ corpus).
+author: null-sigma
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    CommandLine|contains: 'powershell'
+  condition: selection

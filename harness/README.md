@@ -112,6 +112,9 @@ EVENTS=10000 ./scripts/run_cli_bench.sh   # smaller smoke run
 
 # Day 3 determinism gate (identical ingest accounting across two runs)
 ./scripts/smoke_determinism.sh
+
+# Day 4 hermetic trust umbrella (committed rules + robustness fixtures)
+./scripts/smoke_trust.sh
 ```
 
 Downloads pinned binaries to `harness/bin/` (gitignored):
@@ -156,6 +159,7 @@ silently matches nothing on JSONL and looks artificially fast.
 | `prof_benign` | Tier A profiling target (`--profile prof`) |
 
 Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events),
+`scripts/smoke_trust.sh` (hermetic Day 4 umbrella — minimal rules + robustness),
 `scripts/smoke_error_policy.sh` (continue/fail-fast trust checks),
 `scripts/smoke_robustness.sh` (malformed corpus + guard checks; asserts
 `ingest_errors` line parity across `--threads 1` and `--threads 0`),
@@ -182,6 +186,10 @@ across two runs on the mixed fixture).
   during ingest for debugging (`line`, `kind`, `msg`); does not affect counters
   or exit codes. Samples are deterministic for a given input file.
 - Malformed corpus fixtures live in `tests/fixtures/robustness/` (see README there).
+- Trust smokes default to committed synthetic rules in
+  `tests/fixtures/rules/minimal/` (hermetic CI). Override with
+  `RULE_DIR=corpus/sigmahq/rules/windows/process_creation` for local Tier B runs.
+- Rust integration tests: `cargo test -p null-sigma-harness` (`tests/runner_trust.rs`).
 
 ### Stderr contract (`null_sigma_run`)
 
@@ -232,6 +240,8 @@ harness/
 │   ├── smoke_error_policy.sh  # continue/fail-fast policy
 │   ├── smoke_robustness.sh    # malformed corpus + guards
 │   ├── smoke_determinism.sh   # ingest accounting determinism
+│   ├── smoke_trust.sh         # hermetic trust umbrella (Day 4)
+│   ├── lib/rule_dir.sh        # RULE_DIR resolver (default minimal rules)
 │   └── prof_benign.sh         # samply profiling (local output → prof/)
 ├── prof/                      # gitignored — profiles + summary notes
 ├── config/chainsaw-json-mapping.yml

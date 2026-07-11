@@ -4,15 +4,17 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 HARNESS_DIR="$(pwd)"
-REPO_ROOT="$HARNESS_DIR/.."
-RULE_DIR="$REPO_ROOT/corpus/sigmahq/rules/windows/process_creation"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$HARNESS_DIR/.." && pwd)"
+# shellcheck source=lib/rule_dir.sh
+source "$SCRIPT_DIR/lib/rule_dir.sh"
+RULE_DIR="$(require_rule_dir "$REPO_ROOT")"
 FIXTURE="$REPO_ROOT/tests/fixtures/robustness/mixed_valid_invalid.jsonl"
 
 cargo build --release --bin null_sigma_run >/dev/null
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 RUNNER="$TARGET_DIR/release/null_sigma_run"
 
-[ -d "$RULE_DIR" ] || { echo "SigmaHQ corpus missing at $RULE_DIR"; exit 1; }
 [ -f "$FIXTURE" ] || { echo "fixture missing at $FIXTURE"; exit 1; }
 
 extract_accounting_lines() {
