@@ -98,4 +98,22 @@ fi
 echo "$FF_OUT" | rg "bad event JSON|flatten failed|read error|line exceeds" >/dev/null \
     || { echo "FAIL: fail-fast did not report event error"; echo "$FF_OUT"; exit 1; }
 
+echo ">> error samples default off"
+OUT="$(run_continue "$MIXED")"
+if echo "$OUT" | rg '^ingest_error_sample:' >/dev/null; then
+    echo "FAIL: default run emitted ingest_error_sample lines"
+    echo "$OUT"
+    exit 1
+fi
+
+echo ">> error samples --max-error-samples 1"
+SAMPLE_OUT="$("$RUNNER" --max-error-samples 1 --on-error continue "$RULE_DIR" "$MIXED" 2>&1)"
+SAMPLE_COUNT="$(echo "$SAMPLE_OUT" | rg -c '^ingest_error_sample:' || true)"
+if [ "$SAMPLE_COUNT" -ne 1 ]; then
+    echo "FAIL: expected exactly 1 ingest_error_sample line, got $SAMPLE_COUNT"
+    echo "$SAMPLE_OUT"
+    exit 1
+fi
+assert_contains "$SAMPLE_OUT" 'ingest_error_sample: line=3 kind=json_parse msg="bad event JSON"' "first error sample"
+
 echo "PASS: robustness corpus checks succeeded."

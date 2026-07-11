@@ -15,3 +15,8 @@ Guards use core defaults: `max_depth=64`, `max_fields=10000`.
 `smoke_robustness.sh` also asserts `ingest_errors` stderr is identical for
 `--threads 1` and `--threads 0` on `mixed_valid_invalid.jsonl` (ingest is
 single-threaded; eval parallelism must not affect error accounting).
+`smoke_determinism.sh` asserts identical `ingest_errors` / `ingest_accounting`
+lines across two consecutive runs.
+
+With `--max-error-samples 1` on the mixed fixture, the first sample is
+`line=3 kind=json_parse` (bad JSON on physical line 3).

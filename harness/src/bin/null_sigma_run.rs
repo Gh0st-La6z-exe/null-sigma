@@ -12,7 +12,8 @@
 //!
 //! Usage:
 //!   null_sigma_run [--threads N] [--on-error continue|fail-fast]
-//!                  [--max-line-bytes N] <rule_dir> <events.jsonl>
+//!                  [--max-line-bytes N] [--max-error-samples N]
+//!                  <rule_dir> <events.jsonl>
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -29,6 +30,7 @@ struct Args {
     threads: usize,
     on_error: OnErrorMode,
     max_line_bytes: usize,
+    max_error_samples: usize,
     rule_dir: std::path::PathBuf,
     events_path: std::path::PathBuf,
 }
@@ -79,6 +81,7 @@ fn parse_args() -> Result<Args, String> {
     let mut threads = 1usize;
     let mut on_error = OnErrorMode::Continue;
     let mut max_line_bytes = DEFAULT_MAX_LINE_BYTES;
+    let mut max_error_samples = 0usize;
 
     while let Some(arg) = iter.next() {
         if arg == "--threads" {
@@ -116,6 +119,17 @@ fn parse_args() -> Result<Args, String> {
             if max_line_bytes == 0 {
                 return Err("--max-line-bytes must be > 0".to_string());
             }
+        } else if arg == "--max-error-samples" {
+            let n = iter
+                .next()
+                .ok_or_else(|| "--max-error-samples requires a value".to_string())?;
+            max_error_samples = n
+                .parse()
+                .map_err(|_| format!("invalid --max-error-samples value: {n}"))?;
+        } else if let Some(n) = arg.strip_prefix("--max-error-samples=") {
+            max_error_samples = n
+                .parse()
+                .map_err(|_| format!("invalid --max-error-samples value: {n}"))?;
         } else if arg == "--help" || arg == "-h" {
             print_help();
             std::process::exit(0);
@@ -127,25 +141,27 @@ fn parse_args() -> Result<Args, String> {
                 threads,
                 on_error,
                 max_line_bytes,
+                max_error_samples,
                 rule_dir: std::path::PathBuf::from(arg),
                 events_path: std::path::PathBuf::from(events_path),
             });
         }
     }
 
-    Err("usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] [--max-line-bytes N] <rule_dir> <events.jsonl>".to_string())
+    Err("usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] [--max-line-bytes N] [--max-error-samples N] <rule_dir> <events.jsonl>".to_string())
 }
 
 fn print_help() {
     eprintln!(
-        "usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] [--max-line-bytes N] <rule_dir> <events.jsonl>\n\
+        "usage: null_sigma_run [--threads N] [--on-error continue|fail-fast] [--max-line-bytes N] [--max-error-samples N] <rule_dir> <events.jsonl>\n\
          \n\
          --threads 1           single-threaded eval (default)\n\
          --threads 0           Rayon pool = available_parallelism()\n\
          --threads N           fixed Rayon pool of N workers\n\
          --on-error continue   count bad events and continue (default)\n\
          --on-error fail-fast  exit non-zero on first event error\n\
-         --max-line-bytes N    reject lines larger than N bytes (default {DEFAULT_MAX_LINE_BYTES})"
+         --max-line-bytes N    reject lines larger than N bytes (default {DEFAULT_MAX_LINE_BYTES})\n\
+         --max-error-samples N emit up to N ingest_error_sample lines (default 0)"
     );
 }
 
@@ -179,11 +195,45 @@ fn record_flatten_error(counters: &mut ErrorCounters, err: &FlattenError) {
     }
 }
 
+fn flatten_error_kind(err: &FlattenError) -> &'static str {
+    match err {
+        FlattenError::NotAnObject => "flatten_not_object",
+        FlattenError::DepthExceeded { .. } => "flatten_depth",
+        FlattenError::FieldsExceeded { .. } => "flatten_fields",
+        FlattenError::Parse(_) => "json_parse",
+    }
+}
+
+fn maybe_emit_error_sample(
+    line_number: u64,
+    kind: &str,
+    msg: &str,
+    max_error_samples: usize,
+    error_samples_emitted: &mut usize,
+) {
+    if *error_samples_emitted >= max_error_samples {
+        return;
+    }
+    eprintln!("ingest_error_sample: line={line_number} kind={kind} msg=\"{msg}\"");
+    *error_samples_emitted += 1;
+}
+
 fn fail_event(
     stats: &mut IngestStats,
     on_error: OnErrorMode,
+    line_number: u64,
+    kind: &str,
     msg: &str,
+    max_error_samples: usize,
+    error_samples_emitted: &mut usize,
 ) -> Result<(), String> {
+    maybe_emit_error_sample(
+        line_number,
+        kind,
+        msg,
+        max_error_samples,
+        error_samples_emitted,
+    );
     stats.events_failed += 1;
     if on_error == OnErrorMode::FailFast {
         Err(msg.to_string())
@@ -196,6 +246,7 @@ fn ingest_events(
     events_path: &std::path::Path,
     on_error: OnErrorMode,
     max_line_bytes: usize,
+    max_error_samples: usize,
     flatten_options: FlattenOptions,
 ) -> Result<IngestStats, String> {
     let file = std::fs::File::open(events_path)
@@ -203,6 +254,8 @@ fn ingest_events(
     let mut reader = BufReader::new(file);
     let mut line = String::new();
     let mut stats = IngestStats::default();
+    let mut line_number = 0u64;
+    let mut error_samples_emitted = 0usize;
 
     loop {
         line.clear();
@@ -211,7 +264,16 @@ fn ingest_events(
             Ok(n) => n,
             Err(e) => {
                 stats.errors.err_io_read += 1;
-                fail_event(&mut stats, on_error, &format!("read error: {e}"))?;
+                let failed_line = line_number.saturating_add(1);
+                fail_event(
+                    &mut stats,
+                    on_error,
+                    failed_line,
+                    "io_read",
+                    &format!("read error: {e}"),
+                    max_error_samples,
+                    &mut error_samples_emitted,
+                )?;
                 break;
             }
         };
@@ -219,6 +281,7 @@ fn ingest_events(
         if n == 0 {
             break;
         }
+        line_number += 1;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -227,7 +290,15 @@ fn ingest_events(
 
         if trimmed.len() > max_line_bytes {
             stats.errors.err_line_too_large += 1;
-            fail_event(&mut stats, on_error, "line exceeds --max-line-bytes")?;
+            fail_event(
+                &mut stats,
+                on_error,
+                line_number,
+                "line_too_large",
+                "line exceeds --max-line-bytes",
+                max_error_samples,
+                &mut error_samples_emitted,
+            )?;
             continue;
         }
 
@@ -237,7 +308,15 @@ fn ingest_events(
             Err(_) => {
                 stats.t_parse += t0.elapsed();
                 stats.errors.err_json_parse += 1;
-                fail_event(&mut stats, on_error, "bad event JSON")?;
+                fail_event(
+                    &mut stats,
+                    on_error,
+                    line_number,
+                    "json_parse",
+                    "bad event JSON",
+                    max_error_samples,
+                    &mut error_samples_emitted,
+                )?;
                 continue;
             }
         };
@@ -249,7 +328,16 @@ fn ingest_events(
             Err(err) => {
                 stats.t_flat += t0.elapsed();
                 record_flatten_error(&mut stats.errors, &err);
-                fail_event(&mut stats, on_error, "flatten failed")?;
+                let kind = flatten_error_kind(&err);
+                fail_event(
+                    &mut stats,
+                    on_error,
+                    line_number,
+                    kind,
+                    "flatten failed",
+                    max_error_samples,
+                    &mut error_samples_emitted,
+                )?;
                 continue;
             }
         };
@@ -334,6 +422,7 @@ fn main() {
         &args.events_path,
         args.on_error,
         args.max_line_bytes,
+        args.max_error_samples,
         FlattenOptions::default(),
     ) {
         Ok(stats) => stats,
@@ -369,7 +458,7 @@ fn main() {
     eprintln!(
         "rules: {loaded} loaded, {skipped} skipped ({load_ms} ms) | events: {events_total} | \
          ok: {events_ok} failed: {events_failed} | matches: {matches} | threads: {threads} | \
-         on_error: {on_error} | max_line_bytes: {max_line_bytes} | scan: {scan_s:.3}s ({eps:.0} events/sec)",
+         on_error: {on_error} | max_line_bytes: {max_line_bytes} | max_error_samples: {max_error_samples} | scan: {scan_s:.3}s ({eps:.0} events/sec)",
         events_total = ingest_stats.events_total,
         events_ok = ingest_stats.events_ok,
         events_failed = ingest_stats.events_failed,
@@ -378,6 +467,7 @@ fn main() {
             OnErrorMode::FailFast => "fail-fast",
         },
         max_line_bytes = args.max_line_bytes,
+        max_error_samples = args.max_error_samples,
         scan_s = scan.as_secs_f64(),
         eps = ingest_stats.events_total as f64 / scan.as_secs_f64()
     );

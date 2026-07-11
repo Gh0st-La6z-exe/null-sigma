@@ -109,6 +109,9 @@ EVENTS=10000 ./scripts/run_cli_bench.sh   # smaller smoke run
 
 # Day 2 robustness corpus (depth/field guards, line limit)
 ./scripts/smoke_robustness.sh
+
+# Day 3 determinism gate (identical ingest accounting across two runs)
+./scripts/smoke_determinism.sh
 ```
 
 Downloads pinned binaries to `harness/bin/` (gitignored):
@@ -148,14 +151,16 @@ silently matches nothing on JSONL and looks artificially fast.
 | Binary | Purpose |
 |---|---|
 | `cross_check` | Correctness gate — run before publishing numbers |
-| `null_sigma_run` | Tier B reference CLI (`[--threads N] [--on-error continue|fail-fast] [--max-line-bytes N] rule_dir events.jsonl`); prints `tier_b_tax` + honest ingest error accounting |
+| `null_sigma_run` | Tier B reference CLI (`[--threads N] [--on-error continue\|fail-fast] [--max-line-bytes N] [--max-error-samples N] rule_dir events.jsonl`); prints `tier_b_tax` + honest ingest error accounting |
 | `gen_dataset` | Deterministic JSONL event generator |
 | `prof_benign` | Tier A profiling target (`--profile prof`) |
 
 Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events),
 `scripts/smoke_error_policy.sh` (continue/fail-fast trust checks),
 `scripts/smoke_robustness.sh` (malformed corpus + guard checks; asserts
-`ingest_errors` line parity across `--threads 1` and `--threads 0`).
+`ingest_errors` line parity across `--threads 1` and `--threads 0`),
+`scripts/smoke_determinism.sh` (identical `ingest_errors` / `ingest_accounting`
+across two runs on the mixed fixture).
 
 ### Trust-first ingestion policy
 
@@ -173,7 +178,39 @@ Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events),
   line-buffer allocation on pathological unterminated lines; bounded byte-loop
   ingest is deferred to Phase 3 streaming rewrite.
 - Ingest error counters are single-threaded (no atomics); Rayon parallelizes eval only.
+- `--max-error-samples N` (default 0) emits up to N `ingest_error_sample:` lines
+  during ingest for debugging (`line`, `kind`, `msg`); does not affect counters
+  or exit codes. Samples are deterministic for a given input file.
 - Malformed corpus fixtures live in `tests/fixtures/robustness/` (see README there).
+
+### Stderr contract (`null_sigma_run`)
+
+Stable stderr layout (stdout is match count only):
+
+**During ingest** (when `--max-error-samples N > 0`):
+
+- `ingest_error_sample:` — up to N lines as failures occur (`line`, `kind`, `msg`)
+
+**End of run** (always, in order):
+
+1. `rules:` — load summary, thread/error policy, scan timing
+2. `tier_b_tax:` — read / parse / flat / eval / other timing split
+3. `ingest_errors:` — `io_read`, `line_too_large`, `json_parse`,
+   `flatten_not_object`, `flatten_depth`, `flatten_fields`, `flatten_total`, `total`
+4. `ingest_accounting:` — `events_total`, `events_ok`, `events_failed`, `invariant_ok`
+
+Exit codes:
+
+| Condition | Code |
+|---|---|
+| Bad CLI arguments | 2 |
+| Startup/config failure (rules, events file, Rayon pool) | 1 |
+| `--on-error fail-fast` on first event error | 1 |
+| Accounting invariant violation | 1 |
+| `--on-error continue` with event errors, scan completes | 0 |
+
+Determinism gate: `smoke_determinism.sh` asserts `ingest_errors` and
+`ingest_accounting` lines are identical across two consecutive runs.
 
 ## Layout
 
@@ -194,6 +231,7 @@ harness/
 │   ├── smoke_parallel.sh      # Thread-count parity (10k)
 │   ├── smoke_error_policy.sh  # continue/fail-fast policy
 │   ├── smoke_robustness.sh    # malformed corpus + guards
+│   ├── smoke_determinism.sh   # ingest accounting determinism
 │   └── prof_benign.sh         # samply profiling (local output → prof/)
 ├── prof/                      # gitignored — profiles + summary notes
 ├── config/chainsaw-json-mapping.yml
