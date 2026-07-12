@@ -11,3 +11,7 @@ Cargo.lock
 /harness/data/
 /harness/Cargo.lock
 /harness/prof/
+
+# Product CLI (§4) — build output (lockfile ignored while publish=false)
+/cli/target/
+/cli/Cargo.lock

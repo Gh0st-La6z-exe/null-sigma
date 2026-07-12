@@ -1,0 +1,32 @@
+# =============================================================================
+# null-sigma-cli — ROADMAP §4 product CLI (Week 2)
+#
+# Sibling package: consumes null-sigma[json] only. No competitor engines.
+# Day 1: trust-parity ingest (file + stdin). NDJSON alerts land Day 2.
+# =============================================================================
+
+[package]
+name = "null-sigma-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Sigma detection CLI — JSONL in, alerts out (null-sigma)"
+repository = "https://github.com/Gh0st-La6z-exe/null-sigma"
+readme = "README.md"
+keywords = ["sigma", "detection", "siem", "cli"]
+categories = ["command-line-utilities"]
+
+# Standalone workspace root — keeps this crate out of any parent workspace.
+[workspace]
+
+[[bin]]
+name = "null-sigma-cli"
+path = "src/main.rs"
+
+[dependencies]
+null-sigma = { path = "..", features = ["json"] }
+serde_json = "1.0"
+
+[profile.release]
+debug = false
