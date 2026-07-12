@@ -427,8 +427,9 @@ on first event error. Accounting invariant `events_total = events_ok + events_fa
 is enforced at end of run (violation exits 1). `--max-line-bytes` (default 8 MiB)
 blocks parse/flatten on oversize lines; `--max-error-samples N` (default 0) emits
 up to N debug sample lines without affecting counters. Trust smokes use committed
-minimal rules (`tests/fixtures/rules/minimal/`). Full stderr contract and
-exit codes: `harness/README.md`. Malformed corpus: `tests/fixtures/robustness/`.
+minimal rules (`tests/fixtures/rules/minimal/`) and are CI-enforced
+(`Harness trust smoke` job). Full stderr contract and exit codes:
+`harness/README.md`. Malformed corpus: `tests/fixtures/robustness/`.
 
 These figures include the correctness hardening and AC prefilter fixes added in
 July 2026 — traded for eliminating several false-negative classes and enabling

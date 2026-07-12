@@ -117,6 +117,11 @@ EVENTS=10000 ./scripts/run_cli_bench.sh   # smaller smoke run
 ./scripts/smoke_trust.sh
 ```
 
+**CI:** every push/PR to `main` runs the `Harness trust smoke` job
+(`.github/workflows/ci.yml`): `cargo test` in `harness/` plus
+`./scripts/smoke_trust.sh`. Hermetic — committed fixtures only; no SigmaHQ
+clone. Local `./scripts/smoke_trust.sh` is the same gate developers run.
+
 Downloads pinned binaries to `harness/bin/` (gitignored):
 
 - Hayabusa **3.9.0** (native aarch64)
@@ -158,8 +163,9 @@ silently matches nothing on JSONL and looks artificially fast.
 | `gen_dataset` | Deterministic JSONL event generator |
 | `prof_benign` | Tier A profiling target (`--profile prof`) |
 
-Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events),
-`scripts/smoke_trust.sh` (hermetic Day 4 umbrella — minimal rules + robustness),
+Scripts: `scripts/smoke_parallel.sh` (thread-count parity on 10k events;
+requires SigmaHQ + generated dataset — not in CI),
+`scripts/smoke_trust.sh` (hermetic trust umbrella; CI-enforced),
 `scripts/smoke_error_policy.sh` (continue/fail-fast trust checks),
 `scripts/smoke_robustness.sh` (malformed corpus + guard checks; asserts
 `ingest_errors` line parity across `--threads 1` and `--threads 0`),
@@ -189,7 +195,9 @@ across two runs on the mixed fixture).
 - Trust smokes default to committed synthetic rules in
   `tests/fixtures/rules/minimal/` (hermetic CI). Override with
   `RULE_DIR=corpus/sigmahq/rules/windows/process_creation` for local Tier B runs.
-- Rust integration tests: `cargo test -p null-sigma-harness` (`tests/runner_trust.rs`).
+- Rust integration tests: from `harness/`, run `cargo test` (`tests/runner_trust.rs`).
+  (Harness is its own Cargo workspace — not `-p` from the repo root.)
+- CI enforces trust via the `trust-smoke` job (Days 1–5 Week 1 closeout).
 
 ### Stderr contract (`null_sigma_run`)
 

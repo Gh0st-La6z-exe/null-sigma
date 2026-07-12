@@ -88,8 +88,8 @@ Core fixes discovered/enabled by the harness:
 Full numbers and reproduction steps: `harness/README.md`, `PERFORMANCE.md` §11,
 `harness/data/tier_b_results.md`.
 
-Follow-up: CLI binary hardening (roadmap §4); matcher structural gap vs
-tau-engine remains open for Tier A.
+Follow-up: production CLI (§4); matcher structural gap vs tau-engine remains
+open for Tier A. Week 1 trust sprint for the harness runner is DONE (§3e).
 
 ## 3b. Phase 2 — EvalScratch + pattern cache (DONE — 2026-07-07)
 
@@ -126,6 +126,29 @@ vs Hayabusa default **23.9 s** (~1.57× wall-clock win). Single-thread still
 wins vs Hayabusa-1-thread (45.2 s vs 57.3 s). Documented in `PERFORMANCE.md`
 §11.9.
 
+## 3e. Week 1 trust sprint (DONE — 2026-07-12)
+
+Production-credibility gate for `null_sigma_run` (precursor to §4): never crash
+on bad JSONL; deterministic ingest accounting; CI-enforced.
+
+Delivered across Days 1–5:
+
+- **Day 1** — `--on-error continue|fail-fast`, exit-code policy, base error counters
+- **Day 2** — split flatten taxonomy, `--max-line-bytes`, startup hardening,
+  robustness fixtures under `tests/fixtures/robustness/`
+- **Day 3** — stderr contract, `--max-error-samples`, `smoke_determinism.sh`,
+  loud accounting invariant (FATAL + exit 1)
+- **Day 4** — hermetic minimal rules (`tests/fixtures/rules/minimal/`),
+  `smoke_trust.sh`, `harness/tests/runner_trust.rs` (no SigmaHQ required)
+- **Day 5** — CI job `trust-smoke` runs `cargo test` + `smoke_trust.sh` on
+  every push/PR to `main`
+
+Stderr contract and exit codes: `harness/README.md`. Synthetic fixtures under
+`tests/fixtures/` are committed CI inputs — distinct from the gitignored
+SigmaHQ corpus (still never vendored).
+
+§4 may now proceed on a CI-gated ingest trust layer.
+
 ## 4. CLI binary (`null-sigma-cli`)
 
 Tail a JSON log file or read stdin, emit alerts. Demo-able artifact; ten
@@ -147,5 +170,7 @@ times more people run a demo than read API docs.
   benchmark spot-check within noise.
 - Fail loud, never silent: any input we accept must either work per spec or
   return a typed error.
-- Corpus fixtures and vendored rule sets are dev-only inputs — gitignored,
-  never committed, never a runtime dependency.
+- SigmaHQ / vendored rule corpora are dev-only inputs — gitignored, never
+  committed, never a runtime dependency. Small synthetic fixtures under
+  `tests/fixtures/` (robustness JSONL, minimal rules) are committed CI inputs
+  only — not corpus vendoring.

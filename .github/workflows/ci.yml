@@ -42,6 +42,34 @@ jobs:
       - name: cargo test (json feature)
         run: cargo test --features json
 
+  # ─── Harness trust smoke (hermetic; no SigmaHQ clone) ─────────────────────
+  trust-smoke:
+    name: Harness trust smoke
+    runs-on: ubuntu-latest
+    # Local trust gate only — skip weekly schedule (fuzz owns that path).
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: harness
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: cargo test (harness)
+        working-directory: harness
+        run: cargo test
+
+      - name: smoke_trust.sh
+        working-directory: harness
+        run: ./scripts/smoke_trust.sh
+
   # ─── Lint ─────────────────────────────────────────────────────────────────
   clippy:
     name: Clippy
