@@ -2,7 +2,8 @@
 # null-sigma-cli — ROADMAP §4 product CLI (Week 2)
 #
 # Sibling package: consumes null-sigma[json] only. No competitor engines.
-# Day 1: trust-parity ingest (file + stdin). NDJSON alerts land Day 2.
+# Days 1–2 shipped: trust-parity ingest + lean NDJSON alerts (buffered stdout).
+# publish = false until crates.io release; install via `cargo install --path cli`.
 # =============================================================================
 
 [package]
@@ -16,6 +17,8 @@ repository = "https://github.com/Gh0st-La6z-exe/null-sigma"
 readme = "README.md"
 keywords = ["sigma", "detection", "siem", "cli"]
 categories = ["command-line-utilities"]
+# Tracks the library series; not published independently yet.
+rust-version = "1.85"
 
 # Standalone workspace root — keeps this crate out of any parent workspace.
 [workspace]

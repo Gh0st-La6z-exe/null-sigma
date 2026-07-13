@@ -4,8 +4,10 @@ Roadmap item 3. Compares **null-sigma**, **tau-engine** (Chainsaw's matching
 core), and **sigma-rust** on the same SigmaHQ rules and seeded event stream.
 Also measures CLI end-to-end wall-clock vs Hayabusa and Chainsaw.
 
-The harness is a standalone workspace crate — it does not modify the core
-library except to consume it.
+The harness is a standalone crate — it does not modify the core library except
+to consume it. For the installable product CLI (alerts on stdout), see
+[`cli/`](../cli/) (`null-sigma-cli`); `null_sigma_run` here is the Tier B
+count-only bench / trust runner.
 
 ## Prerequisites
 

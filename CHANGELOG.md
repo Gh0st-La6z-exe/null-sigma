@@ -8,6 +8,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Repository / packaging work since library **0.1.3** (crates.io / docs.rs).
+**No library API bump yet** — `null-sigma` remains `0.1.3` on crates.io.
+
+### Added
+
+- **Week 1 trust sprint (harness).** `--on-error continue|fail-fast`, split
+  flatten error taxonomy, `--max-line-bytes`, `--max-error-samples`, accounting
+  invariant FATAL, hermetic fixtures (`tests/fixtures/robustness/`,
+  `tests/fixtures/rules/minimal/`), `smoke_trust.sh` / `smoke_determinism.sh`,
+  CI `trust-smoke` job for the harness.
+- **`null-sigma-cli` (ROADMAP §4, Week 2 Days 1–2).** Path-installable product
+  CLI (`cli/`, version `0.1.0`, `publish = false`): file/stdin JSONL, lean NDJSON
+  alerts, `--format text`, buffered stdout (§11.10), trust stderr contract.
+
+### Changed
+
+- Tier B parallel runner + Hayabusa wall-clock wins documented in
+  `PERFORMANCE.md` §11.9 (harness-only; not a crates.io artifact).
+
 ---
 
 ## [0.1.3] — 2026-07-08

@@ -20,6 +20,18 @@ rules the measured rate is **~3 230 events/sec** — see
 null-sigma = "0.1"
 ```
 
+**Published library:** [`null-sigma` 0.1.3](https://crates.io/crates/null-sigma)
+on crates.io · [docs.rs](https://docs.rs/null-sigma/0.1.3/null_sigma/).
+Repo tooling since that release (harness trust, product CLI) lives under
+`[Unreleased]` in `CHANGELOG.md` and does **not** bump the library until a
+core API change ships.
+
+| Package | Version | Publish | Role |
+|---|---|---|---|
+| `null-sigma` | **0.1.3** | crates.io / docs.rs | Core engine (this crate) |
+| `null-sigma-cli` | 0.1.0 | `publish = false` | Product JSONL → alerts (`cli/`) |
+| `null-sigma-harness` | 0.1.0 | unpublished | Tier A/B benches + trust runner |
+
 ---
 
 ## Quick start
@@ -61,6 +73,23 @@ Batch (2 events):
   event[0]: 1 match(es)
   event[1]: 0 match(es)
 ```
+
+### Product CLI (`null-sigma-cli`)
+
+JSONL in, lean NDJSON alerts out — Week 1 trust contract, path-install only
+until crates.io publish (ROADMAP §4):
+
+```bash
+cargo install --path cli
+null-sigma-cli --rules ./rules < events.jsonl
+# or: null-sigma-cli --rules ./rules events.jsonl --format text
+```
+
+Details and flags: [`cli/README.md`](cli/README.md). Trust smoke:
+`cd cli && ./scripts/smoke_trust.sh`.
+
+The harness binary `null_sigma_run` remains the Tier B **count-only** bench
+runner (`harness/`); it is not the installable product CLI.
 
 ---
 
@@ -419,17 +448,19 @@ Single-thread: null-sigma **beats** Hayabusa (~1.27×). With Rayon
 (`--threads 0`), null-sigma **beats** Hayabusa default (~1.57×).
 See `PERFORMANCE.md` §11.5 / §11.9.
 
-Trust policy (`null_sigma_run`): default `--on-error continue` reports deterministic
-event-level error counters (`io_read`, `line_too_large`, `json_parse`,
-`flatten_not_object`, `flatten_depth`, `flatten_fields`) on a single-threaded
-ingest path (Rayon parallelizes eval only); `--on-error fail-fast` exits non-zero
-on first event error. Accounting invariant `events_total = events_ok + events_failed`
-is enforced at end of run (violation exits 1). `--max-line-bytes` (default 8 MiB)
-blocks parse/flatten on oversize lines; `--max-error-samples N` (default 0) emits
-up to N debug sample lines without affecting counters. Trust smokes use committed
-minimal rules (`tests/fixtures/rules/minimal/`) and are CI-enforced
-(`Harness trust smoke` job). Full stderr contract and exit codes:
-`harness/README.md`. Malformed corpus: `tests/fixtures/robustness/`.
+**Ingest trust** (shared contract on `null_sigma_run` and `null-sigma-cli`):
+default `--on-error continue` reports deterministic event-level error counters
+(`io_read`, `line_too_large`, `json_parse`, `flatten_not_object`, `flatten_depth`,
+`flatten_fields`) on a single-threaded ingest path; `--on-error fail-fast` exits
+non-zero on first event error. Accounting invariant
+`events_total = events_ok + events_failed` is enforced at end of run (violation
+exits 1). `--max-line-bytes` (default 8 MiB) blocks parse/flatten on oversize
+lines; `--max-error-samples N` (default 0) emits up to N debug sample lines
+without affecting counters. Trust smokes use committed minimal rules
+(`tests/fixtures/rules/minimal/`). Harness trust is CI-enforced
+(`Harness trust smoke` job); CLI smoke is `cli/scripts/smoke_trust.sh` (CI wiring
+is ROADMAP Day 3). Full stderr/exit contracts: `harness/README.md`,
+`cli/README.md`. Malformed corpus: `tests/fixtures/robustness/`.
 
 These figures include the correctness hardening and AC prefilter fixes added in
 July 2026 — traded for eliminating several false-negative classes and enabling

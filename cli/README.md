@@ -1,7 +1,11 @@
 # null-sigma-cli
 
-ROADMAP §4 product CLI. Consumes the `null-sigma` library (`json` feature) and
-keeps the core crate free of I/O.
+ROADMAP §4 product CLI. Consumes the `null-sigma` library **0.1.3**
+(`json` feature) and keeps the core crate free of I/O.
+
+**Packaging:** crate version `0.1.0`, `publish = false` — install with
+`cargo install --path cli`. Library remains on crates.io as `null-sigma`
+0.1.3; this binary is not published separately yet.
 
 ## Status (Week 2 Day 2)
 
