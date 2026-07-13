@@ -762,3 +762,72 @@ Harness-only Rayon prototype in `null_sigma_run --threads N`:
 
 Decision gate (parallel wall ≤ ~20 s): **PASS** — continue CLI hardening
 (roadmap §4) rather than matcher structural work as the next Tier B lever.
+
+### 11.10 CLI stdout alerts — do not thrash I/O (Day 2+)
+
+When `null-sigma-cli` emits NDJSON (or text) alerts on stdout, naive
+`println!` / flush-per-alert can inflate wall-clock. **Do not confuse this with
+Tier A matcher wins** (e.g. ~15× vs sigma-rust): those are measured with
+pre-built events and no alert I/O. Stdout cannot erase that story; it *can*
+hurt CLI Tier B wall-clock if Day 2 is careless.
+
+#### MVP context (single-threaded)
+
+Roadmap §4 MVP evaluates **single-threaded**. Lock **contention** on
+`stdout` only appears when multiple threads fight for the lock. Without
+parallel writers, the mutex is **uncontended** — the real tax is **syscall
+count and flush frequency**, not thread contention.
+
+When §4b adds Rayon (or any multi-writer path): **one** owner of
+`BufWriter<StdoutLock>` (or a channel → single writer). Do not let N workers
+each `writeln!` stdout.
+
+#### Required pattern (Day 2)
+
+```rust
+use std::io::{self, BufWriter, Write};
+
+let stdout = io::stdout();
+let mut out = BufWriter::new(stdout.lock()); // lock once; buffer ~8 KiB
+// hot loop:
+writeln!(out, "{alert_json}")?;
+// after loop / clean shutdown:
+out.flush()?;
+```
+
+| Do | Don't |
+|---|---|
+| `stdout.lock()` once for the emit loop | `println!` per alert (re-lock + format path) |
+| `BufWriter` around the locked handle | Flush after every alert by default |
+| Flush at end of stream (and error paths you care about) | Assume tty and `/dev/null` cost the same |
+| Keep stdout = alerts only; stderr = tax / trust | Mix progress lines into stdout pipes |
+
+#### Flush policy
+
+| Mode | When | Behavior |
+|---|---|---|
+| **Default** | batch files / high volume | buffer; flush when full or at end of run |
+| **Optional** (`--flush-alerts` / line-buffered) | live tail into another process | flush after each alert |
+| Timer (e.g. every 50 ms) | only if measured need | skip until `emit` tax says so |
+
+Flush-every-alert bypasses most of the buffering benefit and can syscall-thrash
+under a firehose of hits. Occasional-alert SOC streams can tolerate immediate
+flush; lab corpora + noisy rules usually cannot.
+
+#### Measure before micro-optimizing
+
+Extend `tier_b_tax` with an **`emit`** bucket when alerts land:
+
+```text
+tier_b_tax: read=… parse=… flat=… eval=… emit=… other=…
+```
+
+Compare the same fixture three ways: (1) count-only, (2) NDJSON buffered +
+end flush, (3) flush-per-alert. Prefer redirect to a file or `/dev/null` for
+fair wall-clock; interactive ttys often dominate.
+
+Other Day 2 costs that often dwarf the stdout lock: allocating full
+`RuleMatch` lists, fat NDJSON (full event echo), and `serde_json::to_string`
+per alert without a reused buffer / `to_writer`. Keep default alerts lean.
+
+See also: `cli/README.md` (Day 2 output notes).

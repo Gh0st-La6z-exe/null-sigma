@@ -1,14 +1,16 @@
 //! Trust-first JSONL ingest (Week 1 parity) over any [`BufRead`].
 //!
-//! Evaluates each successfully flattened event immediately (streaming),
-//! without buffering the full file — required for stdin pipes.
+//! Evaluates each successfully flattened event immediately (streaming) and
+//! emits alerts into a caller-owned [`Write`] (typically `BufWriter<StdoutLock>`).
 
 use std::collections::HashMap;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::time::Duration;
 
 use null_sigma::json::{flatten_value_with, FlattenError, FlattenOptions};
 use null_sigma::SigmaEngine;
+
+use crate::output::{self, OutputFormat};
 
 /// Default max bytes per JSONL line (8 MiB).
 pub const DEFAULT_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -17,6 +19,23 @@ pub const DEFAULT_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 pub enum OnErrorMode {
     Continue,
     FailFast,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct EmitOptions {
+    pub format: OutputFormat,
+    pub include_event: bool,
+    pub flush_alerts: bool,
+}
+
+/// Runtime knobs for one ingest+eval pass (keeps `ingest_and_eval` arity down).
+pub struct IngestConfig<'a> {
+    pub engine: &'a SigmaEngine,
+    pub on_error: OnErrorMode,
+    pub max_line_bytes: usize,
+    pub max_error_samples: usize,
+    pub flatten_options: FlattenOptions,
+    pub emit: EmitOptions,
 }
 
 #[derive(Debug, Default)]
@@ -52,6 +71,7 @@ pub struct IngestStats {
     pub t_parse: Duration,
     pub t_flat: Duration,
     pub t_eval: Duration,
+    pub t_emit: Duration,
     pub errors: ErrorCounters,
 }
 
@@ -111,15 +131,11 @@ fn fail_event(
     }
 }
 
-/// Read JSONL from `reader`, flatten with guards, evaluate each good event
-/// via [`SigmaEngine::evaluate_event_count`] (Day 1; Day 2 swaps to alerts).
-pub fn ingest_and_eval<R: BufRead>(
+/// Read JSONL, flatten, evaluate, and stream alerts into `out`.
+pub fn ingest_and_eval<R: BufRead, W: Write>(
     reader: &mut R,
-    engine: &SigmaEngine,
-    on_error: OnErrorMode,
-    max_line_bytes: usize,
-    max_error_samples: usize,
-    flatten_options: FlattenOptions,
+    out: &mut W,
+    cfg: &IngestConfig<'_>,
 ) -> Result<IngestStats, String> {
     let mut line = String::new();
     let mut stats = IngestStats::default();
@@ -136,11 +152,11 @@ pub fn ingest_and_eval<R: BufRead>(
                 let failed_line = line_number.saturating_add(1);
                 fail_event(
                     &mut stats,
-                    on_error,
+                    cfg.on_error,
                     failed_line,
                     "io_read",
                     &format!("read error: {e}"),
-                    max_error_samples,
+                    cfg.max_error_samples,
                     &mut error_samples_emitted,
                 )?;
                 break;
@@ -157,15 +173,15 @@ pub fn ingest_and_eval<R: BufRead>(
         }
         stats.events_total += 1;
 
-        if trimmed.len() > max_line_bytes {
+        if trimmed.len() > cfg.max_line_bytes {
             stats.errors.err_line_too_large += 1;
             fail_event(
                 &mut stats,
-                on_error,
+                cfg.on_error,
                 line_number,
                 "line_too_large",
                 "line exceeds --max-line-bytes",
-                max_error_samples,
+                cfg.max_error_samples,
                 &mut error_samples_emitted,
             )?;
             continue;
@@ -179,11 +195,11 @@ pub fn ingest_and_eval<R: BufRead>(
                 stats.errors.err_json_parse += 1;
                 fail_event(
                     &mut stats,
-                    on_error,
+                    cfg.on_error,
                     line_number,
                     "json_parse",
                     "bad event JSON",
-                    max_error_samples,
+                    cfg.max_error_samples,
                     &mut error_samples_emitted,
                 )?;
                 continue;
@@ -192,29 +208,47 @@ pub fn ingest_and_eval<R: BufRead>(
         stats.t_parse += t0.elapsed();
 
         let t0 = std::time::Instant::now();
-        let event: HashMap<String, String> = match flatten_value_with(&value, flatten_options) {
-            Ok(event) => event,
-            Err(err) => {
-                stats.t_flat += t0.elapsed();
-                record_flatten_error(&mut stats.errors, &err);
-                let kind = flatten_error_kind(&err);
-                fail_event(
-                    &mut stats,
-                    on_error,
-                    line_number,
-                    kind,
-                    "flatten failed",
-                    max_error_samples,
-                    &mut error_samples_emitted,
-                )?;
-                continue;
-            }
-        };
+        let event: HashMap<String, String> =
+            match flatten_value_with(&value, cfg.flatten_options) {
+                Ok(event) => event,
+                Err(err) => {
+                    stats.t_flat += t0.elapsed();
+                    record_flatten_error(&mut stats.errors, &err);
+                    let kind = flatten_error_kind(&err);
+                    fail_event(
+                        &mut stats,
+                        cfg.on_error,
+                        line_number,
+                        kind,
+                        "flatten failed",
+                        cfg.max_error_samples,
+                        &mut error_samples_emitted,
+                    )?;
+                    continue;
+                }
+            };
         stats.t_flat += t0.elapsed();
 
         let t0 = std::time::Instant::now();
-        stats.matches += engine.evaluate_event_count(&event) as u64;
+        let matches = cfg.engine.evaluate_event(&event);
         stats.t_eval += t0.elapsed();
+
+        stats.matches += matches.len() as u64;
+        for m in &matches {
+            let t0 = std::time::Instant::now();
+            output::write_alert(
+                out,
+                cfg.emit.format,
+                cfg.emit.include_event,
+                m,
+                &event,
+            )
+            .map_err(output::map_write_err)?;
+            if cfg.emit.flush_alerts {
+                out.flush().map_err(output::map_write_err)?;
+            }
+            stats.t_emit += t0.elapsed();
+        }
 
         stats.events_ok += 1;
     }

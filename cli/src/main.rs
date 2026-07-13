@@ -1,23 +1,25 @@
-//! null-sigma-cli — ROADMAP §4 product CLI (Week 2 Day 1: trust parity).
+//! null-sigma-cli — ROADMAP §4 product CLI (Week 2 Day 2: NDJSON alerts).
 //!
 //! Usage:
 //!   null-sigma-cli --rules <dir> [options] [events.jsonl | -]
 //!
 //! Omit the events path or pass `-` to read JSONL from stdin.
-//! Day 1 stdout is a temporary match-count integer; NDJSON alerts land Day 2.
+//! Stdout = alerts only (buffered); stderr = trust / tax diagnostics.
 
 mod ingest;
+mod output;
 mod rules;
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use ingest::{
-    ingest_and_eval, OnErrorMode, DEFAULT_MAX_LINE_BYTES,
+    ingest_and_eval, EmitOptions, IngestConfig, OnErrorMode, DEFAULT_MAX_LINE_BYTES,
 };
 use null_sigma::json::FlattenOptions;
+use output::OutputFormat;
 
 struct Args {
     /// Accepted for forward-compat; MVP always evaluates single-threaded.
@@ -25,6 +27,9 @@ struct Args {
     on_error: OnErrorMode,
     max_line_bytes: usize,
     max_error_samples: usize,
+    format: OutputFormat,
+    include_event: bool,
+    flush_alerts: bool,
     rule_dir: PathBuf,
     /// `None` means stdin.
     events_path: Option<PathBuf>,
@@ -36,6 +41,9 @@ fn parse_args() -> Result<Args, String> {
     let mut on_error = OnErrorMode::Continue;
     let mut max_line_bytes = DEFAULT_MAX_LINE_BYTES;
     let mut max_error_samples = 0usize;
+    let mut format = OutputFormat::Ndjson;
+    let mut include_event = false;
+    let mut flush_alerts = false;
     let mut rule_dir: Option<PathBuf> = None;
     let mut positional: Vec<String> = Vec::new();
 
@@ -83,6 +91,17 @@ fn parse_args() -> Result<Args, String> {
             max_error_samples = n
                 .parse()
                 .map_err(|_| format!("invalid --max-error-samples value: {n}"))?;
+        } else if arg == "--format" {
+            let v = iter
+                .next()
+                .ok_or_else(|| "--format requires a value".to_string())?;
+            format = OutputFormat::parse(&v)?;
+        } else if let Some(v) = arg.strip_prefix("--format=") {
+            format = OutputFormat::parse(v)?;
+        } else if arg == "--include-event" {
+            include_event = true;
+        } else if arg == "--flush-alerts" {
+            flush_alerts = true;
         } else if arg == "--help" || arg == "-h" {
             print_help();
             std::process::exit(0);
@@ -95,8 +114,7 @@ fn parse_args() -> Result<Args, String> {
 
     let rule_dir = rule_dir.ok_or_else(|| {
         "missing --rules <dir>\n\
-         usage: null-sigma-cli --rules <dir> [--on-error continue|fail-fast] \
-         [--max-line-bytes N] [--max-error-samples N] [--threads N] [events.jsonl | -]"
+         usage: null-sigma-cli --rules <dir> [options] [events.jsonl | -]"
             .to_string()
     })?;
 
@@ -123,6 +141,9 @@ fn parse_args() -> Result<Args, String> {
         on_error,
         max_line_bytes,
         max_error_samples,
+        format,
+        include_event,
+        flush_alerts,
         rule_dir,
         events_path,
     })
@@ -157,10 +178,14 @@ fn print_help() {
          --on-error fail-fast  exit non-zero on first event error\n\
          --max-line-bytes N    reject lines larger than N bytes (default {DEFAULT_MAX_LINE_BYTES})\n\
          --max-error-samples N emit up to N ingest_error_sample lines (default 0)\n\
+         --format ndjson|text  alert stdout format (default ndjson)\n\
+         --include-event       include full flattened event in NDJSON alerts\n\
+         --flush-alerts        flush stdout after each alert (live pipes)\n\
          --threads N           accepted for forward-compat; MVP is single-threaded\n\
          \n\
          events path omitted or '-' reads JSONL from stdin.\n\
-         Day 1: stdout is match count; NDJSON alerts land Day 2."
+         stdout = alerts only (buffered); stderr = trust/tax diagnostics.\n\
+         See PERFORMANCE.md §11.10 for stdout I/O policy."
     );
 }
 
@@ -181,13 +206,29 @@ fn main() {
         }
     };
 
-    let stats = match run_ingest(&args, &engine) {
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+
+    let stats = match run_ingest(&args, &engine, &mut out) {
         Ok(stats) => stats,
+        Err(msg) if msg == "broken_pipe" => {
+            let _ = out.flush();
+            std::process::exit(0);
+        }
         Err(msg) => {
+            let _ = out.flush();
             eprintln!("{msg}");
             std::process::exit(1);
         }
     };
+
+    if let Err(err) = out.flush() {
+        if err.kind() == io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        eprintln!("stdout flush error: {err}");
+        std::process::exit(1);
+    }
 
     emit_summary(&args, loaded, skipped, load_ms, &stats);
 
@@ -203,39 +244,34 @@ fn main() {
         );
         std::process::exit(1);
     }
-
-    // Day 1 temporary stdout — replaced by NDJSON alerts on Day 2.
-    println!("{}", stats.matches);
 }
 
 fn run_ingest(
     args: &Args,
     engine: &null_sigma::SigmaEngine,
+    out: &mut impl Write,
 ) -> Result<ingest::IngestStats, String> {
-    let flatten = FlattenOptions::default();
+    let cfg = IngestConfig {
+        engine,
+        on_error: args.on_error,
+        max_line_bytes: args.max_line_bytes,
+        max_error_samples: args.max_error_samples,
+        flatten_options: FlattenOptions::default(),
+        emit: EmitOptions {
+            format: args.format,
+            include_event: args.include_event,
+            flush_alerts: args.flush_alerts,
+        },
+    };
     if let Some(path) = &args.events_path {
         let file = File::open(path)
             .map_err(|e| format!("cannot open events '{}': {e}", path.display()))?;
         let mut reader = BufReader::new(file);
-        ingest_and_eval(
-            &mut reader,
-            engine,
-            args.on_error,
-            args.max_line_bytes,
-            args.max_error_samples,
-            flatten,
-        )
+        ingest_and_eval(&mut reader, out, &cfg)
     } else {
         let stdin = std::io::stdin();
         let mut reader = BufReader::new(stdin.lock());
-        ingest_and_eval(
-            &mut reader,
-            engine,
-            args.on_error,
-            args.max_line_bytes,
-            args.max_error_samples,
-            flatten,
-        )
+        ingest_and_eval(&mut reader, out, &cfg)
     }
 }
 
@@ -246,7 +282,7 @@ fn emit_summary(
     load_ms: u128,
     stats: &ingest::IngestStats,
 ) {
-    let scan = stats.t_read + stats.t_parse + stats.t_flat + stats.t_eval;
+    let scan = stats.t_read + stats.t_parse + stats.t_flat + stats.t_eval + stats.t_emit;
     let pct = |d: Duration| -> f64 {
         if scan.is_zero() {
             0.0
@@ -258,6 +294,10 @@ fn emit_summary(
         OnErrorMode::Continue => "continue",
         OnErrorMode::FailFast => "fail-fast",
     };
+    let format = match args.format {
+        OutputFormat::Ndjson => "ndjson",
+        OutputFormat::Text => "text",
+    };
     let input = args
         .events_path
         .as_ref()
@@ -267,13 +307,16 @@ fn emit_summary(
     eprintln!(
         "rules: {loaded} loaded, {skipped} skipped ({load_ms} ms) | events: {} | \
          ok: {} failed: {} | matches: {} | threads: {} (st-mvp) | \
-         on_error: {on_error} | max_line_bytes: {} | max_error_samples: {} | \
-         input: {input} | scan: {:.3}s ({:.0} events/sec)",
+         on_error: {on_error} | format: {format} | include_event: {} | flush_alerts: {} | \
+         max_line_bytes: {} | max_error_samples: {} | input: {input} | \
+         scan: {:.3}s ({:.0} events/sec)",
         stats.events_total,
         stats.events_ok,
         stats.events_failed,
         stats.matches,
         args.threads,
+        args.include_event,
+        args.flush_alerts,
         args.max_line_bytes,
         args.max_error_samples,
         scan.as_secs_f64(),
@@ -285,7 +328,7 @@ fn emit_summary(
     );
     eprintln!(
         "tier_b_tax: read={:.3}s ({:.1}%) parse={:.3}s ({:.1}%) flat={:.3}s ({:.1}%) \
-         eval={:.3}s ({:.1}%) other={:.3}s ({:.1}%)",
+         eval={:.3}s ({:.1}%) emit={:.3}s ({:.1}%) other={:.3}s ({:.1}%)",
         stats.t_read.as_secs_f64(),
         pct(stats.t_read),
         stats.t_parse.as_secs_f64(),
@@ -294,6 +337,8 @@ fn emit_summary(
         pct(stats.t_flat),
         stats.t_eval.as_secs_f64(),
         pct(stats.t_eval),
+        stats.t_emit.as_secs_f64(),
+        pct(stats.t_emit),
         0.0,
         0.0,
     );
