@@ -15,16 +15,17 @@ from __future__ import annotations
 
 import os
 
-# ── Data (Apple M4, 100k events, hyperfine 5 runs, 2026-07-08) ───────────────
+# ── Data (Apple M4, 100k events, hyperfine 5 runs, 2026-07-13) ───────────────
 #
-# Source: `harness/data/tier_b_results.md`
+# Source: `harness/data/tier_b_results.md` (local harness output; gitignored).
+# Prior published baseline (2026-07-08): default-threads 15.246s / ~1.57× vs Hayabusa.
 TIER_B = [
-    ("null-sigma (threads=0)", 15.246),
-    ("null-sigma (threads=4)", 18.005),
-    ("hayabusa (default)", 23.885),
-    ("chainsaw (rosetta)", 37.343),
-    ("null-sigma (threads=1)", 45.206),
-    ("hayabusa (threads=1)", 57.262),
+    ("null-sigma (threads=0)", 7.257),
+    ("null-sigma (threads=4)", 11.502),
+    ("hayabusa (default)", 15.534),
+    ("chainsaw (rosetta)", 28.370),
+    ("null-sigma (threads=1)", 36.616),
+    ("hayabusa (threads=1)", 54.403),
 ]
 
 # ── Style ────────────────────────────────────────────────────────────────────
@@ -85,7 +86,7 @@ def main() -> None:
     )
     s.append(
         f'<text x="{W/2}" y="52" fill="{MUTED}" font-size="12" text-anchor="middle">'
-        f'Lower is better · Source: harness/data/tier_b_results.md</text>'
+        f'Lower is better · 2026-07-13 · Source: harness/data/tier_b_results.md</text>'
     )
 
     # Gridlines (every 10s)

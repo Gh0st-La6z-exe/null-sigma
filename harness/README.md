@@ -131,19 +131,20 @@ Downloads pinned binaries to `harness/bin/` (gitignored):
 
 Dataset: deterministic flat JSONL (`gen_dataset` binary, seed 42).
 
-Latest hyperfine (100k events, 2026-07-08, Rayon prototype; warmup 1 + 5 runs):
+Latest hyperfine (100k events, **2026-07-13**, Rayon; warmup 1 + 5 runs).
+Prior published baseline (2026-07-08): default-threads 15.2 s / ~1.57× vs Hayabusa.
 
 | Command | Mean | Events/sec |
 |---|---|---|
-| `null-sigma-runner-default-threads` | **15.2 s ± 0.3** | **6 560** |
-| `hayabusa-default-threads` | 23.9 s ± 0.3 | 4 190 |
-| `null-sigma-runner-4-thread` | 18.0 s ± 2.0 | 5 550 |
-| `chainsaw-hunt` | 37.3 s ± 1.0 | 2 680 |
-| `null-sigma-runner` | **45.2 s ± 0.2** | **2 210** |
-| `hayabusa-1-thread` | 57.3 s ± 0.8 | 1 750 |
+| `null-sigma-runner-default-threads` | **7.257 s ± 0.044** | **13 780** |
+| `null-sigma-runner-4-thread` | 11.502 s ± 0.475 | 8 690 |
+| `hayabusa-default-threads` | 15.534 s ± 0.239 | 6 440 |
+| `chainsaw-hunt` | 28.370 s ± 0.719 | 3 530 |
+| `null-sigma-runner` | **36.616 s ± 0.158** | **2 730** |
+| `hayabusa-1-thread` | 54.403 s ± 1.457 | 1 840 |
 
-**Single-thread win:** null-sigma ~1.27× faster than Hayabusa `--threads 1`.
-**Multi-thread win:** null-sigma `--threads 0` ~1.57× faster than Hayabusa default.
+**Single-thread win:** null-sigma ~1.49× faster than Hayabusa `--threads 1`.
+**Multi-thread win:** null-sigma `--threads 0` ~2.14× faster than Hayabusa default.
 Parity gate: `./scripts/smoke_parallel.sh` (10k events, threads 1/2/4/8/0).
 Tax split: **eval 99%** — see `PERFORMANCE.md` §11.5a.
 

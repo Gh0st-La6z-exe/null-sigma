@@ -303,21 +303,23 @@ Chainsaw conversion semantics.
 ### 6c. CLI end-to-end — full tools (Tier B)
 
 100 000 flat JSONL events, SigmaHQ `process_creation` rules only, Apple M4,
-hyperfine 5 runs (see `harness/data/tier_b_results.md`). Tier B includes each tool's
-full pipeline (parse, enrich, output) — not comparable to Tier A matcher numbers.
+hyperfine 5 runs, **2026-07-13** (see `harness/data/tier_b_results.md`). Tier B
+includes each tool's full pipeline (parse, enrich, output) — not comparable to
+Tier A matcher numbers. Prior published baseline (2026-07-08): null-sigma
+default-threads **15.2 s** (~6 560/s), ~1.57× vs Hayabusa default.
 
 | Tool | Wall time | Events/sec |
 |---|---|---|
-| null-sigma runner (default threads) | **15.2 s** | **6 560** |
-| Hayabusa (default threads) | 23.9 s | 4 190 |
-| null-sigma runner (4 threads) | 18.0 s | 5 550 |
-| Chainsaw hunt (Rosetta x86_64) | 37.3 s | 2 680 |
-| null-sigma runner (1 thread) | **45.2 s** | **2 210** |
-| Hayabusa (1 thread) | 57.3 s | 1 750 |
+| null-sigma runner (default threads) | **7.26 s** | **13 780** |
+| null-sigma runner (4 threads) | 11.5 s | 8 690 |
+| Hayabusa (default threads) | 15.5 s | 6 440 |
+| Chainsaw hunt (Rosetta x86_64) | 28.4 s | 3 530 |
+| null-sigma runner (1 thread) | **36.6 s** | **2 730** |
+| Hayabusa (1 thread) | 54.4 s | 1 840 |
 
-**Single-thread:** null-sigma beats Hayabusa **~1.27×** (45.2 s vs 57.3 s).
-**Multi-thread:** null-sigma default threads beats Hayabusa default **~1.57×**
-(15.2 s vs 23.9 s). See §11.5 / §11.9.
+**Single-thread:** null-sigma beats Hayabusa **~1.49×** (36.6 s vs 54.4 s).
+**Multi-thread:** null-sigma default threads beats Hayabusa default **~2.14×**
+(7.26 s vs 15.5 s). See §11.5 / §11.9.
 
 ---
 
@@ -632,27 +634,30 @@ Phase 2 (`EvalScratch` + `ValueMatchCache`) moved `single_benign_event` from
 541 µs → **314 µs**. The EventView value cache then moved **314 µs → 309 µs**.
 tau-engine gap is **~2.3×**.
 
-### 11.5 Tier B results (2026-07-08, 100k events, Rayon prototype)
+### 11.5 Tier B results (2026-07-13, 100k events)
 
-Fresh `run_cli_bench.sh` (hyperfine warmup 1 + 5 runs, Apple M4, 10 logical
-cores, Hayabusa 3.9.0, Chainsaw 2.13.1 Rosetta, **1 182** `process_creation`
-YAML rules, seed-42 flat/EVTX JSONL):
+Fresh `run_cli_bench.sh` (hyperfine warmup 1 + 5 runs, Apple M4, Hayabusa 3.9.0,
+Chainsaw 2.13.1 Rosetta, SigmaHQ `process_creation` YAML, seed-42 flat/EVTX
+JSONL). Means from `harness/data/tier_b_results.md`.
+
+**Prior baseline (2026-07-08):** default-threads **15.2 s** (~6 560/s),
+~1.57× vs Hayabusa default — retained here so the refresh is auditable.
 
 | Command | Mean | Events/sec |
 |---|---|---|
-| `null-sigma-runner-default-threads` | **15.2 s ± 0.3** | **6 560** |
-| `hayabusa-default-threads` | 23.9 s ± 0.3 | 4 190 |
-| `null-sigma-runner-4-thread` | 18.0 s ± 2.0 | 5 550 |
-| `chainsaw-hunt` | 37.3 s ± 1.0 | 2 680 |
-| `null-sigma-runner` | **45.2 s ± 0.2** | **2 210** |
-| `hayabusa-1-thread` | 57.3 s ± 0.8 | 1 750 |
+| `null-sigma-runner-default-threads` | **7.257 s ± 0.044** | **13 780** |
+| `null-sigma-runner-4-thread` | 11.502 s ± 0.475 | 8 690 |
+| `hayabusa-default-threads` | 15.534 s ± 0.239 | 6 440 |
+| `chainsaw-hunt` | 28.370 s ± 0.719 | 3 530 |
+| `null-sigma-runner` | **36.616 s ± 0.158** | **2 730** |
+| `hayabusa-1-thread` | 54.403 s ± 1.457 | 1 840 |
 
 **Core-for-core:** null-sigma single-thread **wins vs Hayabusa-1-thread**
-(~1.27×; 45.2 s vs 57.3 s).
+(~1.49×; 36.6 s vs 54.4 s).
 
 **Multi-thread:** null-sigma `--threads 0` **beats Hayabusa default**
-(~1.57× wall; 15.2 s vs 23.9 s). User/wall ≈ **136 s / 15.2 s ≈ 8.9×**
-effective concurrency on 10 cores.
+(~2.14× wall; 7.26 s vs 15.5 s). Absolute times for both tools moved vs the
+2026-07-08 run (thermal/load variance); the **relative** bake-off win widened.
 
 Chainsaw remains Rosetta-penalised on Apple Silicon; Tier A via tau-engine is
 the native matcher comparison.
@@ -751,17 +756,18 @@ Harness-only Rayon prototype in `null_sigma_run --threads N`:
 | Parity smoke | `harness/scripts/smoke_parallel.sh` | Counts identical at threads 1/2/4/8/0 on 10k |
 | Hyperfine entries | `harness/scripts/run_cli_bench.sh` | `null-sigma-runner-4-thread`, `-default-threads` |
 
-**Measured impact (Tier B, 100k events, hyperfine 5 runs):**
+**Measured impact (Tier B, 100k events, hyperfine 5 runs, 2026-07-13):**
 
-| Command | Mean | Δ vs prior ST-only |
+| Command | Mean | Δ vs ST (`threads=1`) |
 |---|---|---|
-| `null-sigma-runner` | 45.2 s | baseline |
-| `null-sigma-runner-4-thread` | 18.0 s | **~2.5×** |
-| `null-sigma-runner-default-threads` | **15.2 s** | **~3.0×** |
-| `hayabusa-default-threads` | 23.9 s | null-sigma MT **~1.57× faster** |
+| `null-sigma-runner` | 36.6 s | baseline |
+| `null-sigma-runner-4-thread` | 11.5 s | **~3.2×** |
+| `null-sigma-runner-default-threads` | **7.26 s** | **~5.05×** |
+| `hayabusa-default-threads` | 15.5 s | null-sigma MT **~2.14× faster** |
 
 Decision gate (parallel wall ≤ ~20 s): **PASS** — continue CLI hardening
 (roadmap §4) rather than matcher structural work as the next Tier B lever.
+(2026-07-08 gate used 15.2 s / ~1.57× vs Hayabusa; still PASS.)
 
 ### 11.10 CLI stdout alerts — do not thrash I/O (Day 2+)
 

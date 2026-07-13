@@ -67,13 +67,14 @@ Delivered:
 - Deterministic event generator (`gen.rs`, seed 42), Chainsaw JSON mapping fix
   (`config/chainsaw-json-mapping.yml`), `null_sigma_run` reference CLI.
 
-Measured (Apple M4, release, 2026-07-08):
+Measured (Apple M4, release, Tier B refreshed **2026-07-13**):
 - Tier A single benign event: null-sigma **309 µs** (314 µs after Phase 2;
   541 µs after Phase 1), tau-engine **136 µs**, sigma-rust 4.61 ms.
-- Tier B hyperfine (100k events, Rayon prototype):
-  null-sigma default threads **15.2 s**, Hayabusa default **23.9 s**,
-  null-sigma ST **45.2 s**, Hayabusa ST **57.3 s**. **Wins ST (~1.27×) and
-  MT (~1.57×)** vs Hayabusa. Tax split: eval **99%**.
+- Tier B hyperfine (100k events, Rayon):
+  null-sigma default threads **7.26 s** (~13 780/s), Hayabusa default **15.5 s**,
+  null-sigma ST **36.6 s**, Hayabusa ST **54.4 s**. **Wins ST (~1.49×) and
+  MT (~2.14×)** vs Hayabusa. (Prior 2026-07-08: 15.2 s / ~1.57× MT.)
+  Tax split (2026-07-08 measurement): eval **99%**.
 
 Core fixes discovered/enabled by the harness:
 - AC overlapping scan + pattern interning (false-negative elimination).
@@ -122,10 +123,11 @@ Rayon `--threads` on harness `null_sigma_run`: sequential ingest, parallel
 `evaluate_event_count` via `Arc<SigmaEngine>` (thread-local `EvalScratch` per
 worker). Parity smoke at 1/2/4/8/0 threads on 10k events.
 
-Measured (Tier B hyperfine, 100k events): null-sigma default threads **15.2 s**
-vs Hayabusa default **23.9 s** (~1.57× wall-clock win). Single-thread still
-wins vs Hayabusa-1-thread (45.2 s vs 57.3 s). Documented in `PERFORMANCE.md`
-§11.9.
+Measured (Tier B hyperfine, 100k events, **2026-07-13**): null-sigma default
+threads **7.26 s** vs Hayabusa default **15.5 s** (~2.14× wall-clock win).
+Single-thread still wins vs Hayabusa-1-thread (36.6 s vs 54.4 s, ~1.49×).
+Prior 2026-07-08 baseline: 15.2 s / ~1.57× MT. Documented in `PERFORMANCE.md`
+§11.5 / §11.9; chart: `assets/tier_b.svg`.
 
 ## 3e. Week 1 trust sprint (DONE — 2026-07-12)
 

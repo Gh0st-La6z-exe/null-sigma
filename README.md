@@ -9,11 +9,17 @@
 A pure-Rust [Sigma](https://sigmahq.io) rule evaluation engine.
 
 Parse YAML rules once, compile them into an optimised internal representation,
-then evaluate streams of security events against the full rule set at
-**311 000 events/sec × 1 000 synthetic rules on a single core** (Apple M4,
-release, microbenchmark suite). Against 1 102 real SigmaHQ `process_creation`
-rules the measured rate is **~3 230 events/sec** — see
-[Head-to-head benchmarks](#head-to-head-benchmarks) below.
+then evaluate streams of security events against the full rule set. **Do not
+conflate these meters** (Apple M4, release):
+
+| Meter | What | Rough rate |
+|---|---|---|
+| **Microbench** | Synthetic uniform rules, matcher only | **~311k** events/sec × 1k rules |
+| **Tier A** | Real SigmaHQ `process_creation` (1 102 rules), matcher API | **~3 230** events/sec |
+| **Tier B** | Full CLI wall-clock vs Hayabusa/Chainsaw (100k JSONL, Rayon) | **~13 800** events/sec |
+
+Crates.io / docs.rs track the library (**Tier A**). Bake-off headlines use
+**Tier B**. Details: [Head-to-head benchmarks](#head-to-head-benchmarks).
 
 ```toml
 [dependencies]
@@ -434,18 +440,20 @@ vs tau-engine **13 cells (0.0006%)** on one rule (Chainsaw converter semantics).
 On real SigmaHQ rules, tau-engine is **~2.3× faster** per event; null-sigma is
 **~15× faster** than sigma-rust. See `harness/README.md` and `PERFORMANCE.md` §11.
 
-**Tier B** — CLI end-to-end, 100 000 JSONL events (hyperfine, 5 runs, 2026-07-08):
+**Tier B** — CLI end-to-end, 100 000 JSONL events (hyperfine, 5 runs,
+2026-07-13; prior 2026-07-08 baseline was 15.2 s / ~1.57× vs Hayabusa):
 
 | Tool | Wall time | Events/sec |
 |---|---|---|
-| null-sigma runner (default threads) | **15.2 s** | **6 560** |
-| Hayabusa (default threads) | 23.9 s | 4 190 |
-| null-sigma runner (1 thread) | **45.2 s** | **2 210** |
-| Hayabusa (1 thread) | 57.3 s | 1 750 |
-| Chainsaw hunt | 37.3 s | 2 680 |
+| null-sigma runner (default threads) | **7.26 s** | **13 780** |
+| null-sigma runner (4 threads) | 11.5 s | 8 690 |
+| Hayabusa (default threads) | 15.5 s | 6 440 |
+| Chainsaw hunt | 28.4 s | 3 530 |
+| null-sigma runner (1 thread) | **36.6 s** | **2 730** |
+| Hayabusa (1 thread) | 54.4 s | 1 840 |
 
-Single-thread: null-sigma **beats** Hayabusa (~1.27×). With Rayon
-(`--threads 0`), null-sigma **beats** Hayabusa default (~1.57×).
+Single-thread: null-sigma **beats** Hayabusa (~1.49×). With Rayon
+(`--threads 0`), null-sigma **beats** Hayabusa default (**~2.14×**).
 See `PERFORMANCE.md` §11.5 / §11.9.
 
 **Ingest trust** (shared contract on `null_sigma_run` and `null-sigma-cli`):

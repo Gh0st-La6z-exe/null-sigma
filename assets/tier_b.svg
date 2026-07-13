@@ -1,35 +1,35 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="920" height="360" viewBox="0 0 920 360" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
 <rect width="920" height="360" rx="10" fill="#161b22"/>
 <text x="460.0" y="30" fill="#c9d1d9" font-size="16" font-weight="600" text-anchor="middle">Tier B wall-clock (100k events, Apple M4, hyperfine)</text>
-<text x="460.0" y="52" fill="#8b949e" font-size="12" text-anchor="middle">Lower is better · Source: harness/data/tier_b_results.md</text>
-<line x1="351.8" y1="60" x2="351.8" y2="336" stroke="#30363d" stroke-width="1"/>
-<text x="351.8" y="352" fill="#8b949e" font-size="11" text-anchor="middle">10s</text>
-<line x1="463.5" y1="60" x2="463.5" y2="336" stroke="#30363d" stroke-width="1"/>
-<text x="463.5" y="352" fill="#8b949e" font-size="11" text-anchor="middle">20s</text>
-<line x1="575.3" y1="60" x2="575.3" y2="336" stroke="#30363d" stroke-width="1"/>
-<text x="575.3" y="352" fill="#8b949e" font-size="11" text-anchor="middle">30s</text>
-<line x1="687.1" y1="60" x2="687.1" y2="336" stroke="#30363d" stroke-width="1"/>
-<text x="687.1" y="352" fill="#8b949e" font-size="11" text-anchor="middle">40s</text>
-<line x1="798.8" y1="60" x2="798.8" y2="336" stroke="#30363d" stroke-width="1"/>
-<text x="798.8" y="352" fill="#8b949e" font-size="11" text-anchor="middle">50s</text>
-<line x1="910.6" y1="60" x2="910.6" y2="336" stroke="#30363d" stroke-width="1"/>
-<text x="910.6" y="352" fill="#8b949e" font-size="11" text-anchor="middle">60s</text>
+<text x="460.0" y="52" fill="#8b949e" font-size="12" text-anchor="middle">Lower is better · 2026-07-13 · Source: harness/data/tier_b_results.md</text>
+<line x1="357.6" y1="60" x2="357.6" y2="336" stroke="#30363d" stroke-width="1"/>
+<text x="357.6" y="352" fill="#8b949e" font-size="11" text-anchor="middle">10s</text>
+<line x1="475.3" y1="60" x2="475.3" y2="336" stroke="#30363d" stroke-width="1"/>
+<text x="475.3" y="352" fill="#8b949e" font-size="11" text-anchor="middle">20s</text>
+<line x1="592.9" y1="60" x2="592.9" y2="336" stroke="#30363d" stroke-width="1"/>
+<text x="592.9" y="352" fill="#8b949e" font-size="11" text-anchor="middle">30s</text>
+<line x1="710.6" y1="60" x2="710.6" y2="336" stroke="#30363d" stroke-width="1"/>
+<text x="710.6" y="352" fill="#8b949e" font-size="11" text-anchor="middle">40s</text>
+<line x1="828.2" y1="60" x2="828.2" y2="336" stroke="#30363d" stroke-width="1"/>
+<text x="828.2" y="352" fill="#8b949e" font-size="11" text-anchor="middle">50s</text>
+<line x1="945.8" y1="60" x2="945.8" y2="336" stroke="#30363d" stroke-width="1"/>
+<text x="945.8" y="352" fill="#8b949e" font-size="11" text-anchor="middle">60s</text>
 <text x="228" y="88" fill="#c9d1d9" font-size="12" text-anchor="end">null-sigma (threads=0)</text>
-<rect x="240" y="70" width="170.4" height="18" rx="6" fill="#3fb950"/>
-<text x="418.4" y="85" fill="#c9d1d9" font-size="12" text-anchor="start">15.246s</text>
+<rect x="240" y="70" width="85.4" height="18" rx="6" fill="#3fb950"/>
+<text x="333.4" y="85" fill="#c9d1d9" font-size="12" text-anchor="start">7.257s</text>
 <text x="228" y="130" fill="#c9d1d9" font-size="12" text-anchor="end">null-sigma (threads=4)</text>
-<rect x="240" y="112" width="201.2" height="18" rx="6" fill="#3fb950"/>
-<text x="449.2" y="127" fill="#c9d1d9" font-size="12" text-anchor="start">18.005s</text>
+<rect x="240" y="112" width="135.3" height="18" rx="6" fill="#3fb950"/>
+<text x="383.3" y="127" fill="#c9d1d9" font-size="12" text-anchor="start">11.502s</text>
 <text x="228" y="172" fill="#c9d1d9" font-size="12" text-anchor="end">hayabusa (default)</text>
-<rect x="240" y="154" width="267.0" height="18" rx="6" fill="#58a6ff"/>
-<text x="515.0" y="169" fill="#c9d1d9" font-size="12" text-anchor="start">23.885s</text>
+<rect x="240" y="154" width="182.7" height="18" rx="6" fill="#58a6ff"/>
+<text x="430.7" y="169" fill="#c9d1d9" font-size="12" text-anchor="start">15.534s</text>
 <text x="228" y="214" fill="#c9d1d9" font-size="12" text-anchor="end">chainsaw (rosetta)</text>
-<rect x="240" y="196" width="417.4" height="18" rx="6" fill="#d29922"/>
-<text x="665.4" y="211" fill="#c9d1d9" font-size="12" text-anchor="start">37.343s</text>
+<rect x="240" y="196" width="333.7" height="18" rx="6" fill="#d29922"/>
+<text x="581.7" y="211" fill="#c9d1d9" font-size="12" text-anchor="start">28.370s</text>
 <text x="228" y="256" fill="#c9d1d9" font-size="12" text-anchor="end">null-sigma (threads=1)</text>
-<rect x="240" y="238" width="505.3" height="18" rx="6" fill="#3fb950"/>
-<text x="753.3" y="253" fill="#c9d1d9" font-size="12" text-anchor="start">45.206s</text>
+<rect x="240" y="238" width="430.8" height="18" rx="6" fill="#3fb950"/>
+<text x="678.8" y="253" fill="#c9d1d9" font-size="12" text-anchor="start">36.616s</text>
 <text x="228" y="298" fill="#c9d1d9" font-size="12" text-anchor="end">hayabusa (threads=1)</text>
 <rect x="240" y="280" width="640.0" height="18" rx="6" fill="#58a6ff"/>
-<text x="888.0" y="295" fill="#c9d1d9" font-size="12" text-anchor="start">57.262s</text>
+<text x="888.0" y="295" fill="#c9d1d9" font-size="12" text-anchor="start">54.403s</text>
 </svg>

@@ -24,7 +24,12 @@ Repository / packaging work since library **0.1.3** (crates.io / docs.rs).
 
 ### Changed
 
-- Tier B parallel runner + Hayabusa wall-clock wins documented in
+- **Tier B baseline refresh (2026-07-13).** Hyperfine 100k events: null-sigma
+  default-threads **7.26 s** (~13 780/s), **~2.14×** vs Hayabusa default
+  (was 15.2 s / ~1.57× on 2026-07-08). README meter legend, `PERFORMANCE.md`
+  §6c/§11.5/§11.9, harness README, ROADMAP, and `assets/tier_b.svg` updated.
+  Prior baseline retained in prose for audit. No library API change.
+- Tier B parallel runner + Hayabusa wall-clock wins first landed in
   `PERFORMANCE.md` §11.9 (harness-only; not a crates.io artifact).
 
 ---
