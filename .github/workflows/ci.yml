@@ -70,6 +70,30 @@ jobs:
         working-directory: harness
         run: ./scripts/smoke_trust.sh
 
+  # ─── CLI trust smoke (hermetic; no SigmaHQ clone) ─────────────────────────
+  # Parallel peer of trust-smoke — append-only; no needs: on other jobs.
+  cli-trust-smoke:
+    name: CLI trust smoke
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: smoke_trust.sh
+        working-directory: cli
+        run: ./scripts/smoke_trust.sh
+
   # ─── Lint ─────────────────────────────────────────────────────────────────
   clippy:
     name: Clippy

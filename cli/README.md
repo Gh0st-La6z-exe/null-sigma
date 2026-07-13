@@ -7,10 +7,12 @@ ROADMAP §4 product CLI. Consumes the `null-sigma` library **0.1.3**
 `cargo install --path cli`. Library remains on crates.io as `null-sigma`
 0.1.3; this binary is not published separately yet.
 
-## Status (Week 2 Day 2)
+## Status (Week 2 Days 1–3)
 
 **Shipped:** file + stdin JSONL, Week 1 trust/exit contract, streaming
-**lean NDJSON** (default) and `--format text` alerts on stdout.
+**lean NDJSON** (default) and `--format text` alerts on stdout. CI job
+`CLI trust smoke` runs `./scripts/smoke_trust.sh` on every push/PR to `main`
+(hermetic fixtures; no SigmaHQ).
 
 **Stdout** = alerts only (buffered `BufWriter`; see §11.10).  
 **Stderr** = `rules:` / `tier_b_tax:` (includes `emit=`) / `ingest_errors:` /

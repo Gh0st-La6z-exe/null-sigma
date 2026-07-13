@@ -688,7 +688,7 @@ eval via Rayon (`--threads`) closes the Tier B wall-clock gap; see §11.9.
 | Phase 3 — ingest streaming | Reused line buffer, flat JSONL fast-path | **Deprioritized** — tax split shows ≤1% of Tier B |
 | Parallel Tier B / CLI | Rayon `--threads` on `null_sigma_run` | **DONE** (2026-07-08) — beats Hayabusa default |
 | Matcher structural gap | vs tau-engine ~2.3× on Tier A | Open — raises ST base further |
-| CLI binary (`null-sigma-cli`) | Product JSONL → alerts (`cli/`) | **In progress** — Days 1–2 shipped; path install only (`publish = false`). See ROADMAP §4 |
+| CLI binary (`null-sigma-cli`) | Product JSONL → alerts (`cli/`) | **Days 1–3 DONE** — CI `cli-trust-smoke`; path install only (`publish = false`). §4b open |
 
 Remaining matcher-level room vs tau-engine (~2.3×) is largely structural
 (compiled matcher vs condition-tree eval), not more fold/alloc micro-opts.

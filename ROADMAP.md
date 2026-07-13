@@ -90,8 +90,8 @@ Full numbers and reproduction steps: `harness/README.md`, `PERFORMANCE.md` §11,
 `harness/data/tier_b_results.md`.
 
 Follow-up: matcher structural gap vs tau-engine remains open for Tier A.
-Week 1 trust (§3e) DONE. §4 CLI MVP in progress (Days 1–2 shipped; CI/install
-story next).
+Week 1 trust (§3e) DONE. §4 CLI MVP Days 1–3 shipped (CI `cli-trust-smoke`);
+§4b (publish / `--follow` / parallel) still open.
 
 ## 3b. Phase 2 — EvalScratch + pattern cache (DONE — 2026-07-07)
 
@@ -152,19 +152,21 @@ SigmaHQ corpus (still never vendored).
 
 §4 may now proceed on a CI-gated ingest trust layer.
 
-## 4. CLI binary (`null-sigma-cli`) — IN PROGRESS (2026-07)
+## 4. CLI binary (`null-sigma-cli`) — Days 1–3 DONE (2026-07); §4b open
 
 Product CLI crate at [`cli/`](cli/) — sibling package, `publish = false` until
 crates.io release. Depends on `null-sigma` with the `json` feature. Core
 library stays I/O-free.
 
-**Shipped (Week 2 Days 1–2):**
+**Shipped (Week 2 Days 1–3):**
 
 - Day 1 — trust-parity ingest: file + stdin JSONL, Week 1 exit/stderr contract,
   streaming single-threaded eval (`cli/` + `cli/scripts/smoke_trust.sh`)
 - Day 2 — lean NDJSON alerts (default) + `--format text`, buffered stdout
   (`BufWriter`, end-flush), `--flush-alerts` / `--include-event`, `emit=` tax
   bucket (`PERFORMANCE.md` §11.10)
+- Day 3 — CI job `cli-trust-smoke` (hermetic peer of harness `trust-smoke`);
+  smoke script path-anchored to repo fixtures + private `mktemp` cleanup
 
 **Install (local path today):**
 
@@ -173,8 +175,8 @@ cargo install --path cli
 null-sigma-cli --rules ./rules < events.jsonl
 ```
 
-**Not yet (Day 3 / §4b):** CI job for CLI smoke, crates.io publish of
-`null-sigma-cli`, `--follow` / parallel CLI eval.
+**Not yet (§4b):** crates.io publish of `null-sigma-cli`, `--follow` / parallel
+CLI eval.
 
 Harness `null_sigma_run` remains the Tier B count-only bench runner.
 

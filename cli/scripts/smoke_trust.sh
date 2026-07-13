@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Day 2 CLI trust + alert smoke: Week 1 stderr/exit parity + NDJSON/text stdout.
+# CLI trust + alert smoke: Week 1 stderr/exit parity + NDJSON/text stdout.
+# Hermetic — committed fixtures under $REPO_ROOT/tests/fixtures/ only.
+#
+# Path resolution is anchored to this script's location (not $PWD), so
+# `./scripts/smoke_trust.sh` and `bash /abs/path/to/smoke_trust.sh` both work.
+# Artifacts live in a private mktemp dir and are removed on EXIT (no /tmp leaks).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -8,6 +13,13 @@ REPO_ROOT="$(cd "$CLI_DIR/.." && pwd)"
 RULE_DIR="$REPO_ROOT/tests/fixtures/rules/minimal"
 MIXED="$REPO_ROOT/tests/fixtures/robustness/mixed_valid_invalid.jsonl"
 
+# Private scratch — unique per run; cleaned even on early FAIL.
+SMOKE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/null_sigma_cli_smoke.XXXXXX")"
+cleanup() {
+    rm -rf "$SMOKE_TMP"
+}
+trap cleanup EXIT
+
 cd "$CLI_DIR"
 cargo build --release --bin null-sigma-cli >/dev/null
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
@@ -15,6 +27,7 @@ RUNNER="$TARGET_DIR/release/null-sigma-cli"
 
 [ -d "$RULE_DIR" ] || { echo "rule dir missing at $RULE_DIR"; exit 1; }
 [ -f "$MIXED" ] || { echo "fixture missing at $MIXED"; exit 1; }
+[ -x "$RUNNER" ] || { echo "runner missing at $RUNNER"; exit 1; }
 
 assert_contains() {
     local haystack="$1"
@@ -27,10 +40,10 @@ assert_contains() {
 echo ">> continue mode (file) — stderr trust"
 set +e
 "$RUNNER" --rules "$RULE_DIR" --on-error continue "$MIXED" \
-    2>/tmp/null_sigma_cli_err.txt >/tmp/null_sigma_cli_out.txt
+    2>"$SMOKE_TMP/err.txt" >"$SMOKE_TMP/out.txt"
 CONT_EXIT=$?
 set -e
-CONT_ERR="$(cat /tmp/null_sigma_cli_err.txt)"
+CONT_ERR="$(cat "$SMOKE_TMP/err.txt")"
 if [ "$CONT_EXIT" -ne 0 ]; then
     echo "FAIL: continue mode exited non-zero ($CONT_EXIT)"
     echo "$CONT_ERR"
@@ -45,7 +58,7 @@ assert_contains "$CONT_ERR" \
 assert_contains "$CONT_ERR" "emit=" "emit tax bucket"
 
 echo ">> NDJSON alerts on stdout"
-ALERTS="$(cat /tmp/null_sigma_cli_out.txt)"
+ALERTS="$(cat "$SMOKE_TMP/out.txt")"
 ALERT_LINES="$(echo "$ALERTS" | rg -c '^\{' || true)"
 if [ "${ALERT_LINES:-0}" -lt 1 ]; then
     echo "FAIL: expected ≥1 NDJSON alert lines"
@@ -62,18 +75,18 @@ fi
 
 echo ">> continue mode (stdin) — alert parity"
 "$RUNNER" --rules "$RULE_DIR" --on-error continue - <"$MIXED" \
-    2>/tmp/null_sigma_cli_stdin_err.txt >/tmp/null_sigma_cli_stdin_out.txt
+    2>"$SMOKE_TMP/stdin_err.txt" >"$SMOKE_TMP/stdin_out.txt"
 STDIN_EXIT=$?
 if [ "$STDIN_EXIT" -ne 0 ]; then
     echo "FAIL: stdin continue exited non-zero ($STDIN_EXIT)"
-    cat /tmp/null_sigma_cli_stdin_err.txt
+    cat "$SMOKE_TMP/stdin_err.txt"
     exit 1
 fi
-assert_contains "$(cat /tmp/null_sigma_cli_stdin_err.txt)" \
+assert_contains "$(cat "$SMOKE_TMP/stdin_err.txt")" \
     "ingest_accounting: events_total=5 events_ok=3 events_failed=2 invariant_ok=true" \
     "stdin accounting"
-FILE_ALERTS="$(rg -c '^\{' /tmp/null_sigma_cli_out.txt || true)"
-STDIN_ALERTS="$(rg -c '^\{' /tmp/null_sigma_cli_stdin_out.txt || true)"
+FILE_ALERTS="$(rg -c '^\{' "$SMOKE_TMP/out.txt" || true)"
+STDIN_ALERTS="$(rg -c '^\{' "$SMOKE_TMP/stdin_out.txt" || true)"
 if [ "$FILE_ALERTS" != "$STDIN_ALERTS" ]; then
     echo "FAIL: file vs stdin alert-count drift ($FILE_ALERTS vs $STDIN_ALERTS)"
     exit 1
@@ -99,18 +112,18 @@ fi
 
 echo ">> bad --format exits 2"
 set +e
-"$RUNNER" --rules "$RULE_DIR" --format nope "$MIXED" >/dev/null 2>/tmp/null_sigma_cli_fmt.txt
+"$RUNNER" --rules "$RULE_DIR" --format nope "$MIXED" >/dev/null 2>"$SMOKE_TMP/fmt.txt"
 FMT_EXIT=$?
 set -e
 if [ "$FMT_EXIT" -ne 2 ]; then
     echo "FAIL: expected exit 2 for bad --format, got $FMT_EXIT"
-    cat /tmp/null_sigma_cli_fmt.txt
+    cat "$SMOKE_TMP/fmt.txt"
     exit 1
 fi
 
 echo ">> fail-fast mode"
 set +e
-FF_OUT="$("$RUNNER" --rules "$RULE_DIR" --on-error fail-fast "$MIXED" 2>&1 >/tmp/null_sigma_cli_ff.txt)"
+FF_OUT="$("$RUNNER" --rules "$RULE_DIR" --on-error fail-fast "$MIXED" 2>&1 >"$SMOKE_TMP/ff.txt")"
 FF_EXIT=$?
 set -e
 if [ "$FF_EXIT" -eq 0 ]; then
@@ -123,13 +136,13 @@ echo "$FF_OUT" | rg "bad event JSON|flatten failed|read error|line exceeds" >/de
 
 echo ">> missing --rules exits 2"
 set +e
-"$RUNNER" --on-error continue "$MIXED" >/dev/null 2>/tmp/null_sigma_cli_usage.txt
+"$RUNNER" --on-error continue "$MIXED" >/dev/null 2>"$SMOKE_TMP/usage.txt"
 USAGE_EXIT=$?
 set -e
 if [ "$USAGE_EXIT" -ne 2 ]; then
     echo "FAIL: expected exit 2 for missing --rules, got $USAGE_EXIT"
-    cat /tmp/null_sigma_cli_usage.txt
+    cat "$SMOKE_TMP/usage.txt"
     exit 1
 fi
 
-echo "PASS: null-sigma-cli Day 2 trust + alert checks succeeded."
+echo "PASS: null-sigma-cli trust + alert checks succeeded."
