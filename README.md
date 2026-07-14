@@ -16,10 +16,12 @@ conflate these meters** (Apple M4, release):
 |---|---|---|
 | **Microbench** | Synthetic uniform rules, matcher only | **~311k** events/sec × 1k rules |
 | **Tier A** | Real SigmaHQ `process_creation` (1 102 rules), matcher API | **~3 230** events/sec |
-| **Tier B** | Full CLI wall-clock vs Hayabusa/Chainsaw (100k JSONL, Rayon) | **~13 800** events/sec |
+| **Tier B** (harness) | `null_sigma_run` count-only vs Hayabusa (100k JSONL, Rayon) | **~13 800** events/sec |
+| **Tier B-product** | `null-sigma-cli` lean NDJSON → `/dev/null` vs Hayabusa | **pending** Linux 100k (§11.12) |
 
-Crates.io / docs.rs track the library (**Tier A**). Bake-off headlines use
-**Tier B**. Details: [Head-to-head benchmarks](#head-to-head-benchmarks).
+Crates.io / docs.rs track the library (**Tier A**). Harness bake-off headlines
+use **Tier B**; product Falcon claims need **Tier B-product** (not yet
+published). Details: [Head-to-head benchmarks](#head-to-head-benchmarks).
 
 ```toml
 [dependencies]
@@ -95,7 +97,8 @@ Details and flags: [`cli/README.md`](cli/README.md). Trust smoke:
 `cd cli && ./scripts/smoke_trust.sh`.
 
 The harness binary `null_sigma_run` remains the Tier B **count-only** bench
-runner (`harness/`); it is not the installable product CLI.
+runner (`harness/`); it is not the installable product CLI. Product wall-clock:
+`harness/scripts/run_product_cli_bench.sh` / `PERFORMANCE.md` §11.12.
 
 ---
 
@@ -375,7 +378,8 @@ Two measurement tiers — do not conflate them:
 |---|---|---|
 | **Microbench** | Prefilter scaling on synthetic uniform rules | `cargo bench --bench sigma_bench` |
 | **Tier A** | Matcher-level, real SigmaHQ rules, library APIs | `cd harness && cargo bench --bench head_to_head` |
-| **Tier B** | Full CLI wall-clock (parse + enrich + output) | `harness/scripts/run_cli_bench.sh` |
+| **Tier B** (harness) | Count-only CLI wall-clock vs Hayabusa/Chainsaw | `harness/scripts/run_cli_bench.sh` |
+| **Tier B-product** | Product CLI alerts → `/dev/null` vs Hayabusa | `harness/scripts/run_product_cli_bench.sh` |
 
 ![null-sigma benchmark chart: per-event latency stays hundreds of times below naive linear scaling as rule count grows, and single-core throughput by scenario](assets/benchmarks.svg)
 

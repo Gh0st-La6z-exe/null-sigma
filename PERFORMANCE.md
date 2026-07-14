@@ -688,7 +688,8 @@ eval via Rayon (`--threads`) closes the Tier B wall-clock gap; see §11.9.
 | Phase 3 — ingest streaming | Reused line buffer, flat JSONL fast-path | **Deprioritized** — tax split shows ≤1% of Tier B |
 | Parallel Tier B / CLI | Rayon `--threads` on `null_sigma_run` | **DONE** (2026-07-08) — beats Hayabusa default |
 | Matcher structural gap | vs tau-engine ~2.3× on Tier A | Open — raises ST base further |
-| CLI binary (`null-sigma-cli`) | Product JSONL → alerts (`cli/`) | **§4b MT slice DONE** — sequenced chunk pipeline; CI parity. No product MT eps until Linux hyperfine. `publish = false`. |
+| CLI binary (`null-sigma-cli`) | Product JSONL → alerts (`cli/`) | **§4b MT slice DONE** — sequenced chunk pipeline; CI parity. `publish = false`. |
+| Tier B-product hyperfine | Product CLI vs Hayabusa (alerts) | **Infra DONE** — §11.12; authoritative Linux 100k **pending** GHA `Product CLI bench` |
 
 Remaining matcher-level room vs tau-engine (~2.3×) is largely structural
 (compiled matcher vs condition-tree eval), not more fold/alloc micro-opts.
@@ -860,4 +861,91 @@ per alert without a reused buffer / `to_writer`. Keep default alerts lean.
 
 See also: `cli/README.md` (output notes).
 
-See also: `cli/README.md` (Day 2 output notes).
+### 11.12 Tier B-product — `null-sigma-cli` hyperfine (≠ harness Tier B)
+
+**Why a fourth meter.** Harness Tier B (`null_sigma_run`, count-only) answers
+“how fast is match eval after parse?” Product CLI answers “how fast is the
+installable tool when it **emits alerts**?” Those are different instruments.
+Publishing harness wins as product Falcon claims is a **methods regression**.
+
+| Meter | Binary | Output | Use |
+|---|---|---|---|
+| Microbench | Criterion / `perf_benign` | none | matcher micro |
+| Tier A | `cross_check` / profiling | match counts | apples-to-apples engines |
+| Tier B harness | `null_sigma_run` | count-only stderr tax | eval wall-clock vs Hayabusa |
+| **Tier B-product** | `null-sigma-cli` | lean NDJSON → `/dev/null` | **product** bake-off |
+
+#### Protocol (reproduce)
+
+```bash
+# Local / dedicated host (candidate once EVENTS=100000 and Linux):
+cd harness
+EVENTS=100000 ./scripts/run_product_cli_bench.sh
+# Artifacts (gitignored): data/tier_b_product_meta.txt
+#                          data/tier_b_product_results.md
+
+# GitHub Actions (manual only — not on PR):
+# Actions → "Product CLI bench" → Run workflow (default EVENTS=100000)
+# Download artifact tier-b-product-<run_id>-<sha>
+```
+
+Fixed factors: SigmaHQ `rules/windows/process_creation`, `gen_dataset` seed
+**42**, Hayabusa **3.9.0** (platform zip), hyperfine warmup **1** + **5** runs,
+CLI stdout discarded, Hayabusa writes JSONL to disk (same as harness Tier B),
+`--on-error continue`, lean NDJSON (no `--include-event`).
+
+Record every run: `uname -a`, ncpu, UTC ISO time, `git` SHA, EVENTS, seed,
+Hayabusa asset name. GHA `ubuntu-latest` is **shared/noisy** — publish with
+that label; dedicated Linux may supersede.
+
+Workflow: `.github/workflows/product-cli-bench.yml` (`workflow_dispatch` only).
+
+#### Authoritative Linux 100k — PENDING
+
+No product MT bake-off numbers published yet. After the first clean GHA (or
+dedicated Linux) `EVENTS=100000` artifact, transcribe means into a dated table
+**here** and keep harness §6c / §11.5 untouched.
+
+#### Pilot: Darwin arm64 M4, EVENTS=5000 (2026-07-14) — not a bake-off
+
+Git `f052828`, hyperfine 5 runs, Hayabusa 3.9.0 mac-aarch64. Script meta
+marked `status: pilot_only`. Values are for **regression / science** only —
+
+| Command | Mean [s] | Relative to count-only |
+|---|---:|---:|
+| `null-sigma-runner-default-threads-count-only` | 0.625 ± 0.022 | 1.00 |
+| `hayabusa-default-threads` | 1.199 ± 0.055 | 1.92 |
+| `null-sigma-cli-4-thread` | 1.630 ± 0.014 | 2.61 |
+| `null-sigma-cli-default-threads` | 1.638 ± 0.031 | 2.62 |
+| `null-sigma-cli-1-thread` | 2.390 ± 0.044 | 3.82 |
+| `hayabusa-1-thread` | 3.269 ± 0.056 | 5.23 |
+
+**Findings to keep for the future (hypotheses until Linux 100k):**
+
+1. **Product path ≠ harness win.** At this N on M4, Hayabusa default beat
+   product CLI default (~1.20 s vs ~1.64 s). Do not cite §11.5’s ~2.14× as a
+   product Falcon win.
+2. **Emit / pipeline tax is large.** Count-only was ~**2.6×** faster than
+   product CLI default on the same host/rules/seed — primary lever for
+   closing Falcon product gaps after matcher work (ordered sink, serialize,
+   chunk coordination), not “more Rayon alone.”
+3. **CLI scaling plateaued early** — 4-thread ≈ `--threads 0` at 5k; ST still
+   beat Hayabusa ST (~1.37×). Re-check at 100k before claiming saturation.
+4. **Tax lines confirmed on product CLI smoke** — `emit≈0.1%` of that ST smoke
+   wall while hyperfine still showed a large CLI↔count-only gap: wall-clock
+   emit share understates end-to-end product overhead vs a count-only runner
+   that skips alert construction entirely. Prefer hyperfine CLI↔count-only
+   delta, not a single `emit=` fraction, when ranking Day-2 costs.
+5. **Methods gate:** never paste B-product rows into the harness Tier B table
+   without renaming the meter.
+
+#### Regression markers (CI / docs)
+
+| Risk | Guard |
+|---|---|
+| Claiming product speed from harness Tier B | README / PERFORMANCE three-meter + B-product legends; this § |
+| Silent merge of pilot Darwin/small-N into Falcon claims | Script `status: pilot_only` unless Linux + EVENTS=100000 |
+| ST/MT alert reordering | `cli/scripts/smoke_parallel.sh` (CI) |
+| Trust accounting drift under MT | same smoke + trust smoke |
+
+See also: `harness/README.md` (Tier B-product recipe), `cli/README.md`.

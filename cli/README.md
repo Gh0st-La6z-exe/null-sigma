@@ -18,9 +18,12 @@ alerts + trust bags. CI: `CLI trust smoke` runs `smoke_trust.sh` and
 **Stderr** = `rules:` / `tier_b_tax:` (includes `emit=`) / `ingest_errors:` /
 `ingest_accounting:`.
 
-The harness binary `null_sigma_run` remains the Tier B bench runner (count-only).
-This CLI is the installable product path — **no product MT bake-off numbers
-until Linux hyperfine of this binary**.
+The harness binary `null_sigma_run` remains the Tier B **count-only** runner.
+This CLI is the installable product path. Measure it with Tier **B-product**
+(`harness/scripts/run_product_cli_bench.sh` / GHA **Product CLI bench**) —
+see `PERFORMANCE.md` §11.12. **No product Falcon bake-off claims** until Linux
+`EVENTS=100000` is published there; a Darwin/5k pilot already showed Hayabusa
+default can beat this CLI while harness Tier B still wins.
 
 ## Pipeline (do not scramble order)
 

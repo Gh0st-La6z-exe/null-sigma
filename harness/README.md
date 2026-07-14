@@ -150,6 +150,28 @@ Tax split: **eval 99%** — see `PERFORMANCE.md` §11.5a.
 
 Written to `harness/data/tier_b_results.md` (gitignored).
 
+### Tier B-product — `null-sigma-cli` (≠ harness Tier B)
+
+Measures the **installable product** path: lean NDJSON alerts → `/dev/null`,
+same SigmaHQ `process_creation` + seed-42 JSONL, vs pinned Hayabusa 3.9.0.
+Includes a count-only `null_sigma_run` row so the **emit / pipeline tax** is
+visible. **Do not** paste results into the harness Tier B table above.
+
+```bash
+cd harness
+EVENTS=100000 ./scripts/run_product_cli_bench.sh   # candidate (prefer Linux)
+EVENTS=5000 ./scripts/run_product_cli_bench.sh     # local pilot / smoke
+```
+
+Artifacts (gitignored): `data/tier_b_product_meta.txt`,
+`data/tier_b_product_results.md` (science header + hyperfine markdown).
+
+**CI:** Actions → **Product CLI bench** (`workflow_dispatch` only; not on
+push/PR). Download the artifact and transcribe into `PERFORMANCE.md` §11.12.
+Label GHA numbers as shared-metal noise.
+
+Protocol, pilot M4 findings, and regression markers: `PERFORMANCE.md` §11.12.
+
 ### Chainsaw JSON mapping
 
 Chainsaw's bundled EVTX mapping expects nested `Event.System.*` documents.
@@ -246,7 +268,8 @@ harness/
 │   ├── gen_dataset.rs
 │   └── prof_benign.rs         # Profiling gate (local)
 ├── scripts/
-│   ├── run_cli_bench.sh       # Tier B
+│   ├── run_cli_bench.sh       # Tier B harness (count-only)
+│   ├── run_product_cli_bench.sh  # Tier B-product (null-sigma-cli alerts)
 │   ├── smoke_parallel.sh      # Thread-count parity (10k)
 │   ├── smoke_error_policy.sh  # continue/fail-fast policy
 │   ├── smoke_robustness.sh    # malformed corpus + guards
@@ -256,7 +279,7 @@ harness/
 │   └── prof_benign.sh         # samply profiling (local output → prof/)
 ├── prof/                      # gitignored — profiles + summary notes
 ├── config/chainsaw-json-mapping.yml
-└── data/tier_b_results.md     # Latest Tier B output
+└── data/                      # gitignored — tier_b_*.md / product_* / datasets
 ```
 
-Full performance analysis: `../PERFORMANCE.md` §11.
+Full performance analysis: `../PERFORMANCE.md` §11 (§11.12 = Tier B-product).

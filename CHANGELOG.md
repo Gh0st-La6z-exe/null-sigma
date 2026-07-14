@@ -24,6 +24,13 @@ Repository / packaging work since library **0.1.3** (crates.io / docs.rs).
   trust stderr contract. Day 3 CI `cli-trust-smoke`. §4b: sequenced block-chunk
   Rayon pipeline with ordered sink + trust bags; `smoke_parallel.sh` ST↔MT
   parity. No product MT bake-off numbers until Linux hyperfine.
+- **Tier B-product bench infra (Slice 1.5).**
+  `harness/scripts/run_product_cli_bench.sh` (product CLI lean NDJSON →
+  `/dev/null` vs Hayabusa 3.9.0; count-only tax row; science meta header) and
+  `.github/workflows/product-cli-bench.yml` (`workflow_dispatch` only).
+  Documented in `PERFORMANCE.md` §11.12 with Darwin/5k pilot findings
+  (methods regression: harness win ≠ product win; ~2.6× CLI↔count-only tax
+  on pilot). Authoritative Linux 100k numbers still pending.
 
 ### Changed
 

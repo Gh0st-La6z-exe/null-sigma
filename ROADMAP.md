@@ -91,7 +91,8 @@ Full numbers and reproduction steps: `harness/README.md`, `PERFORMANCE.md` §11,
 
 Follow-up: matcher structural gap vs tau-engine remains open for Tier A.
 Week 1 trust (§3e) DONE. §4 CLI Days 1–3 + sequenced MT slice shipped;
-`--follow` / crates.io publish / Linux product hyperfine still open.
+`--follow` / crates.io publish / Linux product 100k numbers still open
+(product hyperfine **infra** landed; see §11.12).
 
 ## 3b. Phase 2 — EvalScratch + pattern cache (DONE — 2026-07-07)
 
@@ -175,8 +176,14 @@ cargo install --path cli
 null-sigma-cli --rules ./rules --threads 0 < events.jsonl
 ```
 
-**Not yet:** `--follow`, crates.io publish, Linux product-CLI hyperfine (no
-product MT bake-off claims until that measurement pass).
+**Slice 1.5 (infra DONE, numbers PENDING):** Tier B-product hyperfine —
+`harness/scripts/run_product_cli_bench.sh` + GHA `Product CLI bench`
+(`workflow_dispatch`). Protocol and Darwin/5k pilot science in
+`PERFORMANCE.md` §11.12. **No product Falcon bake-off claims** until Linux
+`EVENTS=100000` is transcribed; harness Tier B stays a separate meter.
+
+**Not yet:** `--follow`, crates.io publish, authoritative Linux product CLI
+numbers (run the workflow and update §11.12).
 
 Harness `null_sigma_run` remains the Tier B **count-only** bench runner.
 

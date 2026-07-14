@@ -1,0 +1,65 @@
+# Tier B-product — null-sigma-cli wall-clock (manual only)
+#
+# workflow_dispatch on ubuntu-latest. Not on push/PR/schedule.
+# Uploads hyperfine markdown + host meta as an artifact for docs transcription.
+# Shared GHA runners are noisy — label published numbers accordingly.
+
+name: Product CLI bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      events:
+        description: "Event count for gen_dataset / hyperfine"
+        required: false
+        default: "100000"
+
+concurrency:
+  group: product-cli-bench
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  EVENTS: ${{ github.event.inputs.events || '100000' }}
+
+jobs:
+  product-cli-bench:
+    name: Tier B-product hyperfine (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            harness
+            cli
+
+      - name: Install hyperfine + tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hyperfine unzip curl
+
+      - name: Clone SigmaHQ (shallow)
+        run: |
+          mkdir -p corpus
+          git clone --depth 1 https://github.com/SigmaHQ/sigma.git corpus/sigmahq
+
+      - name: Run product CLI bench
+        working-directory: harness
+        run: ./scripts/run_product_cli_bench.sh
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-b-product-${{ github.run_id }}-${{ github.sha }}
+          path: |
+            harness/data/tier_b_product_results.md
+            harness/data/tier_b_product_meta.txt
+          if-no-files-found: error
+          retention-days: 30
