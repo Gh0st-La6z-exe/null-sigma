@@ -688,7 +688,7 @@ eval via Rayon (`--threads`) closes the Tier B wall-clock gap; see §11.9.
 | Phase 3 — ingest streaming | Reused line buffer, flat JSONL fast-path | **Deprioritized** — tax split shows ≤1% of Tier B |
 | Parallel Tier B / CLI | Rayon `--threads` on `null_sigma_run` | **DONE** (2026-07-08) — beats Hayabusa default |
 | Matcher structural gap | vs tau-engine ~2.3× on Tier A | Open — raises ST base further |
-| CLI binary (`null-sigma-cli`) | Product JSONL → alerts (`cli/`) | **Days 1–3 DONE** — CI `cli-trust-smoke`; path install only (`publish = false`). §4b open |
+| CLI binary (`null-sigma-cli`) | Product JSONL → alerts (`cli/`) | **§4b MT slice DONE** — sequenced chunk pipeline; CI parity. No product MT eps until Linux hyperfine. `publish = false`. |
 
 Remaining matcher-level room vs tau-engine (~2.3×) is largely structural
 (compiled matcher vs condition-tree eval), not more fold/alloc micro-opts.
@@ -817,8 +817,30 @@ out.flush()?;
 | Timer (e.g. every 50 ms) | only if measured need | skip until `emit` tax says so |
 
 Flush-every-alert bypasses most of the buffering benefit and can syscall-thrash
-under a firehose of hits. Occasional-alert SOC streams can tolerate immediate
-flush; lab corpora + noisy rules usually cannot.
+under high match rates. Prefer end-flush for batch; use `--flush-alerts` only
+when a live consumer needs low latency (flushes after each **released chunk**
+in the sequenced pipeline).
+
+### 11.11 Sequenced CLI MT pipeline (§4b first slice)
+
+Product `null-sigma-cli` evaluates with:
+
+1. **Sequential chunker** — buffered `Read` only (no mmap); cut on last `\n`;
+   grow until delimiter or `--max-line-bytes` → `line_too_large`.
+2. **Rayon workers** — parse / flatten / eval; serialize alerts into a local
+   `Vec<u8>`; return `(ChunkID, AlertBlob, ChunkTrustMetrics)`.
+3. **Ordered sink (main)** — hold ahead-of-order results; merge trust in
+   ChunkID order; `stdout.write_all` once per released chunk.
+
+`--threads 1` and `--threads N` share this path (parity gate:
+`cli/scripts/smoke_parallel.sh`).
+
+**Do not** treat harness Tier B (count-only, Rayon over pre-parsed events) as
+product CLI throughput. Product MT numbers require a separate Linux hyperfine
+of `null-sigma-cli` after this slice — not claimed here.
+
+Under a firehose of hits, flush-every-alert still hurts; occasional-alert SOC
+streams can tolerate `--flush-alerts`. Lab corpora + noisy rules usually cannot.
 
 #### Measure before micro-optimizing
 
@@ -835,5 +857,7 @@ fair wall-clock; interactive ttys often dominate.
 Other Day 2 costs that often dwarf the stdout lock: allocating full
 `RuleMatch` lists, fat NDJSON (full event echo), and `serde_json::to_string`
 per alert without a reused buffer / `to_writer`. Keep default alerts lean.
+
+See also: `cli/README.md` (output notes).
 
 See also: `cli/README.md` (Day 2 output notes).

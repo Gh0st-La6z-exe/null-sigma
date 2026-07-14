@@ -7,30 +7,26 @@ ROADMAP §4 product CLI. Consumes the `null-sigma` library **0.1.3**
 `cargo install --path cli`. Library remains on crates.io as `null-sigma`
 0.1.3; this binary is not published separately yet.
 
-## Status (Week 2 Days 1–3)
+## Status (Days 1–3 + §4b MT slice)
 
-**Shipped:** file + stdin JSONL, Week 1 trust/exit contract, streaming
-**lean NDJSON** (default) and `--format text` alerts on stdout. CI job
-`CLI trust smoke` runs `./scripts/smoke_trust.sh` on every push/PR to `main`
-(hermetic fixtures; no SigmaHQ).
+**Shipped:** file + stdin JSONL, Week 1 trust/exit contract, lean NDJSON /
+`--format text`, sequenced **block-chunk MT** (`--threads N|0`) with ordered
+alerts + trust bags. CI: `CLI trust smoke` runs `smoke_trust.sh` and
+`smoke_parallel.sh`.
 
-**Stdout** = alerts only (buffered `BufWriter`; see §11.10).  
+**Stdout** = alerts only (ordered chunk `write_all`; see §11.10 / §11.11).  
 **Stderr** = `rules:` / `tier_b_tax:` (includes `emit=`) / `ingest_errors:` /
 `ingest_accounting:`.
 
-The harness binary `null_sigma_run` remains the Tier B bench runner (count-only,
-Rayon, competitor deps). This CLI is the installable product path.
+The harness binary `null_sigma_run` remains the Tier B bench runner (count-only).
+This CLI is the installable product path — **no product MT bake-off numbers
+until Linux hyperfine of this binary**.
 
-## Day 2 output — do not thrash stdout
+## Pipeline (do not scramble order)
 
-Full write-up: [`PERFORMANCE.md` §11.10](../PERFORMANCE.md).
-
-**MVP is single-threaded.** Defaults:
-
-1. `stdout.lock()` once → `BufWriter` → `writeln!` / `serde_json::to_writer`
-2. **Do not** flush after every alert by default (`--flush-alerts` for live pipes)
-3. Flush at end of stream; lean alerts by default (`--include-event` opt-in)
-4. `emit=` bucket on `tier_b_tax` for measuring alert I/O
+1. Sequential chunker (buffered `Read`, grow / max-line)
+2. Rayon workers → local `Vec<u8>` alerts + `ChunkTrustMetrics`
+3. Main ordered sink → merge trust → `stdout.write_all`
 
 ## Build / run
 
@@ -38,12 +34,8 @@ Full write-up: [`PERFORMANCE.md` §11.10](../PERFORMANCE.md).
 cd cli
 cargo build --release
 BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/null-sigma-cli"
-"$BIN" --rules ../tests/fixtures/rules/minimal \
+"$BIN" --rules ../tests/fixtures/rules/minimal --threads 0 \
   ../tests/fixtures/robustness/mixed_valid_invalid.jsonl
-
-# stdin → jq
-"$BIN" --rules ../tests/fixtures/rules/minimal - \
-  < ../tests/fixtures/robustness/mixed_valid_invalid.jsonl | jq .
 ```
 
 Install (local path; crates.io later):
@@ -70,8 +62,8 @@ With `--include-event`, adds `"event":{...}` (full flattened map).
 | `--max-error-samples N` | 0 | Cap `ingest_error_sample:` lines |
 | `--format ndjson\|text` | `ndjson` | Alert stdout format |
 | `--include-event` | off | Embed full flattened event in NDJSON |
-| `--flush-alerts` | off | Flush stdout after each alert |
-| `--threads N` | 1 | Accepted; MVP is single-threaded (§4b for parallel) |
+| `--flush-alerts` | off | Flush stdout after each released chunk |
+| `--threads N` | 1 | Eval workers (`0` = all cores); alerts stay ordered |
 | `[events.jsonl \| -]` | stdin | Input path; `-` or omit → stdin |
 
 ## Exit codes
@@ -82,10 +74,10 @@ With `--include-event`, adds `"event":{...}` (full flattened map).
 | 1 | Startup failure, fail-fast event error, accounting invariant, stdout I/O error |
 | 0 | Continue mode completed, or broken pipe on stdout |
 
-## Trust + alert smoke
+## Trust + parallel smoke
 
 ```bash
-cd cli && ./scripts/smoke_trust.sh
+cd cli && ./scripts/smoke_trust.sh && ./scripts/smoke_parallel.sh
 ```
 
 Uses committed fixtures under `tests/fixtures/` (no SigmaHQ clone).

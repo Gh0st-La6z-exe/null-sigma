@@ -1,28 +1,29 @@
-//! null-sigma-cli — ROADMAP §4 product CLI (Week 2 Day 2: NDJSON alerts).
+//! null-sigma-cli — ROADMAP §4 product CLI (sequenced block-chunk MT, §4b).
 //!
 //! Usage:
 //!   null-sigma-cli --rules <dir> [options] [events.jsonl | -]
 //!
 //! Omit the events path or pass `-` to read JSONL from stdin.
-//! Stdout = alerts only (buffered); stderr = trust / tax diagnostics.
+//! Stdout = alerts only (buffered / ordered chunks); stderr = trust / tax.
 
+mod chunker;
 mod ingest;
 mod output;
+mod pipeline;
 mod rules;
 
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-use ingest::{
-    ingest_and_eval, EmitOptions, IngestConfig, OnErrorMode, DEFAULT_MAX_LINE_BYTES,
-};
+use ingest::{EmitOptions, IngestConfig, OnErrorMode, DEFAULT_MAX_LINE_BYTES};
 use null_sigma::json::FlattenOptions;
 use output::OutputFormat;
+use pipeline::run_pipeline;
 
 struct Args {
-    /// Accepted for forward-compat; MVP always evaluates single-threaded.
     threads: usize,
     on_error: OnErrorMode,
     max_line_bytes: usize,
@@ -135,7 +136,6 @@ fn parse_args() -> Result<Args, String> {
         }
     };
 
-    let _ = threads; // accepted; ST-only until §4b
     Ok(Args {
         threads,
         on_error,
@@ -180,13 +180,21 @@ fn print_help() {
          --max-error-samples N emit up to N ingest_error_sample lines (default 0)\n\
          --format ndjson|text  alert stdout format (default ndjson)\n\
          --include-event       include full flattened event in NDJSON alerts\n\
-         --flush-alerts        flush stdout after each alert (live pipes)\n\
-         --threads N           accepted for forward-compat; MVP is single-threaded\n\
+         --flush-alerts        flush stdout after each released chunk (live pipes)\n\
+         --threads N           eval workers (1=default; 0=all cores); ordered alerts\n\
          \n\
          events path omitted or '-' reads JSONL from stdin.\n\
-         stdout = alerts only (buffered); stderr = trust/tax diagnostics.\n\
-         See PERFORMANCE.md §11.10 for stdout I/O policy."
+         stdout = alerts only (sequenced chunks); stderr = trust/tax diagnostics.\n\
+         See PERFORMANCE.md §11.10 / §4b for I/O + pipeline policy."
     );
+}
+
+fn resolve_threads_display(threads: usize) -> usize {
+    if threads == 0 {
+        std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+    } else {
+        threads.max(1)
+    }
 }
 
 fn main() {
@@ -205,11 +213,12 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let engine = Arc::new(engine);
 
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
 
-    let stats = match run_ingest(&args, &engine, &mut out) {
+    let stats = match run_ingest(&args, Arc::clone(&engine), &mut out) {
         Ok(stats) => stats,
         Err(msg) if msg == "broken_pipe" => {
             let _ = out.flush();
@@ -248,11 +257,10 @@ fn main() {
 
 fn run_ingest(
     args: &Args,
-    engine: &null_sigma::SigmaEngine,
+    engine: Arc<null_sigma::SigmaEngine>,
     out: &mut impl Write,
 ) -> Result<ingest::IngestStats, String> {
     let cfg = IngestConfig {
-        engine,
         on_error: args.on_error,
         max_line_bytes: args.max_line_bytes,
         max_error_samples: args.max_error_samples,
@@ -266,12 +274,11 @@ fn run_ingest(
     if let Some(path) = &args.events_path {
         let file = File::open(path)
             .map_err(|e| format!("cannot open events '{}': {e}", path.display()))?;
-        let mut reader = BufReader::new(file);
-        ingest_and_eval(&mut reader, out, &cfg)
+        run_pipeline(file, out, engine, &cfg, args.threads)
     } else {
         let stdin = std::io::stdin();
-        let mut reader = BufReader::new(stdin.lock());
-        ingest_and_eval(&mut reader, out, &cfg)
+        let locked = stdin.lock();
+        run_pipeline(locked, out, engine, &cfg, args.threads)
     }
 }
 
@@ -303,10 +310,11 @@ fn emit_summary(
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "- (stdin)".to_string());
+    let threads = resolve_threads_display(args.threads);
 
     eprintln!(
         "rules: {loaded} loaded, {skipped} skipped ({load_ms} ms) | events: {} | \
-         ok: {} failed: {} | matches: {} | threads: {} (st-mvp) | \
+         ok: {} failed: {} | matches: {} | threads: {threads} | \
          on_error: {on_error} | format: {format} | include_event: {} | flush_alerts: {} | \
          max_line_bytes: {} | max_error_samples: {} | input: {input} | \
          scan: {:.3}s ({:.0} events/sec)",
@@ -314,7 +322,6 @@ fn emit_summary(
         stats.events_ok,
         stats.events_failed,
         stats.matches,
-        args.threads,
         args.include_event,
         args.flush_alerts,
         args.max_line_bytes,

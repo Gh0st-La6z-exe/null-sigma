@@ -11,7 +11,10 @@ pub fn load_rules_from_dir(
         .map_err(|e| format!("cannot read rule dir '{}': {e}", rule_dir.display()))?;
     let mut paths: Vec<_> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|ext| ext == "yml" || ext == "yaml"))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|ext| ext == "yml" || ext == "yaml")
+        })
         .collect();
     paths.sort();
 

@@ -18,11 +18,12 @@ Repository / packaging work since library **0.1.3** (crates.io / docs.rs).
   invariant FATAL, hermetic fixtures (`tests/fixtures/robustness/`,
   `tests/fixtures/rules/minimal/`), `smoke_trust.sh` / `smoke_determinism.sh`,
   CI `trust-smoke` job for the harness.
-- **`null-sigma-cli` (ROADMAP §4, Week 2 Days 1–3).** Path-installable product
-  CLI (`cli/`, version `0.1.0`, `publish = false`): file/stdin JSONL, lean NDJSON
-  alerts, `--format text`, buffered stdout (§11.10), trust stderr contract.
-  Day 3: CI job `cli-trust-smoke` runs hermetic `cli/scripts/smoke_trust.sh`
-  (script-anchored fixtures, private `mktemp` cleanup).
+- **`null-sigma-cli` (ROADMAP §4, Week 2 Days 1–3 + §4b MT).** Path-installable
+  product CLI (`cli/`, version `0.1.0`, `publish = false`): file/stdin JSONL,
+  lean NDJSON alerts, `--format text`, buffered/ordered stdout (§11.10–§11.11),
+  trust stderr contract. Day 3 CI `cli-trust-smoke`. §4b: sequenced block-chunk
+  Rayon pipeline with ordered sink + trust bags; `smoke_parallel.sh` ST↔MT
+  parity. No product MT bake-off numbers until Linux hyperfine.
 
 ### Changed
 

@@ -94,6 +94,10 @@ jobs:
         working-directory: cli
         run: ./scripts/smoke_trust.sh
 
+      - name: smoke_parallel.sh
+        working-directory: cli
+        run: ./scripts/smoke_parallel.sh
+
   # ─── Lint ─────────────────────────────────────────────────────────────────
   clippy:
     name: Clippy
