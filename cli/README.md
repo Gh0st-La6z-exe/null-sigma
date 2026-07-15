@@ -20,10 +20,11 @@ alerts + trust bags. CI: `CLI trust smoke` runs `smoke_trust.sh` and
 
 The harness binary `null_sigma_run` remains the Tier B **count-only** runner.
 This CLI is the installable product path. Measure it with Tier **B-product**
-(`harness/scripts/run_product_cli_bench.sh` / GHA **Product CLI bench**) —
-see `PERFORMANCE.md` §11.12. **No product Falcon bake-off claims** until Linux
-`EVENTS=100000` is published there; a Darwin/5k pilot already showed Hayabusa
-default can beat this CLI while harness Tier B still wins.
+(`harness/scripts/run_product_cli_bench.sh` / GHA **Product CLI bench**).
+Inked Linux 100k numbers (GHA shared/noisy): `PERFORMANCE.md` §11.12 — CLI
+default ~**1.03×** count-only ceiling, ~**1.79×** vs Hayabusa default. Do not
+cite harness Tier B (~2.14×) as product Falcon; Darwin/5k pilot tax ranking is
+superseded for bake-off use.
 
 ## Pipeline (do not scramble order)
 

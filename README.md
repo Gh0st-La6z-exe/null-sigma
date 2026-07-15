@@ -17,11 +17,11 @@ conflate these meters** (Apple M4, release):
 | **Microbench** | Synthetic uniform rules, matcher only | **~311k** events/sec × 1k rules |
 | **Tier A** | Real SigmaHQ `process_creation` (1 102 rules), matcher API | **~3 230** events/sec |
 | **Tier B** (harness) | `null_sigma_run` count-only vs Hayabusa (100k JSONL, Rayon) | **~13 800** events/sec |
-| **Tier B-product** | `null-sigma-cli` lean NDJSON → `/dev/null` vs Hayabusa | **pending** Linux 100k (§11.12) |
+| **Tier B-product** | `null-sigma-cli` lean NDJSON → `/dev/null` vs Hayabusa | **~3 470**/s (GHA Linux 100k, §11.12; noisy) |
 
 Crates.io / docs.rs track the library (**Tier A**). Harness bake-off headlines
-use **Tier B**; product Falcon claims need **Tier B-product** (not yet
-published). Details: [Head-to-head benchmarks](#head-to-head-benchmarks).
+use **Tier B**; product Falcon claims use **Tier B-product** (§11.12) — not
+the harness chart. Details: [Head-to-head benchmarks](#head-to-head-benchmarks).
 
 ```toml
 [dependencies]

@@ -689,7 +689,7 @@ eval via Rayon (`--threads`) closes the Tier B wall-clock gap; see §11.9.
 | Parallel Tier B / CLI | Rayon `--threads` on `null_sigma_run` | **DONE** (2026-07-08) — beats Hayabusa default |
 | Matcher structural gap | vs tau-engine ~2.3× on Tier A | Open — raises ST base further |
 | CLI binary (`null-sigma-cli`) | Product JSONL → alerts (`cli/`) | **§4b MT slice DONE** — sequenced chunk pipeline; CI parity. `publish = false`. |
-| Tier B-product hyperfine | Product CLI vs Hayabusa (alerts) | **Infra DONE** — §11.12; authoritative Linux 100k **pending** GHA `Product CLI bench` |
+| Tier B-product hyperfine | Product CLI vs Hayabusa (alerts) | **DONE** — §11.12 Linux 100k GHA ink (noisy; dedicated metal may supersede) |
 
 Remaining matcher-level room vs tau-engine (~2.3×) is largely structural
 (compiled matcher vs condition-tree eval), not more fold/alloc micro-opts.
@@ -900,16 +900,48 @@ that label; dedicated Linux may supersede.
 
 Workflow: `.github/workflows/product-cli-bench.yml` (`workflow_dispatch` only).
 
-#### Authoritative Linux 100k — PENDING
+#### Authoritative Linux 100k (GHA, 2026-07-14)
 
-No product MT bake-off numbers published yet. After the first clean GHA (or
-dedicated Linux) `EVENTS=100000` artifact, transcribe means into a dated table
-**here** and keep harness §6c / §11.5 untouched.
+First clean candidate ink. Hyperfine warmup 1 + 5 runs. **Host is shared GHA
+`ubuntu-latest` (noisy)** — dedicated Linux may supersede. Harness §6c / §11.5
+remain a separate meter; do not merge these rows into that table.
+
+| Field | Value |
+|---|---|
+| Run | [29375233276](https://github.com/Gh0st-La6z-exe/null-sigma/actions/runs/29375233276) |
+| `date_utc` | 2026-07-14T23:09:15Z |
+| `git_sha` | `58adec63f46a31e1eed4ecee8f6340b1cc6e2025` (`58adec6`) |
+| Host | Linux Azure x86_64 (`runnervm5mmn9`), **ncpu=4** |
+| Events / seed | 100000 / 42 |
+| Hayabusa | 3.9.0 (`hayabusa-3.9.0-lin-x64-gnu`) |
+| Status | `candidate_authoritative` (label GHA noise) |
+
+| Command | Mean [s] | Rel. to count-only |
+|---|---:|---:|
+| `null-sigma-runner-default-threads-count-only` | **27.968 ± 0.220** | **1.00** |
+| `null-sigma-cli-4-thread` | 28.769 ± 0.149 | 1.03 |
+| `null-sigma-cli-default-threads` | 28.841 ± 0.139 | 1.03 |
+| `hayabusa-default-threads` | 51.685 ± 0.675 | 1.85 |
+| `null-sigma-cli-1-thread` | 74.802 ± 0.547 | 2.67 |
+| `hayabusa-1-thread` | 109.313 ± 2.242 | 3.91 |
+
+**Locked interpretation:**
+
+- **Count-only = engine ceiling** on this fixture (~**3 575**/s at default
+  threads). Product cannot honestly claim faster than that for match work alone.
+- **Product tax envelope** = CLI default − count-only ≈ **0.87 s (~1.03×)**.
+  Lean NDJSON + ordered sink is nearly free vs the harness runner here.
+- **Falcon (product meter only):** CLI default beats Hayabusa default ~**1.79×**;
+  CLI ST beats Hayabusa ST ~**1.46×**. Do **not** cite harness §11.5’s ~2.14× as
+  this result (different binary, host, and meter).
+- **4-thread ≈ `--threads 0`:** expected on a **4-core** runner — not evidence
+  of a global MT scaling ceiling.
+- Rough product rate (CLI default): 100000 / 28.841 ≈ **3 470**/s.
 
 #### Pilot: Darwin arm64 M4, EVENTS=5000 (2026-07-14) — not a bake-off
 
 Git `f052828`, hyperfine 5 runs, Hayabusa 3.9.0 mac-aarch64. Script meta
-marked `status: pilot_only`. Values are for **regression / science** only —
+marked `status: pilot_only`. Retained for audit only —
 
 | Command | Mean [s] | Relative to count-only |
 |---|---:|---:|
@@ -920,31 +952,27 @@ marked `status: pilot_only`. Values are for **regression / science** only —
 | `null-sigma-cli-1-thread` | 2.390 ± 0.044 | 3.82 |
 | `hayabusa-1-thread` | 3.269 ± 0.056 | 5.23 |
 
-**Findings to keep for the future (hypotheses until Linux 100k):**
+**Pilot vs Linux 100k disposition:**
 
-1. **Product path ≠ harness win.** At this N on M4, Hayabusa default beat
-   product CLI default (~1.20 s vs ~1.64 s). Do not cite §11.5’s ~2.14× as a
-   product Falcon win.
-2. **Emit / pipeline tax is large.** Count-only was ~**2.6×** faster than
-   product CLI default on the same host/rules/seed — primary lever for
-   closing Falcon product gaps after matcher work (ordered sink, serialize,
-   chunk coordination), not “more Rayon alone.”
-3. **CLI scaling plateaued early** — 4-thread ≈ `--threads 0` at 5k; ST still
-   beat Hayabusa ST (~1.37×). Re-check at 100k before claiming saturation.
-4. **Tax lines confirmed on product CLI smoke** — `emit≈0.1%` of that ST smoke
-   wall while hyperfine still showed a large CLI↔count-only gap: wall-clock
-   emit share understates end-to-end product overhead vs a count-only runner
-   that skips alert construction entirely. Prefer hyperfine CLI↔count-only
-   delta, not a single `emit=` fraction, when ranking Day-2 costs.
-5. **Methods gate:** never paste B-product rows into the harness Tier B table
-   without renaming the meter.
+| Pilot claim | Disposition after GHA 100k |
+|---|---|
+| Hayabusa default beats product CLI | **Falsified** on GHA (CLI wins ~1.79×) |
+| Product tax ~2.6× vs count-only | **Falsified** on GHA (~1.03×); small-N / Darwin misled tax size |
+| 4-thread ≈ default | Still true here, but undiagnostic on 4-core GHA |
+| CLI ST beats Hayabusa ST | **Confirmed** (~1.46× on GHA) |
+| Never merge B-product into harness Tier B | **Still binding** |
+| Prefer hyperfine CLI↔count-only over `emit=` % | Still binding for diagnostics; residual ~0.9 s is where Phase C timers help |
+
+Do not cite Darwin/5k tax or Hayabusa ranking as the product Falcon story after
+this ink.
 
 #### Regression markers (CI / docs)
 
 | Risk | Guard |
 |---|---|
-| Claiming product speed from harness Tier B | README / PERFORMANCE three-meter + B-product legends; this § |
-| Silent merge of pilot Darwin/small-N into Falcon claims | Script `status: pilot_only` unless Linux + EVENTS=100000 |
+| Claiming product speed from harness Tier B | README / PERFORMANCE meter legends; this § |
+| Silent merge of pilot Darwin/small-N into Falcon claims | Script `status: pilot_only`; disposition table above |
+| Citing Darwin/5k tax as product Falcon gap after Linux ink | This § — GHA 100k supersedes tax-size claims |
 | ST/MT alert reordering | `cli/scripts/smoke_parallel.sh` (CI) |
 | Trust accounting drift under MT | same smoke + trust smoke |
 

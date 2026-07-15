@@ -167,10 +167,12 @@ Artifacts (gitignored): `data/tier_b_product_meta.txt`,
 `data/tier_b_product_results.md` (science header + hyperfine markdown).
 
 **CI:** Actions → **Product CLI bench** (`workflow_dispatch` only; not on
-push/PR). Download the artifact and transcribe into `PERFORMANCE.md` §11.12.
+push/PR). Download the artifact and compare to `PERFORMANCE.md` §11.12.
 Label GHA numbers as shared-metal noise.
 
-Protocol, pilot M4 findings, and regression markers: `PERFORMANCE.md` §11.12.
+**Inked (2026-07-14 GHA):** see `PERFORMANCE.md` §11.12 — count-only ceiling
+**27.97 s**, CLI default **28.84 s** (~1.03× tax), Hayabusa default **51.69 s**.
+Protocol, pilot disposition, and regression markers live in that section.
 
 ### Chainsaw JSON mapping
 

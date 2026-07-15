@@ -23,17 +23,19 @@ Repository / packaging work since library **0.1.3** (crates.io / docs.rs).
   lean NDJSON alerts, `--format text`, buffered/ordered stdout (§11.10–§11.11),
   trust stderr contract. Day 3 CI `cli-trust-smoke`. §4b: sequenced block-chunk
   Rayon pipeline with ordered sink + trust bags; `smoke_parallel.sh` ST↔MT
-  parity. No product MT bake-off numbers until Linux hyperfine.
+  parity.
 - **Tier B-product bench infra (Slice 1.5).**
   `harness/scripts/run_product_cli_bench.sh` (product CLI lean NDJSON →
   `/dev/null` vs Hayabusa 3.9.0; count-only tax row; science meta header) and
   `.github/workflows/product-cli-bench.yml` (`workflow_dispatch` only).
-  Documented in `PERFORMANCE.md` §11.12 with Darwin/5k pilot findings
-  (methods regression: harness win ≠ product win; ~2.6× CLI↔count-only tax
-  on pilot). Authoritative Linux 100k numbers still pending.
 
 ### Changed
 
+- **Tier B-product Linux 100k inked (2026-07-14 GHA).** Product CLI default
+  **28.84 s** (~3 470/s), ~**1.03×** vs count-only ceiling, ~**1.79×** vs
+  Hayabusa default on shared `ubuntu-latest` (ncpu=4). Darwin/5k pilot tax /
+  Hayabusa ranking **falsified** for bake-off use. Full matrix + disposition:
+  `PERFORMANCE.md` §11.12. Harness §6c / §11.5 untouched. Label GHA noise.
 - **Tier B baseline refresh (2026-07-13).** Hyperfine 100k events: null-sigma
   default-threads **7.26 s** (~13 780/s), **~2.14×** vs Hayabusa default
   (was 15.2 s / ~1.57× on 2026-07-08). README meter legend, `PERFORMANCE.md`
