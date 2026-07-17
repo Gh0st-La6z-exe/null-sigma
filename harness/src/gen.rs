@@ -244,6 +244,37 @@ pub fn generate(seed: u64, count: usize) -> Vec<Map<String, Value>> {
     (0..count).map(|n| build_event(&mut rng, n as u64)).collect()
 }
 
+/// Basis points out of 10_000 for A4 controlled event-hit rate.
+/// Event `i` is a hit iff `(i % 10_000) < hit_bpm` (clamped to ≤ 10_000).
+pub fn a4_is_hit(index: u64, hit_bpm: u32) -> bool {
+    let bpm = hit_bpm.min(10_000);
+    (index % 10_000) < u64::from(bpm)
+}
+
+/// Expected hit count for `count` events at `hit_bpm` (exact under the index rule).
+pub fn a4_expected_hits(count: usize, hit_bpm: u32) -> u64 {
+    let bpm = u64::from(hit_bpm.min(10_000));
+    let full = (count as u64) / 10_000;
+    let rem = (count as u64) % 10_000;
+    full * bpm + rem.min(bpm)
+}
+
+/// A4 firehose fixtures: same process-creation shape as [`generate`], plus
+/// deterministic `A4Hit` = `"1"` / `"0"` so a single-rule pack yields
+/// multiplicity \(m \approx 1\) and event-hit rate \(p = hit_bpm / 10_000\).
+pub fn generate_a4(seed: u64, count: usize, hit_bpm: u32) -> Vec<Map<String, Value>> {
+    let mut events = generate(seed, count);
+    for (i, e) in events.iter_mut().enumerate() {
+        let flag = if a4_is_hit(i as u64, hit_bpm) {
+            "1"
+        } else {
+            "0"
+        };
+        e.insert("A4Hit".into(), json!(flag));
+    }
+    events
+}
+
 /// Render a flat event in the JSONL shape Hayabusa's `-J` input expects.
 ///
 /// Hayabusa wraps every JSONL line as `{"Event":{"EventData": <line>}}`
@@ -305,5 +336,27 @@ mod tests {
             .count();
         assert!(suspicious > 0, "no suspicious events generated");
         assert!(benign > 0, "no benign events generated");
+    }
+
+    #[test]
+    fn a4_hit_count_is_exact_and_deterministic() {
+        for bpm in [100u32, 1000, 5000] {
+            let a = generate_a4(42, 10_000, bpm);
+            let b = generate_a4(42, 10_000, bpm);
+            assert_eq!(a, b);
+            let hits = a
+                .iter()
+                .filter(|e| e["A4Hit"].as_str() == Some("1"))
+                .count() as u64;
+            assert_eq!(hits, a4_expected_hits(10_000, bpm));
+            assert_eq!(hits, u64::from(bpm));
+        }
+        // Non-multiple of 10_000: rem.min(bpm) exactness.
+        let hits = generate_a4(7, 12_345, 1000)
+            .iter()
+            .filter(|e| e["A4Hit"].as_str() == Some("1"))
+            .count() as u64;
+        assert_eq!(hits, a4_expected_hits(12_345, 1000));
+        assert_eq!(hits, 1000 + 1000); // 1 full cycle + min(2345, 1000)
     }
 }

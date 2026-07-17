@@ -183,6 +183,18 @@ null-sigma-cli --rules ./rules --threads 0 < events.jsonl
 
 **Not yet:** `--follow`, crates.io publish, dedicated-Linux recheck of §11.12.
 
+**Next gate — A4 alert-firehose sweep (§11.13):** controlled event-hit rate
+\(p \in \{1\%,10\%,50\%\}\), \(m \approx 1\), dual metrics (product **tax** vs
+count-only, **Falcon** vs Hayabusa). Protocol + script:
+`harness/scripts/run_a4_firehose_sweep.sh`. Sibling meter to §11.12 — do not
+merge. Gates decide publish confidence (B1) vs emit/sink work.
+
+**Explicitly parked until after A4 / publish:**
+
+- **C** — tau-engine Tier A matcher gap (~2.3×): product wall-clock first
+- **D** — Python bindings / Sigma v2 correlation: too early before install
+- **A1** — dedicated-metal supersession of §11.12: paper/v1 polish, not code path
+
 Harness `null_sigma_run` remains the Tier B **count-only** bench runner.
 
 ## 5. Reach multipliers (later)

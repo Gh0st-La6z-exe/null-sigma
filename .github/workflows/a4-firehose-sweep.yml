@@ -1,0 +1,62 @@
+# A4 Alert-Firehose Sweep — controlled hit-rate tax / Falcon slope
+#
+# workflow_dispatch on ubuntu-latest. Not on push/PR/schedule.
+# Uses committed tests/fixtures/rules/a4_hit/ — no SigmaHQ clone.
+# Sibling meter to Tier B-product (§11.12); never merge results.
+# Shared GHA runners are noisy — label published numbers accordingly.
+
+name: A4 firehose sweep
+
+on:
+  workflow_dispatch:
+    inputs:
+      events:
+        description: "Event count (100000 = candidate; 5000 = pilot smoke)"
+        required: false
+        default: "100000"
+
+concurrency:
+  group: a4-firehose-sweep
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  EVENTS: ${{ github.event.inputs.events || '100000' }}
+
+jobs:
+  a4-firehose-sweep:
+    name: A4 firehose hyperfine (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            harness
+            cli
+
+      - name: Install hyperfine + tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hyperfine unzip curl ripgrep
+
+      - name: Run A4 firehose sweep
+        working-directory: harness
+        run: ./scripts/run_a4_firehose_sweep.sh
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: a4-firehose-${{ github.run_id }}-${{ github.sha }}
+          path: |
+            harness/data/a4_meta.txt
+            harness/data/a4_slope.csv
+            harness/data/a4_results.md
+          if-no-files-found: error
+          retention-days: 30

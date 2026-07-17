@@ -977,3 +977,80 @@ this ink.
 | Trust accounting drift under MT | same smoke + trust smoke |
 
 See also: `harness/README.md` (Tier B-product recipe), `cli/README.md`.
+
+### 11.13 A4 Alert-Firehose Sweep (protocol — sibling to §11.12)
+
+**Why.** §11.12 showed product tax ≈ **1.03×** count-only on seed-42 + full
+SigmaHQ `process_creation`. That may be a **low-alert artifact**. A4 asks
+whether tax and Falcon ranking hold when event-hit rate \(p\) is *controlled*.
+
+**Sibling meter — never merge into §11.12 or harness Tier B.** Quiet real-corpus
+baseline stays authoritative for Falcon wording; A4 is stress telemetry only.
+
+#### Dual hypotheses (measure independently)
+
+| ID | Question | Metric |
+|---|---|---|
+| **H1 Tax** | Does product tax explode with alert volume? | \(T_{\mathrm{CLI\,default}} / T_{\mathrm{count\text{-}only\,runner}}\) |
+| **H2 Falcon** | Does ranking vs Hayabusa survive that volume? | \(T_{\mathrm{Hayabusa\,default}} / T_{\mathrm{CLI\,default}}\) (>1 ⇒ we win) |
+
+Tax can worsen while Falcon still holds (Hayabusa also pays for more output).
+
+#### Definitions
+
+| Term | Definition |
+|---|---|
+| Event-hit rate \(p\) | fraction of events with ≥1 match |
+| Multiplicity \(m\) | alert lines / (hitting events); Phase 1 forces \(m \approx 1\) |
+| Tax / Falcon | as above |
+
+#### Fixtures (absolute control)
+
+- Generator: `gen_dataset <dir> <N> <seed> --a4-hit-bpm B`  
+  Event \(i\) has `A4Hit: "1"` iff `(i % 10000) < B` (B in 0..=10000).
+- Rule pack: `tests/fixtures/rules/a4_hit/` (single rule: `A4Hit: '1'`).
+  Hayabusa 3.9 requires `date:` and rejects `status: test` — pack uses
+  `status: experimental` + `date: 2026/07/15`. Sweep preflight asserts
+  Hayabusa loads exactly 1 rule before timing (ANSI-stripped log parse).
+- Profiles: **L** B=100 (1%), **M** B=1000 (10%), **H** B=5000 (50%).
+
+#### Protocol
+
+```bash
+cd harness
+EVENTS=5000 ./scripts/run_a4_firehose_sweep.sh     # pilot / script smoke
+EVENTS=100000 ./scripts/run_a4_firehose_sweep.sh   # candidate ink (prefer Linux)
+# Or: Actions → "A4 firehose sweep" → workflow_dispatch
+```
+
+Artifacts (gitignored under `harness/data/`): `a4_meta.txt`, `a4_slope.csv`,
+`a4_results.md`. Preflight asserts `|matches - expected| ≤ 1` before timing.
+
+Hyperfine matrix per profile (warmup 1 + 5): CLI ST/4/default → `/dev/null`,
+count-only runner default, Hayabusa ST + default (same one-rule dir + EVTX twin).
+The count-only runner is a **reference**, not a guaranteed ceiling: it uses a
+different parallel pipeline. Tax < 1 means the product pipeline outpaced that
+reference; it does not imply negative alert-emission cost.
+
+#### Pre-committed gates
+
+| Gate | Pass | Soft | Hard |
+|---|---|---|---|
+| H1 @ M | tax ≤ 1.15× | 1.15–1.50× | > 1.50× |
+| H1 @ H | ≤ 1.50× stress OK | 1.5–2.5× document | stress label |
+| H2 @ M | Falcon ≥ 1.0 | — | Falcon < 1.0 |
+
+#### Results
+
+**TBD** — run `harness/scripts/run_a4_firehose_sweep.sh` and paste the slope
+summary here. Pilot (`EVENTS≠100000` or non-Linux) is `status: pilot_only`.
+
+#### Parked tracks (explicit)
+
+| Track | Status | Why parked |
+|---|---|---|
+| C — tau / ST matcher (~2.3× Tier A) | Parked | Product wall-clock already beats industry on §11.12; purity later |
+| D — Py bindings / correlation | Parked | Dilution before installability |
+| A1 — dedicated metal supersession of §11.12 | Parked | GHA rank holds; metal is paper/v1 polish |
+
+After A4: **B1 crates.io publish** + **B3 repro demo**, gated by H1/H2 outcomes.

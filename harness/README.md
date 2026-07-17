@@ -25,11 +25,13 @@ brew install hyperfine
 |---|---|---|---|
 | **0** | Synthetic micro-rules (prefilter scaling) | `cargo bench --bench sigma_bench` (root crate) | Internal only |
 | **A** | Matcher-level, real rules, library APIs | `cargo bench --bench head_to_head` | null-sigma vs tau vs sigma-rust |
-| **B** | Full CLI wall-clock | `./scripts/run_cli_bench.sh` | Includes parse/enrich/output |
+| **B** | Full CLI wall-clock (count-only harness) | `./scripts/run_cli_bench.sh` | Includes parse/enrich/output |
+| **B-product** | Product CLI alerts vs Hayabusa | `./scripts/run_product_cli_bench.sh` | §11.12 — quiet corpus |
+| **A4** | Controlled hit-rate tax / Falcon slope | `./scripts/run_a4_firehose_sweep.sh` | §11.13 — sibling to B-product |
 
-**Never conflate Tier A and Tier B.** Tier A times only the matching call with
-pre-built native event representations. Tier B includes JSON parsing, field
-enrichment, alert formatting, and (for Hayabusa) multi-threading.
+**Never conflate meters.** Tier A times only the matching call with pre-built
+native event representations. Tier B / B-product / A4 include pipeline costs;
+A4 must not overwrite §11.12 numbers.
 
 ## Correctness gate (run first)
 
@@ -174,6 +176,22 @@ Label GHA numbers as shared-metal noise.
 **27.97 s**, CLI default **28.84 s** (~1.03× tax), Hayabusa default **51.69 s**.
 Protocol, pilot disposition, and regression markers live in that section.
 
+### A4 Alert-Firehose Sweep (§11.13 — sibling to B-product)
+
+Controlled event-hit rate \(p \in \{1\%,10\%,50\%\}\) with multiplicity
+\(m \approx 1\) (one rule: `tests/fixtures/rules/a4_hit/`). Measures **H1 tax**
+and **H2 Falcon** independently. Does **not** replace §11.12.
+
+```bash
+cd harness
+EVENTS=5000 ./scripts/run_a4_firehose_sweep.sh      # pilot / script smoke
+EVENTS=100000 ./scripts/run_a4_firehose_sweep.sh    # candidate (prefer Linux)
+```
+
+Artifacts: `data/a4_meta.txt`, `data/a4_slope.csv`, `data/a4_results.md`.
+Generator: `gen_dataset … --a4-hit-bpm N`. CI: Actions → **A4 firehose sweep**
+(`workflow_dispatch`). Full protocol + gates: `PERFORMANCE.md` §11.13.
+
 ### Chainsaw JSON mapping
 
 Chainsaw's bundled EVTX mapping expects nested `Event.System.*` documents.
@@ -272,6 +290,7 @@ harness/
 ├── scripts/
 │   ├── run_cli_bench.sh       # Tier B harness (count-only)
 │   ├── run_product_cli_bench.sh  # Tier B-product (null-sigma-cli alerts)
+│   ├── run_a4_firehose_sweep.sh  # A4 tax/Falcon slope (§11.13)
 │   ├── smoke_parallel.sh      # Thread-count parity (10k)
 │   ├── smoke_error_policy.sh  # continue/fail-fast policy
 │   ├── smoke_robustness.sh    # malformed corpus + guards
@@ -284,4 +303,5 @@ harness/
 └── data/                      # gitignored — tier_b_*.md / product_* / datasets
 ```
 
-Full performance analysis: `../PERFORMANCE.md` §11 (§11.12 = Tier B-product).
+Full performance analysis: `../PERFORMANCE.md` §11 (§11.12 = Tier B-product;
+§11.13 = A4 firehose sweep).

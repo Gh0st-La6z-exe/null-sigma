@@ -28,6 +28,11 @@ Repository / packaging work since library **0.1.3** (crates.io / docs.rs).
   `harness/scripts/run_product_cli_bench.sh` (product CLI lean NDJSON →
   `/dev/null` vs Hayabusa 3.9.0; count-only tax row; science meta header) and
   `.github/workflows/product-cli-bench.yml` (`workflow_dispatch` only).
+- **A4 alert-firehose sweep infra (§11.13).** Controlled `A4Hit` tagging via
+  `gen_dataset --a4-hit-bpm`, hermetic rule pack `tests/fixtures/rules/a4_hit/`,
+  `harness/scripts/run_a4_firehose_sweep.sh` (preflight + hyperfine slope for
+  p=1%/10%/50%), `.github/workflows/a4-firehose-sweep.yml`
+  (`workflow_dispatch`). Sibling meter to §11.12 — measurement pending review.
 
 ### Changed
 

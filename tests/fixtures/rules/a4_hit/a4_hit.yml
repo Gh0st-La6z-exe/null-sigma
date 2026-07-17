@@ -1,0 +1,19 @@
+title: A4 Controlled Hit
+id: a4000000-0000-0000-0000-000000000001
+status: experimental
+date: 2026/07/15
+description: >
+  Synthetic single-rule pack for the A4 alert-firehose sweep. Matches events
+  with A4Hit: "1" so event-hit rate p is controlled by the generator and
+  multiplicity m ≈ 1. Requires Hayabusa-required `date` field.
+author: null-sigma
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    A4Hit: '1'
+  condition: selection
+level: informational
+falsepositives:
+  - Synthetic A4 bench fixture only

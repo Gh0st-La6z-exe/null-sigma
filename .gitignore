@@ -9,6 +9,7 @@ Cargo.lock
 /harness/target/
 /harness/bin/
 /harness/data/
+/harness/logs/
 /harness/Cargo.lock
 /harness/prof/
 
