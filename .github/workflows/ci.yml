@@ -202,7 +202,7 @@ jobs:
         working-directory: fuzz
         run: cargo build --bins
 
-  # ─── Fuzz run (weekly schedule only) ─────────────────────────────────────
+    # ─── Fuzz run (weekly schedule only) ─────────────────────────────────────
   fuzz-run:
     name: Fuzz (${{ matrix.target }})
     # Only run on the weekly schedule — not on every push/PR.
@@ -222,9 +222,10 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        uses: taiki-e/install-action@cargo-fuzz
 
       - name: Run fuzz target (${{ matrix.target }}) for 5 minutes
+        working-directory: fuzz
         run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=300
 
       - name: Upload crash artifacts
