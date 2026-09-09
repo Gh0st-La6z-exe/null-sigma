@@ -36,6 +36,15 @@ Repository / packaging work since library **0.1.3** (crates.io / docs.rs).
 
 ### Changed
 
+- **Condition compiler hardening.** Conditions now require complete token
+  consumption and reject unsupported pipes, invalid syntax, and malformed
+  quantifier lists instead of silently accepting partial input. Regression
+  coverage was added for these failure modes. Empty wildcard quantifier
+  expansions remain an explicit compile-time policy decision before support is
+  broadened.
+- **Windows contributor setup.** The supported Windows build path is the
+  native MSVC Rust host with Visual Studio Build Tools; local installer
+  binaries are not part of the repository.
 - **Tier B-product Linux 100k inked (2026-07-14 GHA).** Product CLI default
   **28.84 s** (~3 470/s), ~**1.03×** vs count-only ceiling, ~**1.79×** vs
   Hayabusa default on shared `ubuntu-latest` (ncpu=4). Darwin/5k pilot tax /

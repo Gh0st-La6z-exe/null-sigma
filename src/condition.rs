@@ -167,6 +167,8 @@ enum Token {
     LParen,
     /// `)` — close paren.
     RParen,
+    /// `,` — separator in an explicit quantifier list.
+    Comma,
     /// A number (for "1 of ...", "3 of ...").
     Number(usize),
     /// `of` keyword (for quantifiers).
@@ -178,6 +180,8 @@ enum Token {
     /// Pipe `|` token — recognised by the tokenizer but rejected by the parser;
     /// pipe aggregation (`selection | count() > 5`) is not supported.
     Pipe,
+    /// A character that is not valid condition syntax.
+    Invalid(char),
     /// End of input.
     Eof,
 }
@@ -204,6 +208,10 @@ fn tokenize(input: &str) -> Vec<Token> {
                 tokens.push(Token::RParen);
                 chars.next();
             }
+            ',' => {
+                tokens.push(Token::Comma);
+                chars.next();
+            }
             '|' => {
                 tokens.push(Token::Pipe);
                 chars.next();
@@ -221,7 +229,7 @@ fn tokenize(input: &str) -> Vec<Token> {
                 }
 
                 if word.is_empty() {
-                    // Skip unknown characters
+                    tokens.push(Token::Invalid(ch));
                     chars.next();
                     continue;
                 }
@@ -422,29 +430,43 @@ impl Parser {
                 self.advance(); // consume '('
                 let mut names = Vec::new();
                 loop {
-                    match self.peek().clone() {
-                        Token::Ident(name) => {
-                            self.advance();
-                            // Resolve wildcards in list items too
-                            if name.contains('*') {
-                                names.extend(self.resolve_wildcard(&name));
-                            } else {
-                                names.push(name);
+                    let Token::Ident(name) = self.peek().clone() else {
+                        return Err(CompileError::UnexpectedToken {
+                            expected: "identifier in explicit quantifier list".to_string(),
+                            got: format!("{:?}", self.peek()),
+                        });
+                    };
+                    self.advance();
+                    // Resolve wildcards in list items too
+                    if name.contains('*') {
+                        for resolved in self.resolve_wildcard(&name) {
+                            if names.iter().any(|existing| existing == &resolved) {
+                                return Err(CompileError::DuplicateQuantifierIdentifier {
+                                    name: resolved,
+                                });
                             }
+                            names.push(resolved);
                         }
+                    } else {
+                        if names.iter().any(|existing| existing == &name) {
+                            return Err(CompileError::DuplicateQuantifierIdentifier { name });
+                        }
+                        names.push(name);
+                    }
+
+                    match self.peek().clone() {
                         Token::RParen => {
                             self.advance();
                             break;
                         }
-                        Token::Eof => {
-                            return Err(CompileError::UnexpectedToken {
-                                expected: "')' or identifier".to_string(),
-                                got: "end of input".to_string(),
-                            });
-                        }
-                        _ => {
-                            // Skip commas and other separators
+                        Token::Comma => {
                             self.advance();
+                        }
+                        ref other => {
+                            return Err(CompileError::UnexpectedToken {
+                                expected: "',' or ')' after quantifier identifier".to_string(),
+                                got: format!("{other:?}"),
+                            });
                         }
                     }
                 }
@@ -490,6 +512,11 @@ pub enum CompileError {
     },
     /// The condition string was empty or contained only whitespace.
     EmptyCondition,
+    /// An explicit quantifier list contains the same identifier more than once.
+    DuplicateQuantifierIdentifier {
+        /// The duplicated identifier name.
+        name: String,
+    },
 }
 
 impl std::fmt::Display for CompileError {
@@ -499,6 +526,9 @@ impl std::fmt::Display for CompileError {
                 write!(f, "Expected {expected}, got {got}")
             }
             CompileError::EmptyCondition => write!(f, "Empty condition expression"),
+            CompileError::DuplicateQuantifierIdentifier { name } => {
+                write!(f, "Duplicate identifier in quantifier list: {name}")
+            }
         }
     }
 }
@@ -530,22 +560,15 @@ pub fn compile_condition(
         return Err(CompileError::EmptyCondition);
     }
 
-    // The parser rejects pipe aggregation before this function is called.
-    // This guard handles any edge case where the pre-pipe content is empty.
-    let condition_part = if let Some(pipe_idx) = condition.find('|') {
-        // Check if this pipe is inside a quantifier or is a real aggregation pipe
-        let before_pipe = &condition[..pipe_idx].trim();
-        if before_pipe.is_empty() {
-            condition
-        } else {
-            before_pipe
-        }
-    } else {
-        condition
-    };
-
-    let tokens = tokenize(condition_part);
+    let tokens = tokenize(condition);
     let known_names: Vec<String> = identifiers.iter().map(|id| id.name.clone()).collect();
     let mut parser = Parser::new(tokens, known_names);
-    parser.parse_expr()
+    let node = parser.parse_expr()?;
+    if *parser.peek() != Token::Eof {
+        return Err(CompileError::UnexpectedToken {
+            expected: "end of condition".to_string(),
+            got: format!("{:?}", parser.peek()),
+        });
+    }
+    Ok(node)
 }

@@ -561,6 +561,51 @@ detection:
         }
 
         #[test]
+        fn reject_trailing_and_invalid_condition_input() {
+            let ids = make_identifiers(&["selection"]);
+            for condition in [
+                "selection trailing",
+                "selection)",
+                "selection @",
+                "selection | count() > 5",
+            ] {
+                assert!(
+                    compile_condition(condition, &ids).is_err(),
+                    "malformed condition should be rejected: {condition}"
+                );
+            }
+        }
+
+        #[test]
+        fn reject_malformed_explicit_quantifier_lists() {
+            let ids = make_identifiers(&["sel1", "sel2"]);
+            for condition in [
+                "1 of ()",
+                "1 of (sel1,)",
+                "1 of (,sel1)",
+                "1 of (sel1,,sel2)",
+                "1 of (sel1 sel2)",
+                "1 of (sel1, sel2",
+            ] {
+                assert!(
+                    compile_condition(condition, &ids).is_err(),
+                    "malformed quantifier list should be rejected: {condition}"
+                );
+            }
+        }
+
+        #[test]
+        fn reject_duplicate_explicit_quantifier_members() {
+            let ids = make_identifiers(&["sel1", "sel2"]);
+            for condition in ["1 of (sel1, sel1)", "1 of (sel*, sel1)"] {
+                assert!(
+                    compile_condition(condition, &ids).is_err(),
+                    "duplicate quantifier members should be rejected: {condition}"
+                );
+            }
+        }
+
+        #[test]
         fn compile_operator_precedence() {
             // NOT > AND > OR
             let ids = make_identifiers(&["a", "b", "c"]);

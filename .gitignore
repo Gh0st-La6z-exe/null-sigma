@@ -1,6 +1,10 @@
 /target/
 Cargo.lock
 
+# Local Windows development installers; never commit binaries to the repository.
+/rustup-init.exe
+/vs_buildtools.exe
+
 # Vendored rule corpora for compatibility testing (dev-only, never committed)
 /corpus/
 
