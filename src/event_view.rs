@@ -13,7 +13,18 @@ pub(crate) struct EventView<'a> {
     values: Vec<&'a str>,
     value_folded: Vec<Option<String>>,
     value_chars: Vec<Option<Vec<char>>>,
+    value_bloom: Vec<Option<u64>>,
+    canonical_slots: [u32; 64],
     present_fields_mask: u64,
+}
+
+/// Borrowed representations of an event field value prepared for matching.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FieldInputs<'f> {
+    pub(crate) raw: &'f str,
+    pub(crate) folded: &'f str,
+    pub(crate) chars: Option<&'f [char]>,
+    pub(crate) bloom: u64,
 }
 
 impl<'a> EventView<'a> {
@@ -24,6 +35,8 @@ impl<'a> EventView<'a> {
         let mut values: Vec<&'a str> = Vec::with_capacity(event.len());
         let mut value_folded: Vec<Option<String>> = Vec::with_capacity(event.len());
         let mut value_chars: Vec<Option<Vec<char>>> = Vec::with_capacity(event.len());
+        let mut value_bloom: Vec<Option<u64>> = Vec::with_capacity(event.len());
+        let mut canonical_slots = [u32::MAX; 64];
         let mut present_fields_mask: u64 = 0;
 
         for (key, value) in event {
@@ -31,8 +44,15 @@ impl<'a> EventView<'a> {
             values.push(value.as_str());
             value_folded.push(None);
             value_chars.push(None);
+            value_bloom.push(None);
             let folded = fold_key(key);
             if let Some(bit) = crate::field_mask::field_bit(&folded) {
+                let b = bit as usize;
+                if (present_fields_mask & (1u64 << bit)) == 0 {
+                    canonical_slots[b] = idx as u32;
+                } else {
+                    canonical_slots[b] = u32::MAX;
+                }
                 present_fields_mask |= 1u64 << bit;
             }
             index.entry(folded).or_default().push(idx);
@@ -43,6 +63,8 @@ impl<'a> EventView<'a> {
             values,
             value_folded,
             value_chars,
+            value_bloom,
+            canonical_slots,
             present_fields_mask,
         }
     }
@@ -52,6 +74,27 @@ impl<'a> EventView<'a> {
     #[must_use]
     pub(crate) fn present_fields_mask(&self) -> u64 {
         self.present_fields_mask
+    }
+
+    /// Return the single value index for a canonical field bit, or `u32::MAX` if multi-value / absent.
+    #[inline]
+    #[must_use]
+    pub(crate) fn canonical_slot(&self, bit: u8) -> u32 {
+        self.canonical_slots[bit as usize]
+    }
+
+    /// Return the indices slice for a folded field, or None if absent.
+    #[inline]
+    #[must_use]
+    pub(crate) fn field_indices(&self, field_folded: &str) -> Option<&[usize]> {
+        self.index.get(field_folded).map(Vec::as_slice)
+    }
+
+    /// Total number of raw values stored in this event view.
+    #[inline]
+    #[must_use]
+    pub(crate) fn total_values(&self) -> usize {
+        self.values.len()
     }
 
     /// Iterate values whose field name folds to `field_folded`.
@@ -129,6 +172,26 @@ impl<'a> EventView<'a> {
         }
     }
 
+    /// Ensure the Sub-64 bigram bloom filter for `idx` is computed and cached.
+    pub(crate) fn ensure_bloom(&mut self, idx: usize) {
+        debug_assert!(idx < self.values.len());
+        if self.value_bloom[idx].is_none() {
+            self.ensure_folded(idx);
+            let folded = self.value_folded[idx]
+                .as_deref()
+                .expect("ensure_folded just ran");
+            self.value_bloom[idx] = Some(crate::bloom::compute_bloom64(folded));
+        }
+    }
+
+    /// Borrow the cached Sub-64 bloom mask. Call [`Self::ensure_bloom`] first.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn bloom_at(&self, idx: usize) -> u64 {
+        self.value_bloom[idx].expect("ensure_bloom must be called before bloom_at")
+    }
+
     /// Borrow the cached folded char vector. Call [`Self::ensure_chars`] first.
     #[must_use]
     #[cfg(test)]
@@ -144,16 +207,15 @@ impl<'a> EventView<'a> {
         self.values[idx]
     }
 
-    /// Borrow raw + folded (+ optional chars) after caches are prepared.
+    /// Borrow raw + folded (+ optional chars) + Sub-64 bloom mask after caches are prepared.
     ///
-    /// Returns `(raw, folded, chars)` where `chars` is `Some` when the char
-    /// cache slot for `idx` is populated (i.e. after [`Self::ensure_chars`]).
+    /// Returns a [`FieldInputs`] view over the value at `idx`.
     #[must_use]
     pub(crate) fn match_inputs(
         &self,
         idx: usize,
         with_chars: bool,
-    ) -> (&'a str, &str, Option<&[char]>) {
+    ) -> FieldInputs<'_> {
         let raw = self.values[idx];
         let folded = self.value_folded[idx]
             .as_deref()
@@ -167,7 +229,13 @@ impl<'a> EventView<'a> {
         } else {
             None
         };
-        (raw, folded, chars)
+        let bloom = self.value_bloom[idx].unwrap_or(0);
+        FieldInputs {
+            raw,
+            folded,
+            chars,
+            bloom,
+        }
     }
 }
 
@@ -240,5 +308,18 @@ mod tests {
         assert_ne!(mask & (1 << cmdline_bit), 0);
         assert_ne!(mask & (1 << image_bit), 0);
         assert_eq!(mask, (1 << cmdline_bit) | (1 << image_bit));
+    }
+
+    #[test]
+    fn bloom_filter_is_cached_and_consistent() {
+        let mut event = HashMap::new();
+        event.insert("CommandLine".to_string(), "cmd.exe /c echo hi".to_string());
+        let mut view = EventView::from_map(&event);
+        let idx = view.values_for_field("commandline").next().unwrap().0;
+        view.ensure_bloom(idx);
+        let b = view.bloom_at(idx);
+        assert_ne!(b, 0);
+        let needle_b = crate::bloom::compute_bloom64("echo hi");
+        assert_eq!(b & needle_b, needle_b);
     }
 }

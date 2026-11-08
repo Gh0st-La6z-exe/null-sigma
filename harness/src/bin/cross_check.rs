@@ -37,7 +37,7 @@ fn main() {
         }
     }
     let mut tau_reasons: Vec<_> = tau_reasons.into_iter().collect();
-    tau_reasons.sort_by(|a, b| b.1.cmp(&a.1));
+    tau_reasons.sort_by_key(|a| std::cmp::Reverse(a.1));
     println!("\ntau-engine conversion failures by reason:");
     for (reason, count) in &tau_reasons {
         println!("  {count:5}  {reason}");
@@ -50,7 +50,7 @@ fn main() {
         }
     }
     let mut sr_reasons: Vec<_> = sr_reasons.into_iter().collect();
-    sr_reasons.sort_by(|a, b| b.1.cmp(&a.1));
+    sr_reasons.sort_by_key(|a| std::cmp::Reverse(a.1));
     if !sr_reasons.is_empty() {
         println!("\nsigma-rust load failures by reason:");
         for (reason, count) in sr_reasons.iter().take(10) {

@@ -79,14 +79,11 @@ pub(crate) fn extract_image_basename(val: &str, modifiers: &[ValueModifier]) -> 
     }
 }
 
-/// Compute the set of binary basenames strictly required for this rule to fire.
-///
-/// Returns `Some(vec)` if the rule provably CANNOT fire unless the event's process binary
-/// matches one of the basenames in `vec`.
-/// Returns `None` if the rule has no binary constraint (or is unconstrained on image).
-pub(crate) fn compute_rule_image_discriminators(
+/// Helper to compute required basenames for a specific set of field names.
+fn compute_rule_discriminators_for_field(
     conditions: &[ConditionNode],
     identifiers: &[SearchIdentifier],
+    field_names: &[&str],
 ) -> Option<Vec<String>> {
     const MAX_UNCONSTRAINED: usize = 12;
     if identifiers.len() > MAX_UNCONSTRAINED {
@@ -111,7 +108,7 @@ pub(crate) fn compute_rule_image_discriminators(
             let mut group_has_image_cond = false;
 
             for cond in &group.conditions {
-                if cond.field_folded != "image" && cond.field_folded != "originalfilename" {
+                if !field_names.contains(&cond.field_folded.as_str()) {
                     continue;
                 }
 
@@ -223,6 +220,29 @@ pub(crate) fn compute_rule_image_discriminators(
     }
 
     required_rule_basenames.filter(|v| !v.is_empty())
+}
+
+/// Compute the set of binary basenames strictly required for this rule to fire.
+///
+/// Returns `Some(vec)` if the rule provably CANNOT fire unless the event's process binary
+/// (`Image` or `OriginalFileName`) matches one of the basenames in `vec`.
+/// Returns `None` if the rule has no binary constraint (or is unconstrained on image).
+pub(crate) fn compute_rule_image_discriminators(
+    conditions: &[ConditionNode],
+    identifiers: &[SearchIdentifier],
+) -> Option<Vec<String>> {
+    compute_rule_discriminators_for_field(conditions, identifiers, &["image", "originalfilename"])
+}
+
+/// Compute the set of parent process binary basenames strictly required for this rule to fire.
+///
+/// Returns `Some(vec)` if the rule provably CANNOT fire unless the event's parent process binary
+/// (`ParentImage`) matches one of the basenames in `vec`.
+pub(crate) fn compute_rule_parent_image_discriminators(
+    conditions: &[ConditionNode],
+    identifiers: &[SearchIdentifier],
+) -> Option<Vec<String>> {
+    compute_rule_discriminators_for_field(conditions, identifiers, &["parentimage"])
 }
 
 #[cfg(test)]
@@ -354,5 +374,26 @@ detection:
         let conditions = vec![compile_condition("sel1 or sel2", &identifiers).unwrap()];
         let discriminators = compute_rule_image_discriminators(&conditions, &identifiers);
         assert_eq!(discriminators, None);
+    }
+
+    #[test]
+    fn test_compute_rule_parent_image_discriminators() {
+        let yaml = r#"
+title: Test Parent Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        ParentImage|endswith: '\cmd.exe'
+        CommandLine|contains: 'whoami'
+    condition: selection
+"#;
+        let (_rule, identifiers) = parse_rule(yaml).unwrap();
+        let conditions = vec![compile_condition("selection", &identifiers).unwrap()];
+        let image_disc = compute_rule_image_discriminators(&conditions, &identifiers);
+        assert_eq!(image_disc, None);
+        let parent_disc = compute_rule_parent_image_discriminators(&conditions, &identifiers);
+        assert_eq!(parent_disc, Some(vec!["cmd.exe".to_string()]));
     }
 }

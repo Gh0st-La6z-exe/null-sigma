@@ -136,7 +136,7 @@ fn main() {
 
     println!("\n── Failure categories (count, examples) ────────────────────");
     let mut sorted: Vec<_> = buckets.iter().collect();
-    sorted.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.1 .0));
     for (cat, (count, examples)) in sorted {
         println!("  {count:5}  {cat}");
         for ex in examples {

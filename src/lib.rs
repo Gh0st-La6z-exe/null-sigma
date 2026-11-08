@@ -46,6 +46,7 @@
 //! | [`fieldmap`] | Sigma field-name translation |
 //! | [`engine`] | Multi-rule evaluation, Inverted Dispatch Matrix, [`EvalScratch`] reuse |
 
+mod bloom;
 /// Condition expression compiler: Sigma condition strings → boolean AST
 /// ([`condition::ConditionNode`]).
 pub mod condition;

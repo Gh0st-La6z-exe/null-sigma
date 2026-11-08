@@ -656,6 +656,8 @@ detection:
         }
 
         fn make_condition(field: &str, values: &[&str], mods: &[ValueModifier]) -> FieldCondition {
+            let require_all = mods.contains(&ValueModifier::All);
+            let has_transforms = mods.iter().any(ValueModifier::is_transform);
             FieldCondition {
                 field: field.to_string(),
                 field_folded: field.to_lowercase(),
@@ -666,6 +668,10 @@ detection:
                 values_folded: values.iter().map(|v| Some(v.to_lowercase())).collect(),
                 values_match_cache: Vec::new(),
                 modifiers: mods.to_vec(),
+                field_bit: None,
+                needs_chars: false,
+                require_all,
+                has_transforms,
             }
         }
 
@@ -1155,6 +1161,10 @@ detection:
                 values_folded: vec![Some("80".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Gt],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(match_field_condition(&cond, &event));
         }
@@ -1169,6 +1179,10 @@ detection:
                 values_folded: vec![Some("80".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Gt],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(!match_field_condition(&cond, &event));
         }
@@ -1183,6 +1197,10 @@ detection:
                 values_folded: vec![Some("80".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Gte],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(match_field_condition(&cond, &event));
         }
@@ -1197,6 +1215,10 @@ detection:
                 values_folded: vec![Some("10".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Lt],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(match_field_condition(&cond, &event));
         }
@@ -1211,6 +1233,10 @@ detection:
                 values_folded: vec![Some("10".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Lte],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(match_field_condition(&cond, &event));
         }
@@ -1225,6 +1251,10 @@ detection:
                 values_folded: vec![Some("10".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Gt],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(!match_field_condition(&cond, &event));
         }
@@ -1241,6 +1271,10 @@ detection:
                 values_folded: vec![Some("true".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Exists],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(match_field_condition(&cond, &event));
         }
@@ -1255,6 +1289,10 @@ detection:
                 values_folded: vec![Some("true".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Exists],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(!match_field_condition(&cond, &event));
         }
@@ -1269,6 +1307,10 @@ detection:
                 values_folded: vec![Some("false".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Exists],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(match_field_condition(&cond, &event));
         }
@@ -1318,6 +1360,10 @@ detection:
                 values_folded: vec![Some(String::new())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(match_field_condition(&cond, &event));
         }
@@ -1332,6 +1378,10 @@ detection:
                 values_folded: vec![Some(String::new())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             assert!(!match_field_condition(&cond, &event));
         }
@@ -2081,6 +2131,10 @@ detection:
                 values_folded: vec![Some(pattern.to_lowercase())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             };
             match_field_condition(&cond, &event)
         }
@@ -2636,6 +2690,8 @@ detection:
         }
 
         fn make_condition(field: &str, values: &[&str], mods: &[ValueModifier]) -> FieldCondition {
+            let require_all = mods.contains(&ValueModifier::All);
+            let has_transforms = mods.iter().any(ValueModifier::is_transform);
             FieldCondition {
                 field: field.to_string(),
                 field_folded: field.to_lowercase(),
@@ -2646,6 +2702,10 @@ detection:
                 values_folded: values.iter().map(|v| Some(v.to_lowercase())).collect(),
                 values_match_cache: Vec::new(),
                 modifiers: mods.to_vec(),
+                field_bit: None,
+                needs_chars: false,
+                require_all,
+                has_transforms,
             }
         }
 
@@ -2751,6 +2811,10 @@ detection:
                 values_folded: vec![Some("-enc".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: true,
             };
 
             assert!(
@@ -2779,6 +2843,10 @@ detection:
                 values_folded: vec![Some("-enc".to_string())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: true,
             };
 
             for (label, dash) in [
@@ -2805,6 +2873,10 @@ detection:
                 values_folded: vec![Some("\u{2013}enc".to_lowercase())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Windash, ValueModifier::Contains],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: true,
             };
             let event_dash = make_event("cmd", "powershell -enc SQBFAFg=");
             let event_slash = make_event("cmd", "powershell /enc SQBFAFg=");
@@ -3035,6 +3107,10 @@ detection:
                 values_folded: vec![Some(cidr.to_lowercase())],
                 values_match_cache: Vec::new(),
                 modifiers: vec![ValueModifier::Cidr],
+                field_bit: None,
+                needs_chars: false,
+                require_all: false,
+                has_transforms: false,
             }
         }
 

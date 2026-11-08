@@ -298,6 +298,20 @@ pub struct FieldCondition {
 
     /// Modifiers applied to this field check.
     pub modifiers: Vec<ValueModifier>,
+
+    /// Dense bit index (0..63) for canonical Sigma fields.
+    #[doc(hidden)]
+    pub field_bit: Option<u8>,
+
+    /// Whether any value in this condition requires the char cache for wildcards.
+    #[doc(hidden)]
+    pub needs_chars: bool,
+    /// Whether the `all` modifier is set.
+    #[doc(hidden)]
+    pub require_all: bool,
+    /// Whether any transform modifier (`base64`, `wide`, `windash`) is present.
+    #[doc(hidden)]
+    pub has_transforms: bool,
 }
 
 /// One element of a tokenized Sigma wildcard pattern.
@@ -320,6 +334,8 @@ pub struct ValueMatchCache {
     pub literal: Option<String>,
     /// Pre-tokenized pattern when active wildcards require the wildcard matcher.
     pub tokens: Option<Vec<PatToken>>,
+    /// 64-bit bigram bloom filter mask for substring/literal pre-rejection (Sub-64).
+    pub bloom_mask: u64,
 }
 
 impl ValueMatchCache {

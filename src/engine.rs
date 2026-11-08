@@ -17,7 +17,7 @@
 // TARGET: >100K events/sec × 1000 rules on a single core.
 // =============================================================================
 
-use crate::condition::{compile_condition, CompileError, ConditionNode};
+use crate::condition::{compile_condition, CompileError, ConditionNode, ResolvedConditionNode};
 use crate::event_view::EventView;
 use crate::fieldmap::FieldMapping;
 use crate::fold::{fold_key, fold_value};
@@ -45,14 +45,12 @@ struct CompiledRule {
     rule: SigmaRule,
     /// Parsed search identifiers from the detection block.
     identifiers: Vec<SearchIdentifier>,
-    /// Compiled condition AST(s) — one per condition expression.
-    conditions: Vec<ConditionNode>,
+    /// Resolved condition AST(s) with pre-mapped identifier indices for lazy evaluation.
+    resolved_conditions: Vec<ResolvedConditionNode>,
     /// True if any identifier in this rule contains a `|re` (regex) condition.
     /// When false the hot-path uses `match_identifier` (no cache lookup overhead).
     /// When true `evaluate_event` looks up `SigmaEngine::rule_regex_maps[rule_idx]`.
     has_regex: bool,
-    /// Identifier name → dense index for `EvalScratch::id_results`.
-    ident_index: HashMap<String, usize>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,6 +65,7 @@ struct CompiledRule {
 #[derive(Debug, Default)]
 pub struct EvalScratch {
     id_results: Vec<bool>,
+    id_state: Vec<u8>,
 }
 
 impl EvalScratch {
@@ -81,6 +80,14 @@ impl EvalScratch {
         self.id_results.resize(ident_count, false);
         if ident_count > 0 {
             self.id_results[..ident_count].fill(false);
+        }
+    }
+
+    /// Resize and zero identifier state (0 = uncomputed) before evaluating a rule lazily.
+    pub(crate) fn reset_id_state(&mut self, ident_count: usize) {
+        self.id_state.resize(ident_count, 0);
+        if ident_count > 0 {
+            self.id_state[..ident_count].fill(0);
         }
     }
 }
@@ -235,7 +242,9 @@ pub struct SigmaEngine {
     hot_data: Vec<RuleHotData>,
     /// Inverted index for primary binary basenames: lowercased image basename -> rule indices.
     image_discriminator_index: HashMap<String, Vec<u32>>,
-    /// Rule indices without strict image basename constraints (evaluated on all events).
+    /// Inverted index for parent binary basenames: lowercased parent image basename -> rule indices.
+    parent_image_discriminator_index: HashMap<String, Vec<u32>>,
+    /// Rule indices without strict image or parent image basename constraints.
     unconstrained_rules: Vec<u32>,
 }
 
@@ -250,6 +259,7 @@ impl SigmaEngine {
             rule_regex_maps: Vec::new(),
             hot_data: Vec::new(),
             image_discriminator_index: HashMap::new(),
+            parent_image_discriminator_index: HashMap::new(),
             unconstrained_rules: Vec::new(),
         }
     }
@@ -263,6 +273,7 @@ impl SigmaEngine {
             rule_regex_maps: Vec::new(),
             hot_data: Vec::new(),
             image_discriminator_index: HashMap::new(),
+            parent_image_discriminator_index: HashMap::new(),
             unconstrained_rules: Vec::new(),
         }
     }
@@ -371,23 +382,35 @@ impl SigmaEngine {
             HashMap::new()
         };
 
-        // ── Field-presence mask & Binary discriminator ─────────────
+        // ── Field-presence mask & Binary discriminators ────────────
         let required_fields_mask = compute_required_fields_mask(&conditions, &identifiers);
         let image_discriminators =
             crate::discriminator::compute_rule_image_discriminators(&conditions, &identifiers);
+        let parent_image_discriminators = if image_discriminators.is_none() {
+            crate::discriminator::compute_rule_parent_image_discriminators(
+                &conditions,
+                &identifiers,
+            )
+        } else {
+            None
+        };
 
-        let ident_index = identifiers
+        let ident_index: HashMap<String, usize> = identifiers
             .iter()
             .enumerate()
             .map(|(idx, ident)| (ident.name.clone(), idx))
             .collect();
 
+        let resolved_conditions: Vec<ResolvedConditionNode> = conditions
+            .iter()
+            .filter_map(|c| c.resolve_indices(&ident_index))
+            .collect();
+
         self.rules.push(CompiledRule {
             rule,
             identifiers,
-            conditions,
+            resolved_conditions,
             has_regex,
-            ident_index,
         });
         // Push regex map, hot data in lockstep: index i ↔ rules[i].
         self.rule_regex_maps.push(regex_map);
@@ -420,18 +443,22 @@ impl SigmaEngine {
         });
 
         let rule_idx = u32::try_from(self.rules.len() - 1).expect("rule count fits in u32");
-        match image_discriminators {
-            Some(basenames) => {
-                for base in basenames {
-                    self.image_discriminator_index
-                        .entry(base)
-                        .or_default()
-                        .push(rule_idx);
-                }
+        if let Some(basenames) = image_discriminators {
+            for base in basenames {
+                self.image_discriminator_index
+                    .entry(base)
+                    .or_default()
+                    .push(rule_idx);
             }
-            None => {
-                self.unconstrained_rules.push(rule_idx);
+        } else if let Some(basenames) = parent_image_discriminators {
+            for base in basenames {
+                self.parent_image_discriminator_index
+                    .entry(base)
+                    .or_default()
+                    .push(rule_idx);
             }
+        } else {
+            self.unconstrained_rules.push(rule_idx);
         }
 
         Ok(())
@@ -545,6 +572,7 @@ impl SigmaEngine {
         // Resolve event binary basename from Image or OriginalFileName for inverted dispatch
         let mut specific_slice1: &[u32] = &[];
         let mut specific_slice2: &[u32] = &[];
+        let mut parent_slice: &[u32] = &[];
 
         if let Some(idx) = view.first_index_for_folded_field("image") {
             let raw = view.raw_at(idx);
@@ -578,8 +606,27 @@ impl SigmaEngine {
             }
         }
 
-        let candidate_slices: [&[u32]; 3] =
-            [&self.unconstrained_rules, specific_slice1, specific_slice2];
+        if let Some(idx) = view.first_index_for_folded_field("parentimage") {
+            let raw = view.raw_at(idx);
+            let s = raw.trim();
+            let comp = match s.rfind(['\\', '/']) {
+                Some(pos) => &s[pos + 1..],
+                None => s,
+            };
+            if !comp.is_empty() {
+                let base = comp.to_lowercase();
+                if let Some(rules) = self.parent_image_discriminator_index.get(&base) {
+                    parent_slice = rules;
+                }
+            }
+        }
+
+        let candidate_slices: [&[u32]; 4] = [
+            &self.unconstrained_rules,
+            specific_slice1,
+            specific_slice2,
+            parent_slice,
+        ];
 
         for slice in candidate_slices {
             for &rule_idx_u32 in slice {
@@ -619,46 +666,88 @@ impl SigmaEngine {
                     continue;
                 }
 
-                // Full evaluation: check each identifier against the event.
-                // Hot path: rules without |re use match_identifier directly (no HashMap lookup).
-                // Regex path: rules with |re use the pre-compiled cache from the side-table.
-                scratch.reset_id_results(compiled.identifiers.len());
-                for (idx, ident) in compiled.identifiers.iter().enumerate() {
-                    let id_eval = if compiled.has_regex {
-                        match_identifier_with_cache_on_view(
-                            ident,
-                            &mut view,
-                            &self.rule_regex_maps[rule_idx],
-                        )
-                    } else {
-                        match_identifier_on_view(ident, &mut view)
-                    };
-                    scratch.id_results[idx] = id_eval;
-                }
+                // Lazy condition evaluation:
+                // Evaluates identifiers on demand with caching, short-circuiting as soon
+                // as boolean AST branches (AND/OR) are determined.
+                scratch.reset_id_state(compiled.identifiers.len());
 
-                let id_results = &scratch.id_results;
-
-                // Evaluate each condition expression
                 if collect_details {
                     let mut matched_conditions: Vec<usize> =
-                        Vec::with_capacity(compiled.conditions.len());
+                        Vec::with_capacity(compiled.resolved_conditions.len());
 
-                    for (cond_idx, condition) in compiled.conditions.iter().enumerate() {
-                        if condition.evaluate_vec(id_results, &compiled.ident_index) {
-                            matched_conditions.push(cond_idx);
+                    {
+                        let mut eval_ident = |idx: usize| -> bool {
+                            let cached = scratch.id_state[idx];
+                            if cached == 1 {
+                                false
+                            } else if cached == 2 {
+                                true
+                            } else {
+                                let res = if compiled.has_regex {
+                                    match_identifier_with_cache_on_view(
+                                        &compiled.identifiers[idx],
+                                        &mut view,
+                                        &self.rule_regex_maps[rule_idx],
+                                    )
+                                } else {
+                                    match_identifier_on_view(&compiled.identifiers[idx], &mut view)
+                                };
+                                scratch.id_state[idx] = if res { 2 } else { 1 };
+                                res
+                            }
+                        };
+
+                        for (cond_idx, condition) in compiled.resolved_conditions.iter().enumerate() {
+                            if condition.evaluate_lazy(&mut eval_ident) {
+                                matched_conditions.push(cond_idx);
+                            }
+                        }
+
+                        if !matched_conditions.is_empty() {
+                            // For matching rules only, ensure any remaining identifiers are evaluated
+                            // so RuleMatch details contain all matched identifiers.
+                            for idx in 0..compiled.identifiers.len() {
+                                let _ = eval_ident(idx);
+                            }
                         }
                     }
 
                     if !matched_conditions.is_empty() {
                         matches += 1;
-                        on_match(compiled, id_results, &matched_conditions);
+                        scratch.reset_id_results(compiled.identifiers.len());
+                        for idx in 0..compiled.identifiers.len() {
+                            scratch.id_results[idx] = scratch.id_state[idx] == 2;
+                        }
+                        on_match(compiled, &scratch.id_results, &matched_conditions);
                     }
-                } else if compiled
-                    .conditions
-                    .iter()
-                    .any(|condition| condition.evaluate_vec(id_results, &compiled.ident_index))
-                {
-                    matches += 1;
+                } else {
+                    let mut eval_ident = |idx: usize| -> bool {
+                        let cached = scratch.id_state[idx];
+                        if cached == 1 {
+                            false
+                        } else if cached == 2 {
+                            true
+                        } else {
+                            let res = if compiled.has_regex {
+                                match_identifier_with_cache_on_view(
+                                    &compiled.identifiers[idx],
+                                    &mut view,
+                                    &self.rule_regex_maps[rule_idx],
+                                )
+                            } else {
+                                match_identifier_on_view(&compiled.identifiers[idx], &mut view)
+                            };
+                            scratch.id_state[idx] = if res { 2 } else { 1 };
+                            res
+                        }
+                    };
+
+                    for condition in &compiled.resolved_conditions {
+                        if condition.evaluate_lazy(&mut eval_ident) {
+                            matches += 1;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -695,11 +784,40 @@ impl Default for SigmaEngine {
     }
 }
 
+fn condition_eval_cost(cond: &crate::types::FieldCondition) -> u32 {
+    let mut base_cost = 10;
+    if cond.modifiers.contains(&ValueModifier::Exists) {
+        return 0;
+    }
+    if cond.modifiers.contains(&ValueModifier::Regex) {
+        return 1000;
+    }
+    if cond.modifiers.contains(&ValueModifier::Cidr) {
+        return 500;
+    }
+    if cond.modifiers.contains(&ValueModifier::FieldRef) {
+        return 300;
+    }
+    if cond.modifiers.iter().any(ValueModifier::is_transform) {
+        base_cost += 200;
+    }
+    if cond.modifiers.contains(&ValueModifier::Contains) {
+        base_cost += 50;
+    } else if cond.modifiers.contains(&ValueModifier::StartsWith)
+        || cond.modifiers.contains(&ValueModifier::EndsWith)
+    {
+        base_cost += 20;
+    }
+
+    base_cost + (cond.values.len() as u32 * 5)
+}
+
 fn finalize_identifiers(identifiers: &mut [SearchIdentifier]) {
     for ident in identifiers {
         for group in &mut ident.groups {
             for cond in &mut group.conditions {
                 cond.field_folded = fold_key(&cond.field);
+                cond.field_bit = crate::field_mask::field_bit(&cond.field_folded);
                 cond.values_folded = cond
                     .values
                     .iter()
@@ -725,7 +843,14 @@ fn finalize_identifiers(identifiers: &mut [SearchIdentifier]) {
                         }
                     })
                     .collect();
+                cond.require_all = cond.modifiers.contains(&ValueModifier::All);
+                cond.has_transforms = cond.modifiers.iter().any(ValueModifier::is_transform);
+                cond.needs_chars = !cond.has_transforms
+                    && cond.values_match_cache.iter().any(|c| c.tokens.is_some());
             }
+            // Cost-Ranked AST Reordering: sort AND-grouped conditions so cheap,
+            // highly-selective conditions evaluate first and short-circuit early.
+            group.conditions.sort_by_key(condition_eval_cost);
         }
     }
 }

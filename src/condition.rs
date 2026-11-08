@@ -108,6 +108,7 @@ impl ConditionNode {
     ///
     /// `index` maps identifier name → position in `results`. Used by the engine
     /// hot path to avoid per-rule `HashMap` allocation.
+    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn evaluate_vec(&self, results: &[bool], index: &HashMap<String, usize>) -> bool {
         match self {
@@ -143,6 +144,113 @@ impl ConditionNode {
                     matched == identifiers.len() && !identifiers.is_empty()
                 } else {
                     matched >= *count
+                }
+            }
+        }
+    }
+
+    /// Resolve all identifier names in this condition AST to dense indices in `ident_index`.
+    #[must_use]
+    pub(crate) fn resolve_indices(
+        &self,
+        ident_index: &HashMap<String, usize>,
+    ) -> Option<ResolvedConditionNode> {
+        match self {
+            ConditionNode::Identifier(name) => {
+                let idx = ident_index.get(name.as_str()).copied()?;
+                Some(ResolvedConditionNode::Identifier(idx))
+            }
+            ConditionNode::And(left, right) => {
+                let l = left.resolve_indices(ident_index)?;
+                let r = right.resolve_indices(ident_index)?;
+                Some(ResolvedConditionNode::And(Box::new(l), Box::new(r)))
+            }
+            ConditionNode::Or(left, right) => {
+                let l = left.resolve_indices(ident_index)?;
+                let r = right.resolve_indices(ident_index)?;
+                Some(ResolvedConditionNode::Or(Box::new(l), Box::new(r)))
+            }
+            ConditionNode::Not(inner) => {
+                let i = inner.resolve_indices(ident_index)?;
+                Some(ResolvedConditionNode::Not(Box::new(i)))
+            }
+            ConditionNode::OneOf { count, identifiers } => {
+                let mut resolved = Vec::with_capacity(identifiers.len());
+                for name in identifiers {
+                    let idx = ident_index.get(name.as_str()).copied()?;
+                    resolved.push(idx);
+                }
+                Some(ResolvedConditionNode::OneOf {
+                    count: *count,
+                    identifiers: resolved,
+                })
+            }
+        }
+    }
+}
+
+/// A condition expression node with identifier names resolved to dense `usize` indices.
+///
+/// Eliminates runtime `HashMap` lookups and enables lazy short-circuiting:
+/// in `A and B`, `B` is never evaluated if `A` is false.
+#[derive(Debug, Clone)]
+pub(crate) enum ResolvedConditionNode {
+    /// Reference to a search identifier by dense index in `CompiledRule::identifiers`.
+    Identifier(usize),
+    /// Boolean AND — short-circuits if left is false.
+    And(Box<ResolvedConditionNode>, Box<ResolvedConditionNode>),
+    /// Boolean OR — short-circuits if left is true.
+    Or(Box<ResolvedConditionNode>, Box<ResolvedConditionNode>),
+    /// Boolean NOT — inverts child result.
+    Not(Box<ResolvedConditionNode>),
+    /// Quantifier: "N of pattern" with resolved identifier indices.
+    OneOf {
+        /// How many must match. 0 = all.
+        count: usize,
+        /// Resolved identifier indices.
+        identifiers: Vec<usize>,
+    },
+}
+
+impl ResolvedConditionNode {
+    /// Evaluate this condition tree lazily on demand.
+    ///
+    /// Identifiers are evaluated via `eval_ident` only when reached by boolean
+    /// short-circuiting.
+    #[inline]
+    pub(crate) fn evaluate_lazy<F>(&self, eval_ident: &mut F) -> bool
+    where
+        F: FnMut(usize) -> bool,
+    {
+        match self {
+            ResolvedConditionNode::Identifier(idx) => eval_ident(*idx),
+            ResolvedConditionNode::And(left, right) => {
+                left.evaluate_lazy(eval_ident) && right.evaluate_lazy(eval_ident)
+            }
+            ResolvedConditionNode::Or(left, right) => {
+                left.evaluate_lazy(eval_ident) || right.evaluate_lazy(eval_ident)
+            }
+            ResolvedConditionNode::Not(inner) => !inner.evaluate_lazy(eval_ident),
+            ResolvedConditionNode::OneOf { count, identifiers } => {
+                if *count == 0 {
+                    !identifiers.is_empty() && identifiers.iter().all(|&idx| eval_ident(idx))
+                } else {
+                    let mut matched = 0usize;
+                    let needed = *count;
+                    let total = identifiers.len();
+                    for (i, &idx) in identifiers.iter().enumerate() {
+                        if eval_ident(idx) {
+                            matched += 1;
+                            if matched >= needed {
+                                return true;
+                            }
+                        }
+                        let remaining = total - 1 - i;
+                        if matched + remaining < needed {
+                            return false;
+                        }
+                    }
+                    false
                 }
             }
         }

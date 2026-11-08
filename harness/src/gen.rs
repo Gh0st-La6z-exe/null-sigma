@@ -20,7 +20,7 @@ impl SplitMix64 {
         Self(seed)
     }
 
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -29,7 +29,7 @@ impl SplitMix64 {
     }
 
     fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
-        &items[(self.next() % items.len() as u64) as usize]
+        &items[(self.next_u64() % items.len() as u64) as usize]
     }
 }
 
@@ -196,7 +196,7 @@ const USERS: &[&str] = &["CORP\\alice", "CORP\\bob", "NT AUTHORITY\\SYSTEM", "CO
 const INTEGRITY: &[&str] = &["Medium", "High", "System"];
 
 fn build_event(rng: &mut SplitMix64, n: u64) -> Map<String, Value> {
-    let roll = rng.next() % 100;
+    let roll = rng.next_u64() % 100;
     let profile = if roll < BENIGN_CUTOFF {
         rng.pick(BENIGN)
     } else if roll < NEAR_MISS_CUTOFF {
@@ -205,8 +205,8 @@ fn build_event(rng: &mut SplitMix64, n: u64) -> Map<String, Value> {
         rng.pick(SUSPICIOUS)
     };
     let cmd = rng.pick(profile.cmdlines);
-    let pid = 1000 + (rng.next() % 60000);
-    let ppid = 400 + (rng.next() % 4000);
+    let pid = 1000 + (rng.next_u64() % 60000);
+    let ppid = 400 + (rng.next_u64() % 4000);
 
     let mut m = Map::new();
     // Logsource routing fields (null-sigma uses these; extra fields are
@@ -231,8 +231,8 @@ fn build_event(rng: &mut SplitMix64, n: u64) -> Map<String, Value> {
         "Hashes".into(),
         json!(format!(
             "MD5={:032X},SHA256={:064X}",
-            rng.next() as u128,
-            rng.next() as u128
+            rng.next_u64() as u128,
+            rng.next_u64() as u128
         )),
     );
     m

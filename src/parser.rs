@@ -220,6 +220,10 @@ fn parse_search_identifier(
                         values_folded: Vec::new(),
                         values_match_cache: Vec::new(),
                         modifiers: vec![ValueModifier::Contains],
+                        field_bit: None,
+                        needs_chars: false,
+                        require_all: false,
+                        has_transforms: false,
                     }],
                 }]
             }
@@ -235,6 +239,10 @@ fn parse_search_identifier(
                     values_folded: Vec::new(),
                     values_match_cache: Vec::new(),
                     modifiers: vec![ValueModifier::Contains],
+                    field_bit: None,
+                    needs_chars: false,
+                    require_all: false,
+                    has_transforms: false,
                 }],
             }]
         }
@@ -271,14 +279,22 @@ fn parse_field_map(
 
         // Parse value(s)
         let values = parse_field_values(value);
+        let field_folded = field.to_lowercase();
+        let field_bit = crate::field_mask::field_bit(&field_folded);
+        let require_all = modifiers.contains(&ValueModifier::All);
+        let has_transforms = modifiers.iter().any(ValueModifier::is_transform);
 
         conditions.push(FieldCondition {
             field: field.clone(),
-            field_folded: field.to_lowercase(),
+            field_folded,
             values,
             values_folded: Vec::new(),
             values_match_cache: Vec::new(),
             modifiers,
+            field_bit,
+            needs_chars: false,
+            require_all,
+            has_transforms,
         });
     }
 

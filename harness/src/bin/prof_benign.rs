@@ -13,9 +13,9 @@ use null_sigma_harness::{r#gen, load_rule_dir, NullSigmaBench};
 
 /// Warm-up iterations (not profiled when using samply — entire process is recorded;
 /// warmup still drives caches/automaton before the bulk of samples).
-const WARMUP: usize = 1_000;
+const WARMUP: usize = 50;
 /// Profiled iterations — long enough for stable samply stacks.
-const ITERATIONS: usize = 100_000;
+const ITERATIONS: usize = 1_000;
 
 fn main() {
     let rule_dir = null_sigma_harness::default_rule_dir();
