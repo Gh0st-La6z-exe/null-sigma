@@ -161,65 +161,96 @@ fn compute_rule_discriminators_for_field(
         }
     }
 
-    // 2. Identify which identifiers are strictly required by the condition AST.
-    // An identifier I is strictly required if pinning I = false causes the condition
-    // to evaluate to false under ALL truth assignments of the other identifiers.
+    // 2. Collect candidate basenames across all identifiers.
+    let mut candidate_basenames: Vec<String> = Vec::new();
+    let mut has_any_constrained_ident = false;
+    for bases in ident_basenames.iter().flatten() {
+        has_any_constrained_ident = true;
+        candidate_basenames.extend(bases.clone());
+    }
+    candidate_basenames.sort_unstable();
+    candidate_basenames.dedup();
+
+    if !has_any_constrained_ident || candidate_basenames.is_empty() {
+        return None;
+    }
+
+    // Don't index rules with an absurdly large list of basenames (e.g. > 64).
+    if candidate_basenames.len() > 64 {
+        return None;
+    }
+
+    // 3. Verify that the rule CANNOT fire when ALL image-constrained identifiers are false.
+    // If the rule can fire with all image-constrained identifiers = false, then an event with
+    // an arbitrary image can trigger the rule, so the rule is unconstrained.
+    let unconstrained_idents: Vec<&str> = identifiers
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| ident_basenames[*idx].is_none())
+        .map(|(_, id)| id.name.as_str())
+        .collect();
+
     let mut results: HashMap<String, bool> = identifiers
         .iter()
         .map(|ident| (ident.name.clone(), false))
         .collect();
 
-    let mut required_rule_basenames: Option<Vec<String>> = None;
+    let mut can_fire_with_no_image_match = false;
+    for assignment in 0u32..(1u32 << unconstrained_idents.len()) {
+        for id in identifiers {
+            *results.get_mut(&id.name).expect("name present") = false;
+        }
+        for (bit, name) in unconstrained_idents.iter().enumerate() {
+            *results.get_mut(*name).expect("name present") = (assignment >> bit) & 1 == 1;
+        }
+        if conditions.iter().any(|cond| cond.evaluate(&results)) {
+            can_fire_with_no_image_match = true;
+            break;
+        }
+    }
 
-    for (idx, _) in identifiers.iter().enumerate() {
-        let Some(ref basenames) = ident_basenames[idx] else {
-            continue;
-        };
+    if can_fire_with_no_image_match {
+        return None;
+    }
 
-        // Check if ident is strictly required by testing all assignments of others with ident = false.
-        let other_idents: Vec<&str> = identifiers
+    // 4. Prune candidate basenames: for each candidate B, verify that pinning
+    // identifiers whose allowed sets do NOT contain B to false still allows the condition to evaluate to true.
+    let mut valid_basenames = Vec::with_capacity(candidate_basenames.len());
+    for base in candidate_basenames {
+        let active_idents: Vec<&str> = identifiers
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i != idx)
+            .filter(|(idx, _)| match &ident_basenames[*idx] {
+                Some(bases) => bases.contains(&base),
+                None => true,
+            })
             .map(|(_, id)| id.name.as_str())
             .collect();
 
-        let mut can_fire_without_ident = false;
-        for assignment in 0u32..(1u32 << other_idents.len()) {
+        let mut can_fire_with_base = false;
+        for assignment in 0u32..(1u32 << active_idents.len()) {
             for id in identifiers {
                 *results.get_mut(&id.name).expect("name present") = false;
             }
-            for (bit, name) in other_idents.iter().enumerate() {
+            for (bit, name) in active_idents.iter().enumerate() {
                 *results.get_mut(*name).expect("name present") = (assignment >> bit) & 1 == 1;
             }
-            // ident stays false
             if conditions.iter().any(|cond| cond.evaluate(&results)) {
-                can_fire_without_ident = true;
+                can_fire_with_base = true;
                 break;
             }
         }
 
-        if !can_fire_without_ident {
-            // This identifier is strictly required!
-            match required_rule_basenames {
-                None => {
-                    required_rule_basenames = Some(basenames.clone());
-                }
-                Some(existing) => {
-                    // Intersection of required basenames
-                    let mut inter: Vec<String> = existing
-                        .into_iter()
-                        .filter(|b| basenames.contains(b))
-                        .collect();
-                    inter.sort_unstable();
-                    inter.dedup();
-                    required_rule_basenames = Some(inter);
-                }
-            }
+        if can_fire_with_base {
+            valid_basenames.push(base);
         }
     }
 
-    required_rule_basenames.filter(|v| !v.is_empty())
+    if valid_basenames.is_empty() {
+        None
+    } else {
+        Some(valid_basenames)
+    }
 }
 
 /// Compute the set of binary basenames strictly required for this rule to fire.

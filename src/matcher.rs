@@ -114,14 +114,20 @@ pub(crate) fn match_field_condition_on_view(
         return handle_fieldref_on_view(condition, view);
     }
 
-    // Pre-process values through transform modifiers (base64, wide, windash)
-    let transformed_values = apply_transforms(&condition.values, &condition.modifiers);
-    let use_precomputed_folds = !condition.modifiers.iter().any(ValueModifier::is_transform)
-        && transformed_values.len() == condition.values_folded.len();
+    // Zero-allocation path: borrow directly when no transform modifiers (base64, wide, windash) are present (99.8% of conditions).
+    let (values_slice, use_precomputed_folds): (Cow<'_, [SigmaValue]>, bool) = if condition.has_transforms {
+        let transformed = apply_transforms(&condition.values, &condition.modifiers);
+        (transformed, false)
+    } else {
+        (Cow::Borrowed(&condition.values), true)
+    };
 
-    // Determine if "all" modifier is present (changes OR to AND for values)
-    let require_all = condition.modifiers.contains(&ValueModifier::All);
-    let needs_chars = condition_needs_char_cache(condition, &transformed_values);
+    let require_all = condition.require_all;
+    let needs_chars = if condition.values_match_cache.is_empty() {
+        condition_needs_char_cache(condition, &values_slice)
+    } else {
+        condition.needs_chars
+    };
 
     let single_slot: [usize; 1];
     let mut stack_indices = [0usize; 8];
@@ -174,43 +180,49 @@ pub(crate) fn match_field_condition_on_view(
         let field = view.match_inputs(idx, needs_chars);
 
         let matched = if require_all {
-            transformed_values.iter().enumerate().all(|(v_idx, val)| {
-                let sigma_folded = if use_precomputed_folds {
-                    condition
-                        .values_folded
-                        .get(v_idx)
-                        .and_then(|v| v.as_deref())
+            values_slice.iter().enumerate().all(|(v_idx, val)| {
+                let (sigma_folded, match_cache) = if use_precomputed_folds {
+                    (
+                        condition
+                            .values_folded
+                            .get(v_idx)
+                            .and_then(|v| v.as_deref()),
+                        condition
+                            .values_match_cache
+                            .get(v_idx)
+                            .filter(|c| c.is_populated()),
+                    )
                 } else {
-                    None
+                    (None, None)
                 };
                 value_matches(
                     val,
                     sigma_folded,
-                    condition
-                        .values_match_cache
-                        .get(v_idx)
-                        .filter(|c| c.is_populated()),
+                    match_cache,
                     field,
                     &condition.modifiers,
                 )
             })
         } else {
-            transformed_values.iter().enumerate().any(|(v_idx, val)| {
-                let sigma_folded = if use_precomputed_folds {
-                    condition
-                        .values_folded
-                        .get(v_idx)
-                        .and_then(|v| v.as_deref())
+            values_slice.iter().enumerate().any(|(v_idx, val)| {
+                let (sigma_folded, match_cache) = if use_precomputed_folds {
+                    (
+                        condition
+                            .values_folded
+                            .get(v_idx)
+                            .and_then(|v| v.as_deref()),
+                        condition
+                            .values_match_cache
+                            .get(v_idx)
+                            .filter(|c| c.is_populated()),
+                    )
                 } else {
-                    None
+                    (None, None)
                 };
                 value_matches(
                     val,
                     sigma_folded,
-                    condition
-                        .values_match_cache
-                        .get(v_idx)
-                        .filter(|c| c.is_populated()),
+                    match_cache,
                     field,
                     &condition.modifiers,
                 )

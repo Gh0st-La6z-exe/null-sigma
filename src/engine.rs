@@ -40,13 +40,19 @@ thread_local! {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
+enum CompiledCondition {
+    Single(usize),
+    Multi(Vec<ResolvedConditionNode>),
+}
+
+#[derive(Debug)]
 struct CompiledRule {
     /// The original parsed Sigma rule.
     rule: SigmaRule,
     /// Parsed search identifiers from the detection block.
     identifiers: Vec<SearchIdentifier>,
-    /// Resolved condition AST(s) with pre-mapped identifier indices for lazy evaluation.
-    resolved_conditions: Vec<ResolvedConditionNode>,
+    /// Compiled condition representation.
+    condition: CompiledCondition,
     /// True if any identifier in this rule contains a `|re` (regex) condition.
     /// When false the hot-path uses `match_identifier` (no cache lookup overhead).
     /// When true `evaluate_event` looks up `SigmaEngine::rule_regex_maps[rule_idx]`.
@@ -278,6 +284,16 @@ impl SigmaEngine {
         }
     }
 
+    /// Returns the counts of (image-indexed keys, parent-image-indexed keys, unconstrained rules).
+    #[doc(hidden)]
+    pub fn discriminator_stats(&self) -> (usize, usize, usize) {
+        (
+            self.image_discriminator_index.len(),
+            self.parent_image_discriminator_index.len(),
+            self.unconstrained_rules.len(),
+        )
+    }
+
     /// Load a single Sigma rule from YAML. Returns the rule ID on success.
     ///
     /// # Errors
@@ -406,10 +422,20 @@ impl SigmaEngine {
             .filter_map(|c| c.resolve_indices(&ident_index))
             .collect();
 
+        let condition = if resolved_conditions.len() == 1 {
+            if let Some(ResolvedConditionNode::Identifier(idx)) = resolved_conditions.first() {
+                CompiledCondition::Single(*idx)
+            } else {
+                CompiledCondition::Multi(resolved_conditions)
+            }
+        } else {
+            CompiledCondition::Multi(resolved_conditions)
+        };
+
         self.rules.push(CompiledRule {
             rule,
             identifiers,
-            resolved_conditions,
+            condition,
             has_regex,
         });
         // Push regex map, hot data in lockstep: index i ↔ rules[i].
@@ -669,84 +695,124 @@ impl SigmaEngine {
                 // Lazy condition evaluation:
                 // Evaluates identifiers on demand with caching, short-circuiting as soon
                 // as boolean AST branches (AND/OR) are determined.
-                scratch.reset_id_state(compiled.identifiers.len());
-
                 if collect_details {
-                    let mut matched_conditions: Vec<usize> =
-                        Vec::with_capacity(compiled.resolved_conditions.len());
-
-                    {
-                        let mut eval_ident = |idx: usize| -> bool {
-                            let cached = scratch.id_state[idx];
-                            if cached == 1 {
-                                false
-                            } else if cached == 2 {
-                                true
-                            } else {
-                                let res = if compiled.has_regex {
-                                    match_identifier_with_cache_on_view(
-                                        &compiled.identifiers[idx],
-                                        &mut view,
-                                        &self.rule_regex_maps[rule_idx],
-                                    )
-                                } else {
-                                    match_identifier_on_view(&compiled.identifiers[idx], &mut view)
-                                };
-                                scratch.id_state[idx] = if res { 2 } else { 1 };
-                                res
-                            }
-                        };
-
-                        for (cond_idx, condition) in compiled.resolved_conditions.iter().enumerate() {
-                            if condition.evaluate_lazy(&mut eval_ident) {
-                                matched_conditions.push(cond_idx);
-                            }
-                        }
-
-                        if !matched_conditions.is_empty() {
-                            // For matching rules only, ensure any remaining identifiers are evaluated
-                            // so RuleMatch details contain all matched identifiers.
-                            for idx in 0..compiled.identifiers.len() {
-                                let _ = eval_ident(idx);
-                            }
-                        }
-                    }
-
-                    if !matched_conditions.is_empty() {
-                        matches += 1;
-                        scratch.reset_id_results(compiled.identifiers.len());
-                        for idx in 0..compiled.identifiers.len() {
-                            scratch.id_results[idx] = scratch.id_state[idx] == 2;
-                        }
-                        on_match(compiled, &scratch.id_results, &matched_conditions);
-                    }
-                } else {
-                    let mut eval_ident = |idx: usize| -> bool {
-                        let cached = scratch.id_state[idx];
-                        if cached == 1 {
-                            false
-                        } else if cached == 2 {
-                            true
-                        } else {
-                            let res = if compiled.has_regex {
+                    match &compiled.condition {
+                        CompiledCondition::Single(idx) => {
+                            let matched = if compiled.has_regex {
                                 match_identifier_with_cache_on_view(
-                                    &compiled.identifiers[idx],
+                                    &compiled.identifiers[*idx],
                                     &mut view,
                                     &self.rule_regex_maps[rule_idx],
                                 )
                             } else {
-                                match_identifier_on_view(&compiled.identifiers[idx], &mut view)
+                                match_identifier_on_view(&compiled.identifiers[*idx], &mut view)
                             };
-                            scratch.id_state[idx] = if res { 2 } else { 1 };
-                            res
+
+                            if matched {
+                                matches += 1;
+                                scratch.reset_id_state(compiled.identifiers.len());
+                                scratch.id_state[*idx] = 2;
+                                scratch.reset_id_results(compiled.identifiers.len());
+                                for i in 0..compiled.identifiers.len() {
+                                    scratch.id_results[i] = scratch.id_state[i] == 2;
+                                }
+                                on_match(compiled, &scratch.id_results, &[0]);
+                            }
+                        }
+                        CompiledCondition::Multi(conditions) => {
+                            scratch.reset_id_state(compiled.identifiers.len());
+                            let mut matched_conditions: Vec<usize> =
+                                Vec::with_capacity(conditions.len());
+
+                            {
+                                let mut eval_ident = |idx: usize| -> bool {
+                                    let cached = scratch.id_state[idx];
+                                    if cached == 1 {
+                                        false
+                                    } else if cached == 2 {
+                                        true
+                                    } else {
+                                        let res = if compiled.has_regex {
+                                            match_identifier_with_cache_on_view(
+                                                &compiled.identifiers[idx],
+                                                &mut view,
+                                                &self.rule_regex_maps[rule_idx],
+                                            )
+                                        } else {
+                                            match_identifier_on_view(&compiled.identifiers[idx], &mut view)
+                                        };
+                                        scratch.id_state[idx] = if res { 2 } else { 1 };
+                                        res
+                                    }
+                                };
+
+                                for (cond_idx, condition) in conditions.iter().enumerate() {
+                                    if condition.evaluate_lazy(&mut eval_ident) {
+                                        matched_conditions.push(cond_idx);
+                                    }
+                                }
+
+                                if !matched_conditions.is_empty() {
+                                    // For matching rules only, ensure any remaining identifiers are evaluated
+                                    // so RuleMatch details contain all matched identifiers.
+                                    for idx in 0..compiled.identifiers.len() {
+                                        let _ = eval_ident(idx);
+                                    }
+                                }
+                            }
+
+                            if !matched_conditions.is_empty() {
+                                matches += 1;
+                                scratch.reset_id_results(compiled.identifiers.len());
+                                for idx in 0..compiled.identifiers.len() {
+                                    scratch.id_results[idx] = scratch.id_state[idx] == 2;
+                                }
+                                on_match(compiled, &scratch.id_results, &matched_conditions);
+                            }
+                        }
+                    }
+                } else {
+                    let rule_matched = match &compiled.condition {
+                        CompiledCondition::Single(idx) => {
+                            if compiled.has_regex {
+                                match_identifier_with_cache_on_view(
+                                    &compiled.identifiers[*idx],
+                                    &mut view,
+                                    &self.rule_regex_maps[rule_idx],
+                                )
+                            } else {
+                                match_identifier_on_view(&compiled.identifiers[*idx], &mut view)
+                            }
+                        }
+                        CompiledCondition::Multi(conditions) => {
+                            scratch.reset_id_state(compiled.identifiers.len());
+                            let mut eval_ident = |idx: usize| -> bool {
+                                let cached = scratch.id_state[idx];
+                                if cached == 1 {
+                                    false
+                                } else if cached == 2 {
+                                    true
+                                } else {
+                                    let res = if compiled.has_regex {
+                                        match_identifier_with_cache_on_view(
+                                            &compiled.identifiers[idx],
+                                            &mut view,
+                                            &self.rule_regex_maps[rule_idx],
+                                        )
+                                    } else {
+                                        match_identifier_on_view(&compiled.identifiers[idx], &mut view)
+                                    };
+                                    scratch.id_state[idx] = if res { 2 } else { 1 };
+                                    res
+                                }
+                            };
+
+                            conditions.iter().any(|c| c.evaluate_lazy(&mut eval_ident))
                         }
                     };
 
-                    for condition in &compiled.resolved_conditions {
-                        if condition.evaluate_lazy(&mut eval_ident) {
-                            matches += 1;
-                            break;
-                        }
+                    if rule_matched {
+                        matches += 1;
                     }
                 }
             }

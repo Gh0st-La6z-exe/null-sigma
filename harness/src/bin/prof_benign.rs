@@ -32,6 +32,8 @@ fn main() {
 
     eprintln!("[prof_benign] loading {} common rules...", refs.len());
     let bench = NullSigmaBench::new(&refs);
+    let (img_keys, pimg_keys, unconstrained) = bench.engine.discriminator_stats();
+    eprintln!("[prof_benign] index stats: image_keys={img_keys}, parent_image_keys={pimg_keys}, unconstrained_rules={unconstrained}");
 
     let events = r#gen::generate(42, 1000);
     let benign_idx = events
