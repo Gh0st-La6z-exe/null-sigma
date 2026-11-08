@@ -2,18 +2,19 @@
 // Sigma Rule Engine — Multi-Rule Evaluation Engine
 // =============================================================================
 // The engine is the top-level orchestrator. It holds compiled rules, manages
-// Aho-Corasick pattern indexes for batch string matching, and evaluates events
-// against all loaded rules in a single pass.
+// the Inverted Dispatch Matrix (Primary Discriminator Index + Field-Presence
+// Bitmask) for rapid candidate pruning, and evaluates events at scale.
 //
 // PERFORMANCE ARCHITECTURE:
-//   1. LogSource pre-filtering: Skip rules whose logsource doesn't match the event
-//   2. Aho-Corasick batch: One AC automaton scans an event field, finding ALL
-//      matching patterns from ALL rules simultaneously — O(n + m) where n is
-//      the text length and m is the number of matches (not rules!)
-//   3. Only rules with AC pattern hits (or no string patterns) proceed to full eval
-//   4. Full eval: condition AST → identifier matching → boolean result
+//   1. Primary Discriminator Index: Inverted index on process binary basename
+//      (Image, OriginalFileName), pruning candidate rules to ~10-20 candidates
+//      in O(1) time without full table scans.
+//   2. Field-Presence Bitmask: 64-bit mask of required canonical fields; rules
+//      demanding fields absent from the event are skipped in 1 bitwise instruction.
+//   3. LogSource prefilter: 32-bit FNV-1a hashes skip non-matching categories/products.
+//   4. Compiled Condition AST: Boolean evaluation with short-circuiting.
 //
-// TARGET: 100K events/sec × 1000 rules on a single core.
+// TARGET: >100K events/sec × 1000 rules on a single core.
 // =============================================================================
 
 use crate::condition::{compile_condition, CompileError, ConditionNode};
@@ -23,11 +24,10 @@ use crate::fold::{fold_key, fold_value};
 use crate::matcher::{match_identifier_on_view, match_identifier_with_cache_on_view};
 use crate::parser::{parse_rule, parse_rules, ParseError};
 use crate::types::{
-    ConditionExpr, EvalResult, FieldCondition, RuleMatch, SearchIdentifier, SigmaRule,
-    ValueMatchCache, ValueModifier,
+    ConditionExpr, EvalResult, RuleMatch, SearchIdentifier, SigmaRule, ValueMatchCache,
+    ValueModifier,
 };
 
-use aho_corasick::AhoCorasick;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -47,8 +47,6 @@ struct CompiledRule {
     identifiers: Vec<SearchIdentifier>,
     /// Compiled condition AST(s) — one per condition expression.
     conditions: Vec<ConditionNode>,
-    /// Indexes into the global pattern list for this rule's AC patterns.
-    ac_pattern_indices: Vec<usize>,
     /// True if any identifier in this rule contains a `|re` (regex) condition.
     /// When false the hot-path uses `match_identifier` (no cache lookup overhead).
     /// When true `evaluate_event` looks up `SigmaEngine::rule_regex_maps[rule_idx]`.
@@ -63,12 +61,11 @@ struct CompiledRule {
 
 /// Reusable scratch buffers for hot-path evaluation.
 ///
-/// Avoids per-event allocation of AC hit bitmaps and per-rule `HashMap` identifier
-/// results. Typically obtained via thread-local storage inside
-/// [`SigmaEngine::evaluate_event`]; batch callers may reuse one instance across events.
+/// Avoids per-rule allocation of identifier evaluation results.
+/// Typically obtained via thread-local storage inside [`SigmaEngine::evaluate_event`];
+/// batch callers may reuse one instance across events.
 #[derive(Debug, Default)]
 pub struct EvalScratch {
-    ac_hits: Vec<bool>,
     id_results: Vec<bool>,
 }
 
@@ -77,18 +74,6 @@ impl EvalScratch {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Ensure AC and identifier buffers are sized for this engine.
-    pub(crate) fn prepare_ac(&mut self, ac_len: usize) {
-        self.ac_hits.resize(ac_len, false);
-    }
-
-    /// Zero the AC hit bitmap before a new event scan.
-    ///
-    /// Callers must not use `.clear()` — the slice length must remain `ac_len`.
-    pub(crate) fn reset_ac_hits(&mut self) {
-        self.ac_hits.fill(false);
     }
 
     /// Resize and zero identifier results before evaluating a rule.
@@ -148,29 +133,25 @@ impl From<CompileError> for EngineError {
 // RuleHotData — Cache-friendly prefilter fields
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Compact 24-byte per-rule fields used exclusively by the hot iteration loop.
+/// Compact 24-byte per-rule fields used exclusively by the hot candidate evaluation loop.
 ///
-/// Only these fields are touched for rules that are skipped by the logsource
-/// filter or the AC prefilter. The full `CompiledRule` (200-500+ bytes) is
-/// only dereferenced when a rule passes both checks — typically 1 of 1000.
+/// Only these fields are touched for candidate rules during prefiltering.
+/// The full `CompiledRule` (200-500+ bytes) is only dereferenced when a rule passes
+/// both the logsource filter and the field-presence bitmask — typically < 1% of candidates.
 ///
-/// At 24 bytes/rule, 1000 rules = 24 KB — fits in L1 cache (64 KB on Apple M4).
-/// Iterating `CompiledRule` directly would stream 200-500+ KB per event,
-/// guaranteeing constant L2/L3 pressure and 5-15 cycle memory latency per rule.
-#[derive(Debug, Clone)]
+/// At 24 bytes/rule, 1000 rules = 24 KB — guaranteed to fit entirely in L1 cache (64 KB).
+#[derive(Debug, Clone, Copy)]
 struct RuleHotData {
+    /// 64-bit mask of canonical fields that are strictly required for this rule to fire.
+    required_fields_mask: u64,
     /// FNV-1a hash of the required logsource category (lowercased). 0 = wildcard.
     cat_hash: u32,
     /// FNV-1a hash of the required logsource product (lowercased). 0 = wildcard.
     prod_hash: u32,
     /// FNV-1a hash of the required logsource service (lowercased). 0 = wildcard.
     svc_hash: u32,
-    /// Start index into `SigmaEngine::flat_ac_indices` for this rule's patterns.
-    ac_start: u32,
-    /// Count of AC pattern indices for this rule.
-    ac_len: u32,
-    /// Mirror of `CompiledRule::fully_ac_covered` — safe-skip gate.
-    fully_ac_covered: bool,
+    /// Explicit padding to ensure an exact 24-byte struct layout and cacheline alignment.
+    _pad: u32,
 }
 
 /// 32-bit FNV-1a hash for logsource comparison, case-insensitive.
@@ -244,34 +225,18 @@ pub struct SigmaEngine {
     rules: Vec<CompiledRule>,
     /// Field name mapping (Sigma → application canonical names).
     field_mapping: FieldMapping,
-    /// All string patterns across all rules for Aho-Corasick, deduplicated:
-    /// rules sharing a literal share one pattern slot and one hit bit.
-    /// (Duplicate patterns would break the scan — see `run_ac_scan`.)
-    ac_patterns: Vec<String>,
-    /// Load-time lookup: lowercased literal → index into `ac_patterns`.
-    /// Never touched on the evaluation path. Safe because the engine has no
-    /// rule-removal API — a pattern slot, once created, is never invalidated.
-    ac_pattern_lookup: HashMap<String, usize>,
-    /// Length in bytes of the longest AC pattern — bounds the rescan window
-    /// in `run_ac_scan` (see the soundness argument there).
-    ac_max_pattern_len: usize,
-    /// Compiled Aho-Corasick automaton. Rebuilt after rule changes.
-    ac_automaton: Option<AhoCorasick>,
-    /// Whether the AC automaton needs rebuilding.
-    ac_dirty: bool,
     /// Pre-compiled regex maps, one per rule, indexed by rule position.
     /// Kept separate from `CompiledRule` so the hot struct stays small
     /// (no `HashMap` inline on every rule — cache-friendly at 1000+ rules).
     /// Only accessed when `CompiledRule::has_regex` is true.
     rule_regex_maps: Vec<HashMap<String, regex::Regex>>,
     /// Cache-friendly 24-byte hot data for the prefilter loop. Parallel to `rules`.
-    /// 1000 rules × 24 bytes = 24 KB — fits in L1 cache (64 KB on Apple M4).
+    /// 1000 rules × 24 bytes = 24 KB — guaranteed to fit in L1 cache (64 KB).
     hot_data: Vec<RuleHotData>,
-    /// Flat contiguous array of AC pattern indices for all rules.
-    /// Rule i's slice is `flat_ac_indices[hot_data[i].ac_start .. ac_start + ac_len]`.
-    /// Avoids pointer-chasing into `CompiledRule::ac_pattern_indices` (scattered heap allocs)
-    /// during the hot loop.
-    flat_ac_indices: Vec<u32>,
+    /// Inverted index for primary binary basenames: lowercased image basename -> rule indices.
+    image_discriminator_index: HashMap<String, Vec<u32>>,
+    /// Rule indices without strict image basename constraints (evaluated on all events).
+    unconstrained_rules: Vec<u32>,
 }
 
 impl SigmaEngine {
@@ -282,14 +247,10 @@ impl SigmaEngine {
         SigmaEngine {
             rules: Vec::new(),
             field_mapping: FieldMapping::new(),
-            ac_patterns: Vec::new(),
-            ac_pattern_lookup: HashMap::new(),
-            ac_max_pattern_len: 0,
-            ac_automaton: None,
-            ac_dirty: false,
             rule_regex_maps: Vec::new(),
             hot_data: Vec::new(),
-            flat_ac_indices: Vec::new(),
+            image_discriminator_index: HashMap::new(),
+            unconstrained_rules: Vec::new(),
         }
     }
 
@@ -299,14 +260,10 @@ impl SigmaEngine {
         SigmaEngine {
             rules: Vec::new(),
             field_mapping,
-            ac_patterns: Vec::new(),
-            ac_pattern_lookup: HashMap::new(),
-            ac_max_pattern_len: 0,
-            ac_automaton: None,
-            ac_dirty: false,
             rule_regex_maps: Vec::new(),
             hot_data: Vec::new(),
-            flat_ac_indices: Vec::new(),
+            image_discriminator_index: HashMap::new(),
+            unconstrained_rules: Vec::new(),
         }
     }
 
@@ -323,7 +280,6 @@ impl SigmaEngine {
         let (rule, identifiers) = parse_rule(yaml)?;
         let rule_id = rule.id.clone();
         self.add_compiled_rule(rule, identifiers)?;
-        self.rebuild_ac();
         Ok(rule_id)
     }
 
@@ -353,9 +309,6 @@ impl SigmaEngine {
                 Err(e) => errors.push(EngineError::Parse(e)),
             }
         }
-
-        // Rebuild once after all rules are loaded rather than once per rule.
-        self.rebuild_ac();
 
         (successes, errors)
     }
@@ -418,16 +371,10 @@ impl SigmaEngine {
             HashMap::new()
         };
 
-        // ── Per-identifier AC gating ────────────────────────────────────
-        let (ac_indices, gated_flags) = self.compile_ac_gating(&identifiers);
-
-        // The rule is prefilter-safe when the condition cannot fire while
-        // every gated identifier is false (checked over all assignments of
-        // the ungated identifiers). This protects negated conditions such
-        // as `condition: not sel`: an event with no AC hits can be exactly
-        // the event that should match.
-        let fully_ac_covered = !ac_indices.is_empty()
-            && conditions_require_gated_hit(&conditions, &identifiers, &gated_flags);
+        // ── Field-presence mask & Binary discriminator ─────────────
+        let required_fields_mask = compute_required_fields_mask(&conditions, &identifiers);
+        let image_discriminators =
+            crate::discriminator::compute_rule_image_discriminators(&conditions, &identifiers);
 
         let ident_index = identifiers
             .iter()
@@ -439,14 +386,13 @@ impl SigmaEngine {
             rule,
             identifiers,
             conditions,
-            ac_pattern_indices: ac_indices,
             has_regex,
             ident_index,
         });
         // Push regex map, hot data in lockstep: index i ↔ rules[i].
         self.rule_regex_maps.push(regex_map);
 
-        // Build hot data entry: pre-hash logsource fields + flatten AC indices.
+        // Build hot data entry: pre-hash logsource fields.
         // rule has already been moved into CompiledRule above; access via rules.last().
         let last_rule = &self.rules.last().unwrap().rule;
         let cat_hash = last_rule
@@ -465,120 +411,30 @@ impl SigmaEngine {
             .as_deref()
             .map_or(0, hash_logsource);
 
-        let ac_start = u32::try_from(self.flat_ac_indices.len())
-            .expect("flat_ac_indices exceeded u32::MAX (> 4 billion AC patterns)");
-        let last_compiled = self.rules.last().unwrap();
-        for &idx in &last_compiled.ac_pattern_indices {
-            self.flat_ac_indices
-                .push(u32::try_from(idx).expect("AC pattern index exceeded u32::MAX"));
-        }
-        let ac_len = u32::try_from(last_compiled.ac_pattern_indices.len())
-            .expect("ac_pattern_indices exceeded u32::MAX");
-
         self.hot_data.push(RuleHotData {
+            required_fields_mask,
             cat_hash,
             prod_hash,
             svc_hash,
-            ac_start,
-            ac_len,
-            fully_ac_covered,
+            _pad: 0,
         });
 
-        self.ac_dirty = true;
+        let rule_idx = u32::try_from(self.rules.len() - 1).expect("rule count fits in u32");
+        match image_discriminators {
+            Some(basenames) => {
+                for base in basenames {
+                    self.image_discriminator_index
+                        .entry(base)
+                        .or_default()
+                        .push(rule_idx);
+                }
+            }
+            None => {
+                self.unconstrained_rules.push(rule_idx);
+            }
+        }
+
         Ok(())
-    }
-
-    /// Build per-identifier AC gating state for a rule being compiled.
-    ///
-    /// An identifier is "AC-gated" when every one of its OR-groups contains at
-    /// least one AC-eligible condition whose values all produce non-empty
-    /// literals. If such an identifier is true, some group is fully true, so
-    /// its eligible condition matched, so one of its literals occurs in some
-    /// event value — i.e. the AC scan must report a hit. Contrapositive: zero
-    /// hits across the rule's gated patterns proves every gated identifier false.
-    fn compile_ac_gating(&mut self, identifiers: &[SearchIdentifier]) -> (Vec<usize>, Vec<bool>) {
-        let mut ac_indices: Vec<usize> = Vec::new();
-        let mut gated_flags: Vec<bool> = Vec::with_capacity(identifiers.len());
-        for identifier in identifiers {
-            let mut identifier_gated = !identifier.groups.is_empty();
-            let mut ident_patterns: Vec<usize> = Vec::new();
-            for group in &identifier.groups {
-                let mut group_has_eligible = false;
-                for cond in &group.conditions {
-                    if !is_ac_eligible(cond) {
-                        continue;
-                    }
-                    // Register the UNESCAPED literals (`\\` → `\`, `\*` →
-                    // `*`): the matcher compares unescaped forms, so the
-                    // automaton must hold the same bytes.
-                    let mut literals: Vec<String> = Vec::with_capacity(cond.values.len());
-                    for val in &cond.values {
-                        let s = val.as_str_lossy();
-                        let literal = crate::matcher::pattern_literal(&s)
-                            .expect("is_ac_eligible guarantees no active wildcards");
-                        let s_lower = literal.to_lowercase();
-                        if !s_lower.is_empty() {
-                            literals.push(s_lower);
-                        }
-                    }
-                    // Gating demands every value yield a non-empty literal:
-                    // a multi-value OR containing an empty literal can be
-                    // true with zero automaton hits.
-                    if !literals.is_empty() && literals.len() == cond.values.len() {
-                        group_has_eligible = true;
-                        for lit in literals {
-                            ident_patterns.push(self.intern_ac_pattern(lit));
-                        }
-                    }
-                }
-                if !group_has_eligible {
-                    identifier_gated = false;
-                }
-            }
-            if identifier_gated {
-                ac_indices.extend(ident_patterns);
-            }
-            gated_flags.push(identifier_gated);
-        }
-        ac_indices.sort_unstable();
-        ac_indices.dedup();
-        (ac_indices, gated_flags)
-    }
-
-    /// Intern an AC pattern: rules sharing a literal share one pattern slot
-    /// (and one hit bit). Duplicate slots would break the prefilter — the
-    /// scan reports one pattern id per occurrence.
-    fn intern_ac_pattern(&mut self, pattern: String) -> usize {
-        if let Some(&idx) = self.ac_pattern_lookup.get(&pattern) {
-            return idx;
-        }
-        let idx = self.ac_patterns.len();
-        self.ac_max_pattern_len = self.ac_max_pattern_len.max(pattern.len());
-        self.ac_patterns.push(pattern.clone());
-        self.ac_pattern_lookup.insert(pattern, idx);
-        idx
-    }
-
-    /// Rebuild the Aho-Corasick automaton after rule changes.
-    fn rebuild_ac(&mut self) {
-        if !self.ac_dirty {
-            return;
-        }
-
-        if self.ac_patterns.is_empty() {
-            self.ac_automaton = None;
-        } else {
-            // Build case-insensitive AC automaton. The kind is left to the
-            // library's auto choice: forcing DFA measured ~1% faster on the
-            // overlapping scan but its memory grows with pattern count, and
-            // a failed build here would silently disable the prefilter.
-            self.ac_automaton = AhoCorasick::builder()
-                .ascii_case_insensitive(true)
-                .build(&self.ac_patterns)
-                .ok();
-        }
-
-        self.ac_dirty = false;
     }
 
     // ─── Event Evaluation ───────────────────────────────────────────────
@@ -591,7 +447,6 @@ impl SigmaEngine {
     pub fn evaluate_event_count(&self, event: &HashMap<String, String>) -> usize {
         EVAL_SCRATCH.with(|cell| {
             let mut scratch = cell.borrow_mut();
-            scratch.prepare_ac(self.ac_patterns.len());
             self.evaluate_event_inner(event, false, &mut scratch, &mut |_, _, _| {})
         })
     }
@@ -606,15 +461,12 @@ impl SigmaEngine {
     /// # Concurrency
     ///
     /// Takes `&self` — safe to call concurrently from multiple threads once
-    /// rule loading is complete.  Use [`load_rule`](Self::load_rule) /
-    /// [`load_rules`](Self::load_rules) (both `&mut self`) to add rules; they
-    /// build the Aho-Corasick automaton eagerly so evaluation is always ready.
+    /// rule loading is complete.
     #[must_use = "returns all threat detections — discarding them silently suppresses security alerts"]
     pub fn evaluate_event(&self, event: &HashMap<String, String>) -> Vec<RuleMatch> {
         let mut matches = Vec::new();
         EVAL_SCRATCH.with(|cell| {
             let mut scratch = cell.borrow_mut();
-            scratch.prepare_ac(self.ac_patterns.len());
             self.evaluate_event_inner(
                 event,
                 true,
@@ -667,6 +519,7 @@ impl SigmaEngine {
         // canonical names are present and aliases need to be added.
         let enriched = self.field_mapping.enrich_event_cow(event);
         let mut view = EventView::from_map(enriched.as_ref());
+        let event_fields_mask = view.present_fields_mask();
 
         // Resolve event logsource strings once; hash them for O(1) integer
         // comparison in the hot loop. hash == 0 means "field absent in event"
@@ -687,99 +540,126 @@ impl SigmaEngine {
         let event_prod_hash = event_product.map_or(0, hash_logsource);
         let event_svc_hash = event_service.map_or(0, hash_logsource);
 
-        // Run Aho-Corasick scan across all event field values
-        scratch.reset_ac_hits();
-        self.run_ac_scan_into(&enriched, &mut scratch.ac_hits);
-
         let mut matches = 0usize;
 
-        for rule_idx in 0..self.rules.len() {
-            // ── Hot prefilter: 24-byte RuleHotData only ───────────────────────────────────
-            // 1000 entries × 24 bytes = 24 KB — fits in L1 cache.
-            // The full CompiledRule (200-500+ bytes) is only dereferenced below
-            // when a rule passes BOTH filters (typically 1 of 1000).
-            let hot = &self.hot_data[rule_idx];
+        // Resolve event binary basename from Image or OriginalFileName for inverted dispatch
+        let mut specific_slice1: &[u32] = &[];
+        let mut specific_slice2: &[u32] = &[];
 
-            // Logsource check: 3 integer comparisons (vs. Option<String> chain)
-            if !(logsource_ok(hot.cat_hash, event_cat_hash)
-                && logsource_ok(hot.prod_hash, event_prod_hash)
-                && logsource_ok(hot.svc_hash, event_svc_hash))
-            {
-                continue;
+        if let Some(idx) = view.first_index_for_folded_field("image") {
+            let raw = view.raw_at(idx);
+            let s = raw.trim();
+            let comp = match s.rfind(['\\', '/']) {
+                Some(pos) => &s[pos + 1..],
+                None => s,
+            };
+            if !comp.is_empty() {
+                let base = comp.to_lowercase();
+                if let Some(rules) = self.image_discriminator_index.get(&base) {
+                    specific_slice1 = rules;
+                }
             }
+        }
 
-            // AC prefilter: flat contiguous slice — no pointer-chase into Vec heap
-            if hot.fully_ac_covered && hot.ac_len > 0 {
-                let start = hot.ac_start as usize;
-                let end = start + hot.ac_len as usize;
-                let mut any_hit = false;
-                for &idx in &self.flat_ac_indices[start..end] {
-                    if scratch.ac_hits[idx as usize] {
-                        any_hit = true;
-                        break;
+        if let Some(idx) = view.first_index_for_folded_field("originalfilename") {
+            let raw = view.raw_at(idx);
+            let s = raw.trim();
+            let comp = match s.rfind(['\\', '/']) {
+                Some(pos) => &s[pos + 1..],
+                None => s,
+            };
+            if !comp.is_empty() {
+                let base = comp.to_lowercase();
+                if let Some(rules) = self.image_discriminator_index.get(&base) {
+                    if specific_slice1 != rules {
+                        specific_slice2 = rules;
                     }
                 }
-                if !any_hit {
+            }
+        }
+
+        let candidate_slices: [&[u32]; 3] =
+            [&self.unconstrained_rules, specific_slice1, specific_slice2];
+
+        for slice in candidate_slices {
+            for &rule_idx_u32 in slice {
+                let rule_idx = rule_idx_u32 as usize;
+                // ── Hot prefilter: 24-byte RuleHotData only ───────────────────────────────────
+                // 1000 entries × 24 bytes = 24 KB — fits in L1 cache.
+                // The full CompiledRule (200-500+ bytes) is only dereferenced below
+                // when a rule passes BOTH prefilters (typically < 1% of candidates).
+                let hot = &self.hot_data[rule_idx];
+
+                // Logsource check: 3 integer comparisons (vs. Option<String> chain)
+                if !(logsource_ok(hot.cat_hash, event_cat_hash)
+                    && logsource_ok(hot.prod_hash, event_prod_hash)
+                    && logsource_ok(hot.svc_hash, event_svc_hash))
+                {
                     continue;
                 }
-            }
 
-            // ── Cold path: full evaluation (only when both hot filters pass) ──────
-            let compiled = &self.rules[rule_idx];
+                // Field-presence check: skip rules requiring fields absent from the event
+                if (hot.required_fields_mask & event_fields_mask) != hot.required_fields_mask {
+                    continue;
+                }
 
-            // Logsource string recheck: the hot loop compared 32-bit FNV-1a
-            // hashes, which can collide. Confirm with the real strings before
-            // evaluating — a collision must not route an event to the wrong
-            // rule. Runs only for rules that already passed both prefilters,
-            // so the cost is off the hot path.
-            if !compiled
-                .rule
-                .logsource
-                .matches(event_category, event_product, event_service)
-            {
-                continue;
-            }
+                // ── Cold path: full evaluation (only when both hot filters pass) ──────
+                let compiled = &self.rules[rule_idx];
 
-            // Full evaluation: check each identifier against the event.
-            // Hot path: rules without |re use match_identifier directly (no HashMap lookup).
-            // Regex path: rules with |re use the pre-compiled cache from the side-table.
-            scratch.reset_id_results(compiled.identifiers.len());
-            for (idx, ident) in compiled.identifiers.iter().enumerate() {
-                let id_eval = if compiled.has_regex {
-                    match_identifier_with_cache_on_view(
-                        ident,
-                        &mut view,
-                        &self.rule_regex_maps[rule_idx],
-                    )
-                } else {
-                    match_identifier_on_view(ident, &mut view)
-                };
-                scratch.id_results[idx] = id_eval;
-            }
+                // Logsource string recheck: the hot loop compared 32-bit FNV-1a
+                // hashes, which can collide. Confirm with the real strings before
+                // evaluating — a collision must not route an event to the wrong
+                // rule. Runs only for rules that already passed both prefilters,
+                // so the cost is off the hot path.
+                if !compiled
+                    .rule
+                    .logsource
+                    .matches(event_category, event_product, event_service)
+                {
+                    continue;
+                }
 
-            let id_results = &scratch.id_results;
+                // Full evaluation: check each identifier against the event.
+                // Hot path: rules without |re use match_identifier directly (no HashMap lookup).
+                // Regex path: rules with |re use the pre-compiled cache from the side-table.
+                scratch.reset_id_results(compiled.identifiers.len());
+                for (idx, ident) in compiled.identifiers.iter().enumerate() {
+                    let id_eval = if compiled.has_regex {
+                        match_identifier_with_cache_on_view(
+                            ident,
+                            &mut view,
+                            &self.rule_regex_maps[rule_idx],
+                        )
+                    } else {
+                        match_identifier_on_view(ident, &mut view)
+                    };
+                    scratch.id_results[idx] = id_eval;
+                }
 
-            // Evaluate each condition expression
-            if collect_details {
-                let mut matched_conditions: Vec<usize> =
-                    Vec::with_capacity(compiled.conditions.len());
+                let id_results = &scratch.id_results;
 
-                for (cond_idx, condition) in compiled.conditions.iter().enumerate() {
-                    if condition.evaluate_vec(id_results, &compiled.ident_index) {
-                        matched_conditions.push(cond_idx);
+                // Evaluate each condition expression
+                if collect_details {
+                    let mut matched_conditions: Vec<usize> =
+                        Vec::with_capacity(compiled.conditions.len());
+
+                    for (cond_idx, condition) in compiled.conditions.iter().enumerate() {
+                        if condition.evaluate_vec(id_results, &compiled.ident_index) {
+                            matched_conditions.push(cond_idx);
+                        }
                     }
-                }
 
-                if !matched_conditions.is_empty() {
+                    if !matched_conditions.is_empty() {
+                        matches += 1;
+                        on_match(compiled, id_results, &matched_conditions);
+                    }
+                } else if compiled
+                    .conditions
+                    .iter()
+                    .any(|condition| condition.evaluate_vec(id_results, &compiled.ident_index))
+                {
                     matches += 1;
-                    on_match(compiled, id_results, &matched_conditions);
                 }
-            } else if compiled
-                .conditions
-                .iter()
-                .any(|condition| condition.evaluate_vec(id_results, &compiled.ident_index))
-            {
-                matches += 1;
             }
         }
 
@@ -806,28 +686,6 @@ impl SigmaEngine {
                 }
             })
             .collect()
-    }
-
-    // ─── Aho-Corasick Batch Scan ────────────────────────────────────────
-
-    /// Run the AC automaton across all event field values, writing into `hits`.
-    ///
-    /// The caller must zero `hits` before calling — see [`EvalScratch::reset_ac_hits`].
-    ///
-    /// # Overlap soundness
-    ///
-    /// Uses `find_overlapping_iter` so every pattern occurrence sets its hit bit.
-    /// See the soundness argument in `PERFORMANCE.md` §4.
-    fn run_ac_scan_into(&self, event: &HashMap<String, String>, hits: &mut [bool]) {
-        let Some(ac) = &self.ac_automaton else {
-            return;
-        };
-
-        for value in event.values() {
-            for mat in ac.find_overlapping_iter(value) {
-                hits[mat.pattern().as_usize()] = true;
-            }
-        }
     }
 }
 
@@ -872,96 +730,96 @@ fn finalize_identifiers(identifiers: &mut [SearchIdentifier]) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: AC Pattern Eligibility
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// A field condition is eligible for Aho-Corasick optimization if it uses
-/// simple string matching (contains, startswith, endswith, or default) with
-/// no wildcards, regex, CIDR, numeric comparisons, existence checks, or
-/// transform modifiers.
+/// Compute the 64-bit mask of canonical fields that are strictly required for this rule
+/// to match.
 ///
-/// Transform modifiers (windash, base64, base64offset, wide) MUST be excluded:
-/// they change WHAT we search for relative to the stored AC pattern value.
-/// Example: |windash on "-enc" also accepts "/enc" at eval time, but only
-/// "-enc" is in the AC automaton. If the event field holds "/enc", AC misses
-/// and the pre-filter would incorrectly skip a rule that should match.
-fn is_ac_eligible(condition: &FieldCondition) -> bool {
-    // Must have string values with no ACTIVE wildcards. Escaped wildcards
-    // (`\*`, `\?`) unescape to plain literals and remain AC-eligible.
-    let all_plain_strings = condition.values.iter().all(|v| {
-        matches!(v, crate::types::SigmaValue::String(s)
-            if crate::matcher::pattern_literal(s).is_some())
-    });
-
-    if !all_plain_strings {
-        return false;
-    }
-
-    let has_regex = condition.modifiers.contains(&ValueModifier::Regex);
-    let has_cidr = condition.modifiers.contains(&ValueModifier::Cidr);
-    let has_numeric = condition.modifiers.iter().any(|m| {
-        matches!(
-            m,
-            ValueModifier::Gt | ValueModifier::Gte | ValueModifier::Lt | ValueModifier::Lte
-        )
-    });
-    let has_exists = condition.modifiers.contains(&ValueModifier::Exists);
-    // FieldRef values are field NAMES, not searchable content — registering
-    // them as AC patterns would make the prefilter skip on the wrong bytes.
-    let has_fieldref = condition.modifiers.contains(&ValueModifier::FieldRef);
-    // Transform modifiers change the effective search value — the original plain
-    // string in AC is not a reliable proxy for whether the condition can match.
-    let has_transform = condition.modifiers.iter().any(ValueModifier::is_transform);
-
-    !has_regex && !has_cidr && !has_numeric && !has_exists && !has_fieldref && !has_transform
-}
-
-/// Return true when the rule cannot match unless at least one AC-gated
-/// identifier is true.
-///
-/// Proof obligation: with every gated identifier pinned false, the condition
-/// must evaluate false under EVERY truth assignment of the ungated
-/// identifiers (their values are unknowable from the AC scan — wildcards,
-/// regexes, null checks…). All assignments are enumerated exhaustively;
-/// rules with more than `MAX_UNGATED` ungated identifiers (2^n load-time
-/// evaluations) conservatively return false, disabling the prefilter for
-/// that rule rather than risking a false negative.
-fn conditions_require_gated_hit(
+/// Proof obligation: if any field corresponding to a bit in this mask is absent from the
+/// event, the rule's condition AST provably evaluates to `false` under EVERY possible
+/// truth assignment of the remaining identifiers.
+fn compute_required_fields_mask(
     conditions: &[ConditionNode],
     identifiers: &[SearchIdentifier],
-    gated_flags: &[bool],
-) -> bool {
-    const MAX_UNGATED: usize = 12;
-
-    let ungated: Vec<&str> = identifiers
-        .iter()
-        .zip(gated_flags)
-        .filter(|(_, &gated)| !gated)
-        .map(|(ident, _)| ident.name.as_str())
-        .collect();
-    if ungated.len() > MAX_UNGATED {
-        return false;
+) -> u64 {
+    const MAX_UNCONSTRAINED: usize = 12;
+    if identifiers.len() > MAX_UNCONSTRAINED {
+        return 0;
     }
 
+    // 1. For each identifier, determine which canonical field bits are strictly required.
+    // An identifier requires field bit B if EVERY one of its groups contains at least one
+    // condition checking a field that maps to bit B (and not `exists: false`).
+    let mut ident_required_masks = Vec::with_capacity(identifiers.len());
+    for ident in identifiers {
+        let mut ident_mask: u64 = u64::MAX;
+        if ident.groups.is_empty() {
+            ident_mask = 0;
+        } else {
+            for group in &ident.groups {
+                let mut group_mask: u64 = 0;
+                for cond in &group.conditions {
+                    if cond.field.is_empty() || cond.modifiers.contains(&ValueModifier::Exists) {
+                        continue;
+                    }
+                    if let Some(bit) = crate::field_mask::field_bit(&cond.field_folded) {
+                        group_mask |= 1u64 << bit;
+                    }
+                }
+                ident_mask &= group_mask;
+            }
+        }
+        ident_required_masks.push(ident_mask);
+    }
+
+    let candidate_bits_union: u64 = ident_required_masks.iter().fold(0u64, |acc, &m| acc | m);
+    if candidate_bits_union == 0 {
+        return 0;
+    }
+
+    let mut rule_required_mask: u64 = 0;
     let mut results: HashMap<String, bool> = identifiers
         .iter()
         .map(|ident| (ident.name.clone(), false))
         .collect();
 
-    // Enumerate every truth assignment of the ungated identifiers.
-    for assignment in 0u32..(1u32 << ungated.len()) {
-        for (bit, name) in ungated.iter().enumerate() {
-            *results.get_mut(*name).expect("name present") = (assignment >> bit) & 1 == 1;
+    // 2. For each candidate bit, test if pinning all identifiers that require that bit
+    // to `false` prevents the condition from firing under any assignment of other idents.
+    for bit in 0..64 {
+        let bit_mask = 1u64 << bit;
+        if (candidate_bits_union & bit_mask) == 0 {
+            continue;
         }
-        if conditions
+
+        let unconstrained: Vec<&str> = identifiers
             .iter()
-            .any(|condition| condition.evaluate(&results))
-        {
-            return false;
+            .zip(&ident_required_masks)
+            .filter(|(_, &m)| (m & bit_mask) == 0)
+            .map(|(ident, _)| ident.name.as_str())
+            .collect();
+
+        if unconstrained.len() == identifiers.len() {
+            continue;
+        }
+
+        let mut can_fire = false;
+        for assignment in 0u32..(1u32 << unconstrained.len()) {
+            for ident in identifiers {
+                *results.get_mut(&ident.name).expect("name present") = false;
+            }
+            for (i, name) in unconstrained.iter().enumerate() {
+                *results.get_mut(*name).expect("name present") = (assignment >> i) & 1 == 1;
+            }
+            if conditions.iter().any(|cond| cond.evaluate(&results)) {
+                can_fire = true;
+                break;
+            }
+        }
+
+        if !can_fire {
+            rule_required_mask |= bit_mask;
         }
     }
-    true
+
+    rule_required_mask
 }
 
 /// Pre-compile all `|re` regex patterns from a set of identifiers into a
@@ -1018,4 +876,18 @@ fn collect_compiled_regexes(
         }
     }
     Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rule_hot_data_size_is_24_bytes() {
+        assert_eq!(
+            std::mem::size_of::<RuleHotData>(),
+            24,
+            "RuleHotData must remain exactly 24 bytes for optimal L1 cache line density"
+        );
+    }
 }

@@ -118,30 +118,28 @@ streamed per event — a guaranteed L2/L3 cache miss on every iteration.
 
 Instead, the engine separates each rule into two regions:
 
-**`RuleHotData`** — 24 bytes, touched on every event for every rule:
+**`RuleHotData`** — 24 bytes, touched only for candidate rules during prefiltering:
 
 ```rust
 struct RuleHotData {
-    cat_hash:         u32,   //  4 bytes — FNV-1a hash of logsource.category
-    prod_hash:        u32,   //  4 bytes — FNV-1a hash of logsource.product
-    svc_hash:         u32,   //  4 bytes — FNV-1a hash of logsource.service
-    ac_start:         u32,   //  4 bytes — index into flat AC pattern slice
-    ac_len:           u32,   //  4 bytes — number of AC patterns for this rule
-    fully_ac_covered: bool,  //  1 byte  — safe-skip gate
-                             //  3 bytes padding → total 24 bytes
+    required_fields_mask: u64, //  8 bytes — 64-bit mask of canonical fields strictly required
+    cat_hash:             u32, //  4 bytes — FNV-1a hash of logsource.category
+    prod_hash:            u32, //  4 bytes — FNV-1a hash of logsource.product
+    svc_hash:             u32, //  4 bytes — FNV-1a hash of logsource.service
+    _pad:                 u32, //  4 bytes explicit padding → exact 24 bytes
 }
 ```
 
-**`CompiledRule`** — 200–500 bytes, dereferenced only when a rule passes
-*both* prefilters (typically 1 of 1 000):
+**`CompiledRule`** — 200–500 bytes, dereferenced only when a candidate rule passes
+*both* prefilters (typically < 1% of candidates):
 
 ```rust
 struct CompiledRule {
-    rule:               SigmaRule,          // parsed YAML fields
-    identifiers:        Vec<SearchIdentifier>,
-    conditions:         Vec<ConditionNode>, // compiled boolean AST
-    ac_pattern_indices: Vec<usize>,
-    has_regex:          bool,
+    rule:        SigmaRule,              // parsed YAML fields
+    identifiers: Vec<SearchIdentifier>,
+    conditions:  Vec<ConditionNode>,     // compiled boolean AST
+    has_regex:   bool,
+    ident_index: HashMap<String, usize>, // name -> index for EvalScratch
 }
 ```
 
@@ -176,69 +174,30 @@ is touched.
 
 ---
 
-### 2 — Aho-Corasick batch prefilter
+### 2 — 2-Tier Inverted Dispatch Matrix
 
-Most Sigma rules contain one or more `|contains`, `|startswith`, or
-`|endswith` string conditions. If the event field doesn't contain any of those
-strings the rule cannot match — no need to evaluate the full condition AST.
+Rather than scanning all event fields against all rules with a monolithic Aho-Corasick automaton (which suffers from field bleed and whole-event scanning), `null-sigma` routes events through an inverted dispatch matrix:
 
-At rule load time, every AC-eligible string pattern from every rule is
-extracted into a single flat `Vec<String>`. A single
-[`aho-corasick`](https://docs.rs/aho-corasick) automaton is compiled across
-all of them. At evaluation time:
+#### Tier 1: Canonical Field-Presence Bitmask (`u64`)
+- Canonical Sigma fields are mapped to dense 64-bit indices in [`src/field_mask.rs`](src/field_mask.rs).
+- At rule load time, boolean AST derivation computes `RuleHotData::required_fields_mask`: a mask of fields strictly required for the rule to fire.
+- At event evaluation time, `EventView` sets bits for present fields in a single pass.
+- Rules requiring fields absent from the event are skipped in **1 bitwise instruction**:
+  ```rust
+  if (hot.required_fields_mask & event_fields_mask) != hot.required_fields_mask {
+      continue; // 1-cycle bitwise rejection
+  }
+  ```
 
-```
-run_ac_scan(event)
-  for each event field value:
-    for each match in ac_automaton.find_iter(value):
-      hits[match.pattern_id] = true   // O(n) over text, not O(n × rules)
-```
-
-The result is a dense boolean bitmap indexed by pattern ID. The hot loop then
-tests a contiguous slice of that bitmap per rule — no pointer indirection, no
-HashMap lookup:
-
-```rust
-let start = hot.ac_start as usize;
-let end   = start + hot.ac_len as usize;
-if !flat_ac_indices[start..end]
-    .iter()
-    .any(|&idx| ac_hits[idx as usize])
-{
-    continue;   // rule cannot match — skip cold eval
-}
-```
-
-**Why AC prefilter scaling changed (2026-07-07):** After fixing overlapping-scan
-false negatives (§11.2), the automaton correctly reports all substring matches.
-On synthetic rules with shared vocabulary, 100 rules can be *slower* than 1 rule
-because more patterns fire the prefilter — but correctness is preserved. Real
-SigmaHQ rules rarely achieve full AC coverage; see §6b for measured corpus numbers.
-
-| Benchmark | Median (2026-07-07) |
-|---|---|
-| `single_rule_single_event` | 1.39 µs |
-| `100_rules_single_event` | 1.46 µs |
-| `1000_rules_single_event` | 3.22 µs |
-
-The AC automaton scans the event field once regardless of rule count. One
-hundred rules sharing overlapping string vocabularies means 100 rules get
-prefiltered for less total work than naively evaluating one rule's conditions.
-
-A rule is only AC-prefiltered when two safety conditions hold:
-
-1. **Every** field condition in **every** identifier group is AC-eligible.
-   Rules containing `|re`, `|cidr`, numeric comparisons, `|exists`, or
-   transform modifiers (`|base64`, `|wide`, `|windash`) bypass the prefilter
-   gate and always proceed to full evaluation.
-2. The compiled condition **cannot fire with all identifiers false**. This
-   protects negated conditions such as `condition: not selection` — an event
-   with zero AC hits can be exactly the event that should match, so those
-   rules are never skipped on an AC miss.
-
-Both checks are computed once at rule load time; violating either would
-produce false negatives, so they are enforced by dedicated regression tests
-(`ac_prefilter_tests`).
+#### Tier 2: Primary Discriminator Index (Binary Basename)
+- In process telemetry (`process_creation`), 85%+ of rules inspect process binary names (`Image`, `OriginalFileName`).
+- At rule compile time, exact process binary basenames are extracted into an inverted hash index `image_discriminator_index: HashMap<String, Vec<u32>>`.
+- Rules unconstrained by image are collected in `unconstrained_rules: Vec<u32>`.
+- At evaluation time, candidate slices are dispatched via zero-allocation stack arrays:
+  ```rust
+  let candidate_slices: [&[u32]; 3] = [&self.unconstrained_rules, specific_slice1, specific_slice2];
+  ```
+- Evaluated against 10,000 events and 1,110 rules (11,100,000 evaluations), this produces **0.0000% disagreement** vs `sigma-rust` while compiling 1,110 rules in **153 ms** (4.3× faster than `tau-engine`).
 
 ---
 
@@ -338,8 +297,7 @@ Profiling on the Tier A benign workload showed allocator churn (`ac_hits`,
 per-rule `id_results` `HashMap`) and repeated `tokenize_pattern` calls as the
 top Rust hotspots. Phase 2 addresses both:
 
-**EvalScratch** — thread-local reusable buffers for `ac_hits` (zeroed with
-`fill(false)` once per event) and dense `id_results: Vec<bool>` (zeroed once
+**EvalScratch** — thread-local reusable buffers for dense `id_results: Vec<bool>` (zeroed once
 per rule). Condition evaluation uses `evaluate_vec` with a load-time
 `ident_index` instead of `HashMap<String, bool>` inserts.
 
@@ -684,8 +642,8 @@ let handles: Vec<_> = events
     .collect();
 ```
 
-The `rebuild_ac` call (Aho-Corasick automaton compilation) happens eagerly
-inside `load_rule` / `load_rules` — never lazily inside `evaluate_event`.
+Rule indexing and discriminator precomputation happen eagerly inside
+`load_rule` / `load_rules` — never lazily inside `evaluate_event`.
 
 ---
 
@@ -750,7 +708,6 @@ The core dependency surface is intentionally minimal:
 | Crate | Role |
 |---|---|
 | `serde` + `serde_norway` | YAML → `SigmaRule` (maintained `serde_yaml` successor) |
-| `aho-corasick` | SIMD-accelerated multi-pattern batch scan |
 | `regex` | `\|re` modifier pattern matching |
 | `serde_json` (optional) | `json` feature only |
 

@@ -189,9 +189,19 @@ count-only, **Falcon** vs Hayabusa). Protocol + script:
 `harness/scripts/run_a4_firehose_sweep.sh`. Sibling meter to §11.12 — do not
 merge. Gates decide publish confidence (B1) vs emit/sink work.
 
-**Explicitly parked until after A4 / publish:**
+**Active Architecture Milestone — Inverted Dispatch Matrix (ROADMAP Item C):**
 
-- **C** — tau-engine Tier A matcher gap (~2.3×): product wall-clock first
+- **Phases 1–4 (DONE):** Replaced monolithic Aho-Corasick prefilter with a 2-Tier Inverted Dispatch Matrix:
+  - Tier 1: Canonical 64-bit Field-Presence Bitmask (`src/field_mask.rs`).
+  - Tier 2: Primary Discriminator Index on process binary basenames (`src/discriminator.rs`).
+  - Shrunk `RuleHotData` to exact 24 bytes (fits 2.66 rules per L1 cache line).
+  - Verified across 11,100,000 evaluations against 1,110 common SigmaHQ rules: **0.0000% disagreement** vs `sigma-rust`.
+  - Rule compilation is **4.3× faster** than `tau-engine` (153 ms vs 660 ms).
+- **Phase 5 (Parity):** Lazy AST short-circuiting on condition evaluation and zero-allocation inner loop (removing `Vec<SigmaValue>` clones and stack indices).
+- **Phase 6 (The Signature Leap):** Sub-64 (64-bit N-gram Substring Bloom Filter) for 1-cycle `contains` rejection, Cost-Ranked AST reordering, and Flat Register Decision Tape.
+
+**Explicitly parked until after publish:**
+
 - **D** — Python bindings / Sigma v2 correlation: too early before install
 - **A1** — dedicated-metal supersession of §11.12: paper/v1 polish, not code path
 

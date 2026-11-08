@@ -13,6 +13,17 @@ Repository / packaging work since library **0.1.3** (crates.io / docs.rs).
 
 ### Added
 
+- **2-Tier Inverted Dispatch Matrix (ROADMAP Item C, Phases 1–4).**
+  - **Tier 1 (Field-Presence Bitmask):** Canonical 64-field index (`src/field_mask.rs`) mapping fields to dense `0..63` bits with aliases. Rules compute `RuleHotData::required_fields_mask: u64` via boolean AST proof; non-matching events are rejected in 1 bitwise instruction.
+  - **Tier 2 (Primary Discriminator Index):** Binary basename routing (`src/discriminator.rs`) on `Image` and `OriginalFileName` basenames, dispatching rules through `image_discriminator_index` buckets and `unconstrained_rules` via zero-allocation candidate slices.
+  - **Compact 24-byte `RuleHotData`:** Shrunk hot prefilter struct to exact 24 bytes (fits 2.66 rules per 64-byte L1 cache line).
+  - **Gold-standard 99% CI benchmarks:** Harness Criterion configuration elevated to 99% bootstrap confidence intervals ($p < 0.01$, 150 samples).
+  - **11.1M cross-check verification:** Evaluated 1,110 common SigmaHQ rules against 10,000 generated events: exact 0.0000% disagreement vs `sigma-rust` (4,132 vs 4,132 detections).
+
+### Removed
+
+- **Aho-Corasick dependency:** Removed `aho-corasick = "1.1"` dependency, automaton compilation, and whole-event character scans from the core crate, eliminating field bleed and whole-event scanning. Rule loading is now 4.3× faster than `tau-engine` (153 ms vs 660 ms).
+
 - **Week 1 trust sprint (harness).** `--on-error continue|fail-fast`, split
   flatten error taxonomy, `--max-line-bytes`, `--max-error-samples`, accounting
   invariant FATAL, hermetic fixtures (`tests/fixtures/robustness/`,

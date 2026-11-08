@@ -89,6 +89,11 @@ fn setup() -> Setup {
 
 fn bench_single_event(c: &mut Criterion, s: &Setup, name: &str, idx: usize) {
     let mut group = c.benchmark_group(name);
+    group.confidence_level(0.99);
+    group.significance_level(0.01);
+    group.sample_size(150);
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(10));
     group.bench_function(BenchmarkId::new("null_sigma", s.yamls.len()), |b| {
         let event = &s.ns_events[idx];
         b.iter(|| black_box(s.ns.count_matches(black_box(event))));
@@ -110,7 +115,10 @@ fn bench_single_event(c: &mut Criterion, s: &Setup, name: &str, idx: usize) {
 
 fn bench_batch(c: &mut Criterion, s: &Setup) {
     let mut group = c.benchmark_group("batch_1000_events");
-    group.sample_size(10);
+    group.confidence_level(0.99);
+    group.significance_level(0.01);
+    group.sample_size(15);
+    group.warm_up_time(Duration::from_secs(3));
     group.measurement_time(Duration::from_secs(20));
     group.bench_function(BenchmarkId::new("null_sigma", s.yamls.len()), |b| {
         b.iter(|| {
@@ -145,7 +153,11 @@ fn bench_batch(c: &mut Criterion, s: &Setup) {
 fn bench_load(c: &mut Criterion, s: &Setup) {
     let refs: Vec<&str> = s.yamls.iter().map(String::as_str).collect();
     let mut group = c.benchmark_group("rule_load");
-    group.sample_size(10);
+    group.confidence_level(0.99);
+    group.significance_level(0.01);
+    group.sample_size(15);
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(15));
     group.bench_function(BenchmarkId::new("null_sigma", refs.len()), |b| {
         b.iter(|| black_box(NullSigmaBench::new(&refs)));
     });
@@ -167,5 +179,18 @@ fn benches(c: &mut Criterion) {
     bench_load(c, &s);
 }
 
-criterion_group!(head_to_head, benches);
+fn custom_criterion() -> Criterion {
+    Criterion::default()
+        .confidence_level(0.99)
+        .significance_level(0.01)
+        .sample_size(150)
+        .warm_up_time(Duration::from_secs(3))
+        .measurement_time(Duration::from_secs(10))
+}
+
+criterion_group! {
+    name = head_to_head;
+    config = custom_criterion();
+    targets = benches
+}
 criterion_main!(head_to_head);

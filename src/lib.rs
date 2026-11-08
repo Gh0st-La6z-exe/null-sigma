@@ -44,15 +44,17 @@
 //! | [`condition`] | Condition expression → boolean AST |
 //! | [`matcher`] | Event field matching — all 19 Sigma modifiers |
 //! | [`fieldmap`] | Sigma field-name translation |
-//! | [`engine`] | Multi-rule evaluation, Aho-Corasick prefilter, [`EvalScratch`] reuse |
+//! | [`engine`] | Multi-rule evaluation, Inverted Dispatch Matrix, [`EvalScratch`] reuse |
 
 /// Condition expression compiler: Sigma condition strings → boolean AST
 /// ([`condition::ConditionNode`]).
 pub mod condition;
-/// Multi-rule evaluation engine with Aho-Corasick batch prefilter,
+mod discriminator;
+/// Multi-rule evaluation engine with Inverted Dispatch Matrix (Primary Discriminator Index + Field-Presence Bitmask),
 /// [`EvalScratch`] buffer reuse, and cache-friendly hot/cold struct split.
 pub mod engine;
 mod event_view;
+mod field_mask;
 /// Sigma field-name translation and enrichment.
 pub mod fieldmap;
 mod fold;

@@ -1045,12 +1045,35 @@ reference; it does not imply negative alert-emission cost.
 **TBD** — run `harness/scripts/run_a4_firehose_sweep.sh` and paste the slope
 summary here. Pilot (`EVENTS≠100000` or non-Linux) is `status: pilot_only`.
 
-#### Parked tracks (explicit)
+#### Active & Parked tracks (explicit)
 
-| Track | Status | Why parked |
+| Track | Status | Notes |
 |---|---|---|
-| C — tau / ST matcher (~2.3× Tier A) | Parked | Product wall-clock already beats industry on §11.12; purity later |
+| C — Inverted Dispatch Matrix | **Active (Phases 1–4 Done)** | Replaced monolithic AC with 2-Tier Inverted Dispatch Matrix. 11.1M cross-check: 0.0000% disagreement vs `sigma-rust`. Rule load 4.3× faster than `tau-engine` (153 ms vs 660 ms). |
 | D — Py bindings / correlation | Parked | Dilution before installability |
 | A1 — dedicated metal supersession of §11.12 | Parked | GHA rank holds; metal is paper/v1 polish |
 
-After A4: **B1 crates.io publish** + **B3 repro demo**, gated by H1/H2 outcomes.
+---
+
+### 11.14 Tier A Architectural Refactoring: 2-Tier Inverted Dispatch Matrix (2026-11)
+
+**Motivation:** The monolithic Aho-Corasick batch prefilter scanned every event field against all string patterns across all rules, causing field bleed and scanning dozens of unconstrained fields per event.
+
+**Delivered Architecture:**
+1. **Tier 1 (Canonical Field-Presence Bitmask):** 64 canonical Sigma fields mapped to dense unique bits. Rules compute `RuleHotData::required_fields_mask` using boolean AST proof. Absent-field events are rejected in 1 bitwise instruction (`(required & present) == required`).
+2. **Tier 2 (Primary Discriminator Index):** Rules constraining process binary basenames (`Image`, `OriginalFileName`) are indexed into inverted buckets (`HashMap<String, Vec<u32>>`). Stack-allocated candidate slices dispatch only relevant rules.
+3. **24-byte `RuleHotData`:** Shrunk hot prefilter struct to exactly 24 bytes (fits 2.66 rules per 64-byte L1 cache line).
+4. **Stripped `aho-corasick`:** Dependency completely removed from the core crate.
+
+**Verification & Benchmarks (Windows x86_64, 99% Bootstrap CI, $p < 0.01$, 150 samples):**
+- **Correctness Cross-Check:** 1,110 common rules evaluated across 10,000 generated events (**11,100,000 evaluations**):
+  - `null-sigma vs sigma-rust`: **0 disagreements (0.0000%)** — both produced identical 4,132 detections.
+  - `null-sigma vs tau-engine`: 53 cells (0.0005%), 100% isolated to Chainsaw's YAML converter treating empty list differently on `Suspicious SYSTEM User Process Creation`.
+- **Rule Loading:** `null-sigma` **153.08 ms** vs `tau-engine` **660.32 ms** (**4.3× faster rule load**).
+- **Single Benign Event:** `null-sigma` **3.02 ms** vs `sigma-rust` **12.45 ms** (4.1× faster than `sigma-rust`).
+- **Single Suspicious Event:** `null-sigma` **3.09 ms** vs `sigma-rust` **13.46 ms** (4.3× faster than `sigma-rust`).
+- **Batch 1,000 Events:** `null-sigma` **3.29 s** vs `sigma-rust` **11.10 s** (3.4× faster than `sigma-rust`).
+
+**Next Milestones:**
+- **Phase 5 (Parity):** Lazy AST short-circuiting and zero-allocation inner loop to eliminate unnecessary identifier evaluations.
+- **Phase 6 (The Signature Leap):** Sub-64 N-gram Substring Bloom Filter (1-cycle `contains` rejection), Cost-Ranked AST reordering, and Flat Register Decision Tape to pull ahead of `tau-engine`.

@@ -13,6 +13,7 @@ pub(crate) struct EventView<'a> {
     values: Vec<&'a str>,
     value_folded: Vec<Option<String>>,
     value_chars: Vec<Option<Vec<char>>>,
+    present_fields_mask: u64,
 }
 
 impl<'a> EventView<'a> {
@@ -23,13 +24,18 @@ impl<'a> EventView<'a> {
         let mut values: Vec<&'a str> = Vec::with_capacity(event.len());
         let mut value_folded: Vec<Option<String>> = Vec::with_capacity(event.len());
         let mut value_chars: Vec<Option<Vec<char>>> = Vec::with_capacity(event.len());
+        let mut present_fields_mask: u64 = 0;
 
         for (key, value) in event {
             let idx = values.len();
             values.push(value.as_str());
             value_folded.push(None);
             value_chars.push(None);
-            index.entry(fold_key(key)).or_default().push(idx);
+            let folded = fold_key(key);
+            if let Some(bit) = crate::field_mask::field_bit(&folded) {
+                present_fields_mask |= 1u64 << bit;
+            }
+            index.entry(folded).or_default().push(idx);
         }
 
         Self {
@@ -37,7 +43,15 @@ impl<'a> EventView<'a> {
             values,
             value_folded,
             value_chars,
+            present_fields_mask,
         }
+    }
+
+    /// 64-bit mask of canonical fields present in this event.
+    #[inline]
+    #[must_use]
+    pub(crate) fn present_fields_mask(&self) -> u64 {
+        self.present_fields_mask
     }
 
     /// Iterate values whose field name folds to `field_folded`.
@@ -208,5 +222,23 @@ mod tests {
         view.ensure_chars(idx);
         let expected: Vec<char> = "test.exe".chars().collect();
         assert_eq!(view.chars_at(idx), expected.as_slice());
+    }
+
+    #[test]
+    fn present_fields_mask_matches_canonical_keys() {
+        let mut event = HashMap::new();
+        event.insert("CommandLine".to_string(), "foo".to_string());
+        event.insert("Image".to_string(), "bar".to_string());
+        event.insert("CustomNonCanonicalField".to_string(), "baz".to_string());
+
+        let view = EventView::from_map(&event);
+        let mask = view.present_fields_mask();
+
+        let cmdline_bit = crate::field_mask::field_bit("commandline").unwrap();
+        let image_bit = crate::field_mask::field_bit("image").unwrap();
+
+        assert_ne!(mask & (1 << cmdline_bit), 0);
+        assert_ne!(mask & (1 << image_bit), 0);
+        assert_eq!(mask, (1 << cmdline_bit) | (1 << image_bit));
     }
 }

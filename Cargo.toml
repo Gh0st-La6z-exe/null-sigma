@@ -8,10 +8,10 @@ version = "0.1.3"
 edition = "2021"
 authors = ["Gh0st-La6z-exe"]
 license = "Apache-2.0"
-description = "High-performance Sigma rule engine — Aho-Corasick prefilter + compiled condition AST; ~311k events/sec × 1k synthetic rules or ~3.2k/sec on real SigmaHQ process_creation rules (Apple M4, release)"
+description = "High-performance Sigma rule engine — Inverted Dispatch Matrix + compiled condition AST"
 repository = "https://github.com/Gh0st-La6z-exe/null-sigma"
 readme = "README.md"
-keywords = ["sigma", "detection", "siem", "security", "aho-corasick"]
+keywords = ["sigma", "detection", "siem", "security", "compiler"]
 categories = ["parsing", "algorithms"]
 rust-version = "1.85"
 
@@ -21,12 +21,6 @@ serde = { version = "1.0", features = ["derive"] }
 # YAML parsing — serde_norway is the actively maintained, RustSec-recommended
 # fork of serde_yaml (see RUSTSEC-2025-0068). Uses pure-Rust unsafe-libyaml-norway.
 serde_norway = "0.9"
-
-# Aho-Corasick — SIMD-accelerated multi-pattern matching. When a Sigma rule
-# has multiple string patterns (e.g., 10 suspicious process names), we build
-# a single automaton that checks ALL patterns in one pass over the text.
-# This is what makes 1000-rule evaluation fast — O(text_len) not O(patterns × text_len).
-aho-corasick = "1.1"
 
 # Regex for wildcard and regex modifiers in Sigma conditions.
 # Sigma supports `|re` (regex) and `*` glob wildcards in values.
