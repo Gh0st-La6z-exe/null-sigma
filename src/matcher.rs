@@ -115,12 +115,13 @@ pub(crate) fn match_field_condition_on_view(
     }
 
     // Zero-allocation path: borrow directly when no transform modifiers (base64, wide, windash) are present (99.8% of conditions).
-    let (values_slice, use_precomputed_folds): (Cow<'_, [SigmaValue]>, bool) = if condition.has_transforms {
-        let transformed = apply_transforms(&condition.values, &condition.modifiers);
-        (transformed, false)
-    } else {
-        (Cow::Borrowed(&condition.values), true)
-    };
+    let (values_slice, use_precomputed_folds): (Cow<'_, [SigmaValue]>, bool) =
+        if condition.has_transforms {
+            let transformed = apply_transforms(&condition.values, &condition.modifiers);
+            (transformed, false)
+        } else {
+            (Cow::Borrowed(&condition.values), true)
+        };
 
     let require_all = condition.require_all;
     let needs_chars = if condition.values_match_cache.is_empty() {
@@ -195,13 +196,7 @@ pub(crate) fn match_field_condition_on_view(
                 } else {
                     (None, None)
                 };
-                value_matches(
-                    val,
-                    sigma_folded,
-                    match_cache,
-                    field,
-                    &condition.modifiers,
-                )
+                value_matches(val, sigma_folded, match_cache, field, &condition.modifiers)
             })
         } else {
             values_slice.iter().enumerate().any(|(v_idx, val)| {
@@ -219,13 +214,7 @@ pub(crate) fn match_field_condition_on_view(
                 } else {
                     (None, None)
                 };
-                value_matches(
-                    val,
-                    sigma_folded,
-                    match_cache,
-                    field,
-                    &condition.modifiers,
-                )
+                value_matches(val, sigma_folded, match_cache, field, &condition.modifiers)
             })
         };
         if matched {
@@ -1232,13 +1221,7 @@ fn match_field_condition_with_cache_on_view<S2: BuildHasher>(
                 let match_cache = value_idx
                     .and_then(|i| condition.values_match_cache.get(i))
                     .filter(|c| c.is_populated());
-                value_matches(
-                    val,
-                    sigma_folded,
-                    match_cache,
-                    field,
-                    &condition.modifiers,
-                )
+                value_matches(val, sigma_folded, match_cache, field, &condition.modifiers)
             };
             if require_all {
                 transformed_values.iter().all(check)

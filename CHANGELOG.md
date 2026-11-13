@@ -13,9 +13,22 @@ Repository / packaging work since library **0.1.3** (crates.io / docs.rs).
 
 ### Added
 
+- **Dense Rule-Bitset Candidate Filtering (Roadmap Step 2):**
+  - Added `src/bitset.rs` providing `RuleBitSet` and `SetBitIter` using hardware intrinsics `trailing_zeros` (`TZCNT`) and `w &= w - 1` (`BLSR`).
+  - Unified candidate generation via thread-local `scratch.candidate_mask: RuleBitSet`, replacing vector slice scanning.
+  - Eliminated duplicate rule evaluations across image, original file name, and parent image discriminators via idempotent bit-setting.
+  - Reduced `prof_benign` wall latency from 1,166.72 µs to 950.58 µs/event (-18.5%).
+  - Zero cross-check disagreements against `sigma-rust` over 2,220,000 evaluations (786 hits vs 786 hits).
+
+- **Generalized Discriminator Indexing & Transform Bypass (Roadmap Step 1):**
+  - Generalized `compute_rule_discriminators_for_field` in `src/discriminator.rs` to extract process basenames across disjunction branches (`sel1 or sel2`).
+  - Added `CompiledCondition::Single(usize)` fast path in `src/engine.rs`, bypassing identifier state reset and closure dispatch for ~80% of rules.
+  - Added zero-allocation `Cow::Borrowed` transform modifier bypass in `src/matcher.rs` when `!condition.has_transforms`.
+  - Scaled head-to-head Criterion benchmark harness to 250 samples, 5s warmup, 30s measurement window at 99% CI.
+
 - **2-Tier Inverted Dispatch Matrix (ROADMAP Item C, Phases 1–4).**
   - **Tier 1 (Field-Presence Bitmask):** Canonical 64-field index (`src/field_mask.rs`) mapping fields to dense `0..63` bits with aliases. Rules compute `RuleHotData::required_fields_mask: u64` via boolean AST proof; non-matching events are rejected in 1 bitwise instruction.
-  - **Tier 2 (Primary Discriminator Index):** Binary basename routing (`src/discriminator.rs`) on `Image` and `OriginalFileName` basenames, dispatching rules through `image_discriminator_index` buckets and `unconstrained_rules` via zero-allocation candidate slices.
+  - **Tier 2 (Primary Discriminator Index):** Binary basename routing (`src/discriminator.rs`) on `Image` and `OriginalFileName` basenames, dispatching rules through `image_discriminator_index` buckets and `unconstrained_mask` via zero-allocation candidate bitset dispatch.
   - **Compact 24-byte `RuleHotData`:** Shrunk hot prefilter struct to exact 24 bytes (fits 2.66 rules per 64-byte L1 cache line).
   - **Gold-standard 99% CI benchmarks:** Harness Criterion configuration elevated to 99% bootstrap confidence intervals ($p < 0.01$, 150 samples).
   - **11.1M cross-check verification:** Evaluated 1,110 common SigmaHQ rules against 10,000 generated events: exact 0.0000% disagreement vs `sigma-rust` (4,132 vs 4,132 detections).

@@ -211,11 +211,7 @@ impl<'a> EventView<'a> {
     ///
     /// Returns a [`FieldInputs`] view over the value at `idx`.
     #[must_use]
-    pub(crate) fn match_inputs(
-        &self,
-        idx: usize,
-        with_chars: bool,
-    ) -> FieldInputs<'_> {
+    pub(crate) fn match_inputs(&self, idx: usize, with_chars: bool) -> FieldInputs<'_> {
         let raw = self.values[idx];
         let folded = self.value_folded[idx]
             .as_deref()

@@ -195,10 +195,15 @@ merge. Gates decide publish confidence (B1) vs emit/sink work.
   - Tier 1: Canonical 64-bit Field-Presence Bitmask (`src/field_mask.rs`).
   - Tier 2: Primary Discriminator Index on process binary basenames (`src/discriminator.rs`).
   - Shrunk `RuleHotData` to exact 24 bytes (fits 2.66 rules per L1 cache line).
-  - Verified across 11,100,000 evaluations against 1,110 common SigmaHQ rules: **0.0000% disagreement** vs `sigma-rust`.
   - Rule compilation is **4.3× faster** than `tau-engine` (153 ms vs 660 ms).
-- **Phase 5 (Parity):** Lazy AST short-circuiting on condition evaluation and zero-allocation inner loop (removing `Vec<SigmaValue>` clones and stack indices).
-- **Phase 6 (The Signature Leap):** Sub-64 (64-bit N-gram Substring Bloom Filter) for 1-cycle `contains` rejection, Cost-Ranked AST reordering, and Flat Register Decision Tape.
+- **Phase 5 (Parity — DONE):** Sub-64 rolling bigram Substring Bloom Filter (`src/bloom.rs`), dense canonical slots (`[u32; 64]`), secondary `ParentImage` discriminator, cost-ranked AST reordering, and zero-allocation `FieldInputs`.
+- **Phase 6 / Steps 1–2 (DONE):**
+  - Generalized discriminator indexing across multi-branch disjunctions (`sel1 or sel2`).
+  - `CompiledCondition::Single` fast path bypassing identifier state resets.
+  - Zero-allocation `Cow::Borrowed` transform modifier bypass in `src/matcher.rs`.
+  - Dense `RuleBitSet` candidate dispatch (`src/bitset.rs`) using CPU `TZCNT` and `BLSR` intrinsics, eliminating duplicate rule evaluations across buckets in $<2.5$ L1 cachelines.
+  - Latency reduced to **950.58 µs / event** (`prof_benign`), with **0.0000% disagreement** against `sigma-rust` over 2,220,000 evaluations.
+- **Step 3 (Next):** Flat Register Decision Tape & Zero-Alloc `EventView` buffer pooling to push latency below 450 µs and surpass `tau-engine`.
 
 **Explicitly parked until after publish:**
 

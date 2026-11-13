@@ -17,6 +17,7 @@
 // TARGET: >100K events/sec × 1000 rules on a single core.
 // =============================================================================
 
+use crate::bitset::RuleBitSet;
 use crate::condition::{compile_condition, CompileError, ConditionNode, ResolvedConditionNode};
 use crate::event_view::EventView;
 use crate::fieldmap::FieldMapping;
@@ -70,8 +71,9 @@ struct CompiledRule {
 /// batch callers may reuse one instance across events.
 #[derive(Debug, Default)]
 pub struct EvalScratch {
-    id_results: Vec<bool>,
-    id_state: Vec<u8>,
+    pub(crate) id_results: Vec<bool>,
+    pub(crate) id_state: Vec<u8>,
+    pub(crate) candidate_mask: RuleBitSet,
 }
 
 impl EvalScratch {
@@ -81,19 +83,21 @@ impl EvalScratch {
         Self::default()
     }
 
-    /// Resize and zero identifier results before evaluating a rule.
-    pub(crate) fn reset_id_results(&mut self, ident_count: usize) {
-        self.id_results.resize(ident_count, false);
+    /// Resize and zero identifier results in an explicit buffer.
+    #[inline]
+    pub(crate) fn reset_vec_results(results: &mut Vec<bool>, ident_count: usize) {
+        results.resize(ident_count, false);
         if ident_count > 0 {
-            self.id_results[..ident_count].fill(false);
+            results[..ident_count].fill(false);
         }
     }
 
-    /// Resize and zero identifier state (0 = uncomputed) before evaluating a rule lazily.
-    pub(crate) fn reset_id_state(&mut self, ident_count: usize) {
-        self.id_state.resize(ident_count, 0);
+    /// Resize and zero identifier state (0 = uncomputed) in an explicit buffer.
+    #[inline]
+    pub(crate) fn reset_vec_state(state: &mut Vec<u8>, ident_count: usize) {
+        state.resize(ident_count, 0);
         if ident_count > 0 {
-            self.id_state[..ident_count].fill(0);
+            state[..ident_count].fill(0);
         }
     }
 }
@@ -250,8 +254,8 @@ pub struct SigmaEngine {
     image_discriminator_index: HashMap<String, Vec<u32>>,
     /// Inverted index for parent binary basenames: lowercased parent image basename -> rule indices.
     parent_image_discriminator_index: HashMap<String, Vec<u32>>,
-    /// Rule indices without strict image or parent image basename constraints.
-    unconstrained_rules: Vec<u32>,
+    /// Candidate rules bitset without strict image or parent image basename constraints.
+    unconstrained_mask: RuleBitSet,
 }
 
 impl SigmaEngine {
@@ -266,7 +270,7 @@ impl SigmaEngine {
             hot_data: Vec::new(),
             image_discriminator_index: HashMap::new(),
             parent_image_discriminator_index: HashMap::new(),
-            unconstrained_rules: Vec::new(),
+            unconstrained_mask: RuleBitSet::default(),
         }
     }
 
@@ -280,7 +284,7 @@ impl SigmaEngine {
             hot_data: Vec::new(),
             image_discriminator_index: HashMap::new(),
             parent_image_discriminator_index: HashMap::new(),
-            unconstrained_rules: Vec::new(),
+            unconstrained_mask: RuleBitSet::default(),
         }
     }
 
@@ -290,7 +294,7 @@ impl SigmaEngine {
         (
             self.image_discriminator_index.len(),
             self.parent_image_discriminator_index.len(),
-            self.unconstrained_rules.len(),
+            self.unconstrained_mask.count_ones(),
         )
     }
 
@@ -468,23 +472,24 @@ impl SigmaEngine {
             _pad: 0,
         });
 
-        let rule_idx = u32::try_from(self.rules.len() - 1).expect("rule count fits in u32");
+        let rule_idx = self.rules.len() - 1;
+        let rule_idx_u32 = u32::try_from(rule_idx).expect("rule count fits in u32");
         if let Some(basenames) = image_discriminators {
             for base in basenames {
                 self.image_discriminator_index
                     .entry(base)
                     .or_default()
-                    .push(rule_idx);
+                    .push(rule_idx_u32);
             }
         } else if let Some(basenames) = parent_image_discriminators {
             for base in basenames {
                 self.parent_image_discriminator_index
                     .entry(base)
                     .or_default()
-                    .push(rule_idx);
+                    .push(rule_idx_u32);
             }
         } else {
-            self.unconstrained_rules.push(rule_idx);
+            self.unconstrained_mask.set(rule_idx);
         }
 
         Ok(())
@@ -595,11 +600,10 @@ impl SigmaEngine {
 
         let mut matches = 0usize;
 
-        // Resolve event binary basename from Image or OriginalFileName for inverted dispatch
-        let mut specific_slice1: &[u32] = &[];
-        let mut specific_slice2: &[u32] = &[];
-        let mut parent_slice: &[u32] = &[];
+        // Populate candidate mask starting with all unconstrained rules.
+        scratch.candidate_mask.copy_from(&self.unconstrained_mask);
 
+        // Resolve event binary basename from Image or OriginalFileName for inverted dispatch
         if let Some(idx) = view.first_index_for_folded_field("image") {
             let raw = view.raw_at(idx);
             let s = raw.trim();
@@ -610,7 +614,9 @@ impl SigmaEngine {
             if !comp.is_empty() {
                 let base = comp.to_lowercase();
                 if let Some(rules) = self.image_discriminator_index.get(&base) {
-                    specific_slice1 = rules;
+                    for &r in rules {
+                        scratch.candidate_mask.set(r as usize);
+                    }
                 }
             }
         }
@@ -625,8 +631,8 @@ impl SigmaEngine {
             if !comp.is_empty() {
                 let base = comp.to_lowercase();
                 if let Some(rules) = self.image_discriminator_index.get(&base) {
-                    if specific_slice1 != rules {
-                        specific_slice2 = rules;
+                    for &r in rules {
+                        scratch.candidate_mask.set(r as usize);
                     }
                 }
             }
@@ -642,152 +648,90 @@ impl SigmaEngine {
             if !comp.is_empty() {
                 let base = comp.to_lowercase();
                 if let Some(rules) = self.parent_image_discriminator_index.get(&base) {
-                    parent_slice = rules;
+                    for &r in rules {
+                        scratch.candidate_mask.set(r as usize);
+                    }
                 }
             }
         }
 
-        let candidate_slices: [&[u32]; 4] = [
-            &self.unconstrained_rules,
-            specific_slice1,
-            specific_slice2,
-            parent_slice,
-        ];
+        let EvalScratch {
+            id_results,
+            id_state,
+            candidate_mask,
+        } = scratch;
 
-        for slice in candidate_slices {
-            for &rule_idx_u32 in slice {
-                let rule_idx = rule_idx_u32 as usize;
-                // ── Hot prefilter: 24-byte RuleHotData only ───────────────────────────────────
-                // 1000 entries × 24 bytes = 24 KB — fits in L1 cache.
-                // The full CompiledRule (200-500+ bytes) is only dereferenced below
-                // when a rule passes BOTH prefilters (typically < 1% of candidates).
-                let hot = &self.hot_data[rule_idx];
+        for rule_idx in candidate_mask.iter_set_bits() {
+            // ── Hot prefilter: 24-byte RuleHotData only ───────────────────────────────────
+            // 1000 entries × 24 bytes = 24 KB — fits in L1 cache.
+            // The full CompiledRule (200-500+ bytes) is only dereferenced below
+            // when a rule passes BOTH prefilters (typically < 1% of candidates).
+            let hot = &self.hot_data[rule_idx];
 
-                // Logsource check: 3 integer comparisons (vs. Option<String> chain)
-                if !(logsource_ok(hot.cat_hash, event_cat_hash)
-                    && logsource_ok(hot.prod_hash, event_prod_hash)
-                    && logsource_ok(hot.svc_hash, event_svc_hash))
-                {
-                    continue;
-                }
+            // Logsource check: 3 integer comparisons (vs. Option<String> chain)
+            if !(logsource_ok(hot.cat_hash, event_cat_hash)
+                && logsource_ok(hot.prod_hash, event_prod_hash)
+                && logsource_ok(hot.svc_hash, event_svc_hash))
+            {
+                continue;
+            }
 
-                // Field-presence check: skip rules requiring fields absent from the event
-                if (hot.required_fields_mask & event_fields_mask) != hot.required_fields_mask {
-                    continue;
-                }
+            // Field-presence check: skip rules requiring fields absent from the event
+            if (hot.required_fields_mask & event_fields_mask) != hot.required_fields_mask {
+                continue;
+            }
 
-                // ── Cold path: full evaluation (only when both hot filters pass) ──────
-                let compiled = &self.rules[rule_idx];
+            // ── Cold path: full evaluation (only when both hot filters pass) ──────
+            let compiled = &self.rules[rule_idx];
 
-                // Logsource string recheck: the hot loop compared 32-bit FNV-1a
-                // hashes, which can collide. Confirm with the real strings before
-                // evaluating — a collision must not route an event to the wrong
-                // rule. Runs only for rules that already passed both prefilters,
-                // so the cost is off the hot path.
-                if !compiled
-                    .rule
-                    .logsource
-                    .matches(event_category, event_product, event_service)
-                {
-                    continue;
-                }
+            // Logsource string recheck: the hot loop compared 32-bit FNV-1a
+            // hashes, which can collide. Confirm with the real strings before
+            // evaluating — a collision must not route an event to the wrong
+            // rule. Runs only for rules that already passed both prefilters,
+            // so the cost is off the hot path.
+            if !compiled
+                .rule
+                .logsource
+                .matches(event_category, event_product, event_service)
+            {
+                continue;
+            }
 
-                // Lazy condition evaluation:
-                // Evaluates identifiers on demand with caching, short-circuiting as soon
-                // as boolean AST branches (AND/OR) are determined.
-                if collect_details {
-                    match &compiled.condition {
-                        CompiledCondition::Single(idx) => {
-                            let matched = if compiled.has_regex {
-                                match_identifier_with_cache_on_view(
-                                    &compiled.identifiers[*idx],
-                                    &mut view,
-                                    &self.rule_regex_maps[rule_idx],
-                                )
-                            } else {
-                                match_identifier_on_view(&compiled.identifiers[*idx], &mut view)
-                            };
+            // Lazy condition evaluation:
+            // Evaluates identifiers on demand with caching, short-circuiting as soon
+            // as boolean AST branches (AND/OR) are determined.
+            if collect_details {
+                match &compiled.condition {
+                    CompiledCondition::Single(idx) => {
+                        let matched = if compiled.has_regex {
+                            match_identifier_with_cache_on_view(
+                                &compiled.identifiers[*idx],
+                                &mut view,
+                                &self.rule_regex_maps[rule_idx],
+                            )
+                        } else {
+                            match_identifier_on_view(&compiled.identifiers[*idx], &mut view)
+                        };
 
-                            if matched {
-                                matches += 1;
-                                scratch.reset_id_state(compiled.identifiers.len());
-                                scratch.id_state[*idx] = 2;
-                                scratch.reset_id_results(compiled.identifiers.len());
-                                for i in 0..compiled.identifiers.len() {
-                                    scratch.id_results[i] = scratch.id_state[i] == 2;
-                                }
-                                on_match(compiled, &scratch.id_results, &[0]);
+                        if matched {
+                            matches += 1;
+                            EvalScratch::reset_vec_state(id_state, compiled.identifiers.len());
+                            id_state[*idx] = 2;
+                            EvalScratch::reset_vec_results(id_results, compiled.identifiers.len());
+                            for i in 0..compiled.identifiers.len() {
+                                id_results[i] = id_state[i] == 2;
                             }
-                        }
-                        CompiledCondition::Multi(conditions) => {
-                            scratch.reset_id_state(compiled.identifiers.len());
-                            let mut matched_conditions: Vec<usize> =
-                                Vec::with_capacity(conditions.len());
-
-                            {
-                                let mut eval_ident = |idx: usize| -> bool {
-                                    let cached = scratch.id_state[idx];
-                                    if cached == 1 {
-                                        false
-                                    } else if cached == 2 {
-                                        true
-                                    } else {
-                                        let res = if compiled.has_regex {
-                                            match_identifier_with_cache_on_view(
-                                                &compiled.identifiers[idx],
-                                                &mut view,
-                                                &self.rule_regex_maps[rule_idx],
-                                            )
-                                        } else {
-                                            match_identifier_on_view(&compiled.identifiers[idx], &mut view)
-                                        };
-                                        scratch.id_state[idx] = if res { 2 } else { 1 };
-                                        res
-                                    }
-                                };
-
-                                for (cond_idx, condition) in conditions.iter().enumerate() {
-                                    if condition.evaluate_lazy(&mut eval_ident) {
-                                        matched_conditions.push(cond_idx);
-                                    }
-                                }
-
-                                if !matched_conditions.is_empty() {
-                                    // For matching rules only, ensure any remaining identifiers are evaluated
-                                    // so RuleMatch details contain all matched identifiers.
-                                    for idx in 0..compiled.identifiers.len() {
-                                        let _ = eval_ident(idx);
-                                    }
-                                }
-                            }
-
-                            if !matched_conditions.is_empty() {
-                                matches += 1;
-                                scratch.reset_id_results(compiled.identifiers.len());
-                                for idx in 0..compiled.identifiers.len() {
-                                    scratch.id_results[idx] = scratch.id_state[idx] == 2;
-                                }
-                                on_match(compiled, &scratch.id_results, &matched_conditions);
-                            }
+                            on_match(compiled, id_results, &[0]);
                         }
                     }
-                } else {
-                    let rule_matched = match &compiled.condition {
-                        CompiledCondition::Single(idx) => {
-                            if compiled.has_regex {
-                                match_identifier_with_cache_on_view(
-                                    &compiled.identifiers[*idx],
-                                    &mut view,
-                                    &self.rule_regex_maps[rule_idx],
-                                )
-                            } else {
-                                match_identifier_on_view(&compiled.identifiers[*idx], &mut view)
-                            }
-                        }
-                        CompiledCondition::Multi(conditions) => {
-                            scratch.reset_id_state(compiled.identifiers.len());
+                    CompiledCondition::Multi(conditions) => {
+                        EvalScratch::reset_vec_state(id_state, compiled.identifiers.len());
+                        let mut matched_conditions: Vec<usize> =
+                            Vec::with_capacity(conditions.len());
+
+                        {
                             let mut eval_ident = |idx: usize| -> bool {
-                                let cached = scratch.id_state[idx];
+                                let cached = id_state[idx];
                                 if cached == 1 {
                                     false
                                 } else if cached == 2 {
@@ -800,20 +744,83 @@ impl SigmaEngine {
                                             &self.rule_regex_maps[rule_idx],
                                         )
                                     } else {
-                                        match_identifier_on_view(&compiled.identifiers[idx], &mut view)
+                                        match_identifier_on_view(
+                                            &compiled.identifiers[idx],
+                                            &mut view,
+                                        )
                                     };
-                                    scratch.id_state[idx] = if res { 2 } else { 1 };
+                                    id_state[idx] = if res { 2 } else { 1 };
                                     res
                                 }
                             };
 
-                            conditions.iter().any(|c| c.evaluate_lazy(&mut eval_ident))
-                        }
-                    };
+                            for (cond_idx, condition) in conditions.iter().enumerate() {
+                                if condition.evaluate_lazy(&mut eval_ident) {
+                                    matched_conditions.push(cond_idx);
+                                }
+                            }
 
-                    if rule_matched {
-                        matches += 1;
+                            if !matched_conditions.is_empty() {
+                                // For matching rules only, ensure any remaining identifiers are evaluated
+                                // so RuleMatch details contain all matched identifiers.
+                                for idx in 0..compiled.identifiers.len() {
+                                    let _ = eval_ident(idx);
+                                }
+                            }
+                        }
+
+                        if !matched_conditions.is_empty() {
+                            matches += 1;
+                            EvalScratch::reset_vec_results(id_results, compiled.identifiers.len());
+                            for idx in 0..compiled.identifiers.len() {
+                                id_results[idx] = id_state[idx] == 2;
+                            }
+                            on_match(compiled, id_results, &matched_conditions);
+                        }
                     }
+                }
+            } else {
+                let rule_matched = match &compiled.condition {
+                    CompiledCondition::Single(idx) => {
+                        if compiled.has_regex {
+                            match_identifier_with_cache_on_view(
+                                &compiled.identifiers[*idx],
+                                &mut view,
+                                &self.rule_regex_maps[rule_idx],
+                            )
+                        } else {
+                            match_identifier_on_view(&compiled.identifiers[*idx], &mut view)
+                        }
+                    }
+                    CompiledCondition::Multi(conditions) => {
+                        EvalScratch::reset_vec_state(id_state, compiled.identifiers.len());
+                        let mut eval_ident = |idx: usize| -> bool {
+                            let cached = id_state[idx];
+                            if cached == 1 {
+                                false
+                            } else if cached == 2 {
+                                true
+                            } else {
+                                let res = if compiled.has_regex {
+                                    match_identifier_with_cache_on_view(
+                                        &compiled.identifiers[idx],
+                                        &mut view,
+                                        &self.rule_regex_maps[rule_idx],
+                                    )
+                                } else {
+                                    match_identifier_on_view(&compiled.identifiers[idx], &mut view)
+                                };
+                                id_state[idx] = if res { 2 } else { 1 };
+                                res
+                            }
+                        };
+
+                        conditions.iter().any(|c| c.evaluate_lazy(&mut eval_ident))
+                    }
+                };
+
+                if rule_matched {
+                    matches += 1;
                 }
             }
         }

@@ -1049,31 +1049,42 @@ summary here. Pilot (`EVENTS≠100000` or non-Linux) is `status: pilot_only`.
 
 | Track | Status | Notes |
 |---|---|---|
-| C — Inverted Dispatch Matrix | **Active (Phases 1–4 Done)** | Replaced monolithic AC with 2-Tier Inverted Dispatch Matrix. 11.1M cross-check: 0.0000% disagreement vs `sigma-rust`. Rule load 4.3× faster than `tau-engine` (153 ms vs 660 ms). |
+| C — Inverted Dispatch Matrix | **Active (Steps 1–2 Done)** | Replaced monolithic AC with 2-Tier Inverted Dispatch Matrix + dense `RuleBitSet` dispatch. 2.22M cross-check: 0.0000% disagreement vs `sigma-rust`. Rule load 4.3× faster than `tau-engine` (153 ms vs 660 ms). |
 | D — Py bindings / correlation | Parked | Dilution before installability |
 | A1 — dedicated metal supersession of §11.12 | Parked | GHA rank holds; metal is paper/v1 polish |
 
 ---
 
-### 11.14 Tier A Architectural Refactoring: 2-Tier Inverted Dispatch Matrix (2026-11)
+### 11.14 Tier A Architectural Refactoring: Inverted Dispatch Matrix & RuleBitSet Engine (2026-11)
 
 **Motivation:** The monolithic Aho-Corasick batch prefilter scanned every event field against all string patterns across all rules, causing field bleed and scanning dozens of unconstrained fields per event.
 
 **Delivered Architecture:**
 1. **Tier 1 (Canonical Field-Presence Bitmask):** 64 canonical Sigma fields mapped to dense unique bits. Rules compute `RuleHotData::required_fields_mask` using boolean AST proof. Absent-field events are rejected in 1 bitwise instruction (`(required & present) == required`).
-2. **Tier 2 (Primary Discriminator Index):** Rules constraining process binary basenames (`Image`, `OriginalFileName`) are indexed into inverted buckets (`HashMap<String, Vec<u32>>`). Stack-allocated candidate slices dispatch only relevant rules.
-3. **24-byte `RuleHotData`:** Shrunk hot prefilter struct to exactly 24 bytes (fits 2.66 rules per 64-byte L1 cache line).
-4. **Stripped `aho-corasick`:** Dependency completely removed from the core crate.
+2. **Tier 2 (Primary & Secondary Basename Discriminators):** Rules constraining process binary basenames (`Image`, `OriginalFileName`, `ParentImage`) are indexed into inverted buckets. Candidate rules are unified into thread-local `RuleBitSet` registers.
+3. **Dense `RuleBitSet` Dispatch (`src/bitset.rs`):** Storing 1,200 rules across 19 words of `u64` (152 bytes, $<2.5$ L1 cachelines). Iteration with `TZCNT` (`trailing_zeros`) and `BLSR` (`w &= w - 1`) completely eliminates duplicate rule evaluations across candidate buckets.
+4. **Sub-64 Rolling Bigram Bloom Filter (`src/bloom.rs`):** Fast 64-bit word-level Bloom filter rejecting non-matching substrings in 1 CPU cycle before entering byte-level searches.
+5. **Cost-Ranked AST Reordering & Single-Condition Fast Path:** Cheap, selective conditions evaluate first; single-identifier conditions bypass identifier state allocation.
+6. **24-byte `RuleHotData`:** Shrunk hot prefilter struct to exactly 24 bytes (fits 2.66 rules per 64-byte L1 cache line).
+7. **Stripped `aho-corasick`:** Monolithic automaton dependency completely removed from the core crate.
 
-**Verification & Benchmarks (Windows x86_64, 99% Bootstrap CI, $p < 0.01$, 150 samples):**
-- **Correctness Cross-Check:** 1,110 common rules evaluated across 10,000 generated events (**11,100,000 evaluations**):
-  - `null-sigma vs sigma-rust`: **0 disagreements (0.0000%)** — both produced identical 4,132 detections.
-  - `null-sigma vs tau-engine`: 53 cells (0.0005%), 100% isolated to Chainsaw's YAML converter treating empty list differently on `Suspicious SYSTEM User Process Creation`.
-- **Rule Loading:** `null-sigma` **153.08 ms** vs `tau-engine` **660.32 ms** (**4.3× faster rule load**).
-- **Single Benign Event:** `null-sigma` **3.02 ms** vs `sigma-rust` **12.45 ms** (4.1× faster than `sigma-rust`).
-- **Single Suspicious Event:** `null-sigma` **3.09 ms** vs `sigma-rust` **13.46 ms** (4.3× faster than `sigma-rust`).
-- **Batch 1,000 Events:** `null-sigma` **3.29 s** vs `sigma-rust` **11.10 s** (3.4× faster than `sigma-rust`).
+**Verification & Benchmarks (Windows x86_64, 99% Bootstrap CI, $p < 0.01$, 250 samples):**
+- **Correctness Cross-Check:** 1,110 common rules evaluated across 2,000 generated events (**2,220,000 evaluations**):
+  - `null-sigma vs sigma-rust`: **0 disagreements (0.0000%)** — both produced identical 786 detections.
+  - `null-sigma vs tau-engine`: 13 cells (0.0006%), 100% isolated to Chainsaw's YAML converter treating empty list differently on `Suspicious SYSTEM User Process Creation`.
+- **Corpus Coverage:**
+  - `null-sigma`: **1,193 / 1,193 loaded (100.0%)** in **153.08 ms** (4.3× faster rule load than `tau-engine`).
+  - `tau-engine`: **1,110 / 1,193 converted (93.0%)** in **660.32 ms** (fails 83 rules on unsupported modifiers).
+  - `sigma-rust`: **1,192 / 1,193 loaded (99.9%)** (fails 1 rule on unknown modifier).
+- **Extended Gold-Standard Criterion Head-to-Head (`single_benign_event`, 250 samples, 30s window, 99% CI):**
+  - `null-sigma` (common 1,110 rules): **961.50 µs** [961.50 µs .. 997.23 µs]
+  - `null-sigma` (full corpus 1,193 rules): **1,109.20 µs** [1,109.20 µs .. 1,158.70 µs]
+  - `tau-engine` (1,110 rules only): **492.09 µs** [492.09 µs .. 508.87 µs]
+  - `sigma-rust` (1,110 rules): **12,016.00 µs** (12.02 ms — `null-sigma` is **12.5× faster**)
+- **Ingest Tight-Loop Profiling (`prof_benign`, 1,000 iterations):**
+  - Initial post-AC Inverted Dispatch baseline: **3,070 µs / event**
+  - Post-Bloom filter & Dense Canonical Slots: **1,166.72 µs / event**
+  - Post-`RuleBitSet` candidate dispatch: **950.58 µs / event** (**-216.14 µs / event drop, -18.5%**)
 
-**Next Milestones:**
-- **Phase 5 (Parity):** Lazy AST short-circuiting and zero-allocation inner loop to eliminate unnecessary identifier evaluations.
-- **Phase 6 (The Signature Leap):** Sub-64 N-gram Substring Bloom Filter (1-cycle `contains` rejection), Cost-Ranked AST reordering, and Flat Register Decision Tape to pull ahead of `tau-engine`.
+**Next Milestone:**
+- **Step 3 (Flat Register Decision Tape & Zero-Alloc Buffer Pooling):** Pool `EventView` buffers in `EvalScratch` and compile AST conditions into flat linear bytecode tapes to push latency below 450 µs and overtake `tau-engine`.

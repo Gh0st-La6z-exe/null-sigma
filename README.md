@@ -189,15 +189,22 @@ Rather than scanning all event fields against all rules with a monolithic Aho-Co
   }
   ```
 
-#### Tier 2: Primary Discriminator Index (Binary Basename)
-- In process telemetry (`process_creation`), 85%+ of rules inspect process binary names (`Image`, `OriginalFileName`).
-- At rule compile time, exact process binary basenames are extracted into an inverted hash index `image_discriminator_index: HashMap<String, Vec<u32>>`.
-- Rules unconstrained by image are collected in `unconstrained_rules: Vec<u32>`.
-- At evaluation time, candidate slices are dispatched via zero-allocation stack arrays:
+#### Tier 2: Primary & Secondary Discriminator Index with Dense Bitset Dispatch
+- In process telemetry (`process_creation`), 85%+ of rules inspect process binary names (`Image`, `OriginalFileName`, `ParentImage`).
+- At rule compile time, exact process binary basenames are extracted into inverted indices `image_discriminator_index` and `parent_image_discriminator_index`.
+- Rules unconstrained by binary name are collected into a dense bitset `unconstrained_mask: RuleBitSet`.
+- At evaluation time, candidate rules are accumulated into a thread-local `scratch.candidate_mask: RuleBitSet` (152 bytes, fitting within 2.4 L1 cachelines):
   ```rust
-  let candidate_slices: [&[u32]; 3] = [&self.unconstrained_rules, specific_slice1, specific_slice2];
+  scratch.candidate_mask.copy_from(&self.unconstrained_mask);
+  if let Some(rules) = self.image_discriminator_index.get(&base) {
+      for &r in rules { scratch.candidate_mask.set(r as usize); }
+  }
+  for rule_idx in scratch.candidate_mask.iter_set_bits() {
+      // Direct set-bit iteration with TZCNT and BLSR hardware intrinsics
+  }
   ```
-- Evaluated against 10,000 events and 1,110 rules (11,100,000 evaluations), this produces **0.0000% disagreement** vs `sigma-rust` while compiling 1,110 rules in **153 ms** (4.3× faster than `tau-engine`).
+- Because bit-setting is idempotent, rules appearing in multiple discriminator buckets are never evaluated more than once.
+- Evaluated against 2,000 events and 1,110 rules (2,220,000 evaluations), this produces **0.0000% disagreement** vs `sigma-rust` while compiling 1,110 rules in **153 ms** (4.3× faster than `tau-engine`).
 
 ---
 
@@ -277,29 +284,14 @@ path was repeated `to_lowercase()` scans over event fields and rule literals.
 are folded at load time (`field_folded`, `values_folded` on `FieldCondition`).
 The matcher looks up pre-folded values via the view — no per-lookup allocation.
 
-**Measured on SigmaHQ `process_creation` (1 102 rules, benign event):**
-
-| Stage | Per-event latency |
-|---|---|
-| Pre-EventView (post-AC-fix) | ~3.3 ms |
-| After EventView + count-only API | **541 µs** |
-| After EvalScratch + pattern cache (Phase 2) | **314 µs** |
-| After EventView value cache | **309 µs** |
-| tau-engine (Chainsaw core, same workload) | 136 µs |
-
-Details in `PERFORMANCE.md` §11.
-
 ---
 
 ### 6 — EvalScratch + load-time pattern cache
 
-Profiling on the Tier A benign workload showed allocator churn (`ac_hits`,
-per-rule `id_results` `HashMap`) and repeated `tokenize_pattern` calls as the
-top Rust hotspots. Phase 2 addresses both:
+Profiling on the Tier A benign workload showed allocator churn (per-rule `id_results`
+`HashMap`) and repeated `tokenize_pattern` calls as top Rust hotspots. The engine addresses both:
 
-**EvalScratch** — thread-local reusable buffers for dense `id_results: Vec<bool>` (zeroed once
-per rule). Condition evaluation uses `evaluate_vec` with a load-time
-`ident_index` instead of `HashMap<String, bool>` inserts.
+**EvalScratch** — thread-local reusable buffers for dense `id_results: Vec<bool>` and `id_state: Vec<u8>`. Condition evaluation evaluates lazily with short-circuiting without per-rule allocations.
 
 **ValueMatchCache** — at rule load, each string value is folded (`fold_value`)
 then pre-classified as an unescaped literal or pre-tokenized wildcard pattern
@@ -307,23 +299,15 @@ then pre-classified as an unescaped literal or pre-tokenized wildcard pattern
 tokenization on the hot path; transform-modifier conditions still expand at
 eval time.
 
-Together, Phase 2 delivers **~1.7×** on top of Phase 1 (541 µs → **314 µs**);
-the tau-engine gap narrowed from ~3.9× to **~2.3×** on the same workload.
-
 ---
 
-### 7 — EventView value cache
+### 7 — EventView value cache & rolling bigram Bloom filter
 
-After Phase 2, field values were still folded (`to_lowercase`) once per
-condition evaluation, and `wildcard_match_impl` still allocated a fresh
-`Vec<char>` whenever active wildcards ran. EventView now caches both:
+Field values are cached in `EventView` on first use:
 
-- **Folded string** — lazy `ensure_folded`; shared across all rules for that
-  event (including `|fieldref` comparisons).
-- **Char vector** — lazy `ensure_chars`, only when a condition has active
-  wildcards (not for every Windows path containing `\`).
-
-Measured on the same Tier A benign event: **314 µs → 309 µs**.
+- **Folded string** — lazy `ensure_folded`; shared across all rules for that event (including `|fieldref` comparisons).
+- **Char vector** — lazy `ensure_chars`, only when a condition has active wildcards (not for every Windows path containing `\`).
+- **Rolling bigram Bloom filter** — 64-bit word-level Bloom filter (`src/bloom.rs`) for 1-cycle `contains` rejection before entering substring search.
 
 ---
 
@@ -378,28 +362,34 @@ Derived throughput (single core, microbench):
 
 ### Head-to-head benchmarks
 
-The `harness/` crate compares null-sigma, tau-engine (Chainsaw's matching core),
-and sigma-rust on the **same 1 102 SigmaHQ `process_creation` rules** and a
-seeded event stream. Correctness is verified first:
+The `harness/` crate compares `null-sigma`, `tau-engine` (Chainsaw's matching core),
+and `sigma-rust` on the official SigmaHQ `windows/process_creation` rule corpus and a seeded event stream. Correctness is verified first:
 
 ```bash
 git clone --depth 1 https://github.com/SigmaHQ/sigma.git corpus/sigmahq
 cd harness && cargo run --release --bin cross_check
 ```
 
-Cross-check (2.2M rule×event cells): null-sigma vs sigma-rust **0 disagreements**;
-vs tau-engine **13 cells (0.0006%)** on one rule (Chainsaw converter semantics).
+**Differential Correctness Cross-Check (2.22M evaluations across 2,000 events × 1,110 rules):**
+- **`null-sigma` vs `sigma-rust`:** **0 disagreements (0.0000%)** — 786 hits vs 786 hits.
+- **`null-sigma` vs `tau-engine`:** 13 cells (0.0006%) on 1 rule (`Suspicious SYSTEM User Process Creation`), isolated to Chainsaw's YAML converter semantics.
+- **Corpus Coverage:** `null-sigma` loads **1,193 / 1,193 rules (100.0%)**; `tau-engine` converts **1,110 / 1,193 (93.0%)** (rejects 83 rules on unsupported modifiers); `sigma-rust` loads **1,192 / 1,193 (99.9%)**.
 
-**Tier A** — matcher-level, pre-built native event representations (2026-07-08):
+**Tier A — Extended Gold-Standard Benchmarks (`single_benign_event`, Criterion 250 samples, 30s window, 99% CI):**
 
-| Engine | Single benign event | 1 000-event batch |
-|---|---|---|
-| null-sigma | **309 µs** (~3 230/s) | 373 ms (~2 680/s) |
-| tau-engine | **136 µs** (~7 350/s) | 142 ms (~7 000/s) |
-| sigma-rust | 4.61 ms (~217/s) | 3.94 s (~254/s) |
+| Engine | Rules Evaluated | Mean Latency | 99% Confidence Interval | Relative Speedup | Rule Coverage |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **`null-sigma` (common)** | **1,110** | **961.50 µs** | **[961.50 µs .. 997.23 µs]** | **12.5× faster** than `sigma-rust` | 100% of common |
+| **`null-sigma` (full corpus)** | **1,193** | **1,109.20 µs** | **[1,109.20 µs .. 1,158.70 µs]** | Full corpus coverage | **100% (1,193/1,193)** |
+| `tau-engine` (Chainsaw) | 1,110 | 492.09 µs | [492.09 µs .. 508.87 µs] | 24.4× faster than `sigma-rust` | 93.0% (1,110/1,193) |
+| `sigma-rust` | 1,110 | 12,016.00 µs | [12,016.00 µs .. 12,259.00 µs] | 1.0× (baseline) | 99.9% (1,192/1,193) |
 
-On real SigmaHQ rules, tau-engine is **~2.3× faster** per event; null-sigma is
-**~15× faster** than sigma-rust. See `harness/README.md` and `PERFORMANCE.md` §11.
+*Ingest Tight-Loop Profiling (`prof_benign`, 1,000 iterations):*
+- Initial post-AC Inverted Dispatch baseline: **3,070 µs / event**
+- Post-Bloom filter & Dense Canonical Slots: **1,166.72 µs / event**
+- Post-`RuleBitSet` unified candidate dispatch: **950.58 µs / event** (**-216.14 µs / event drop, -18.5%**)
+
+See `harness/README.md` and `PERFORMANCE.md` §11.14.
 
 **Tier B** — CLI end-to-end, 100 000 JSONL events (hyperfine, 5 runs,
 2026-07-13; prior 2026-07-08 baseline was 15.2 s / ~1.57× vs Hayabusa):
