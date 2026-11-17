@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="440" viewBox="0 0 920 440" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
-<rect width="920" height="440" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="446" viewBox="0 0 920 446" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect width="920" height="446" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
 <text x="460.0" y="32" fill="#f0f6fc" font-size="16" font-weight="700" text-anchor="middle">null-sigma — Tier A Head-to-Head &amp; Optimization Descent</text>
 <text x="460.0" y="52" fill="#8b949e" font-size="12" text-anchor="middle">Official SigmaHQ process_creation corpus · Criterion 250 samples, 99% bootstrap CI (p &lt; 0.01)</text>
 <rect x="45" y="75" width="400" height="290" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
@@ -40,7 +40,10 @@
 <rect x="491" y="277" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
 <rect x="491" y="277" width="50.2" height="24" rx="4" fill="#d29922" fill-opacity="0.3" stroke="#d29922" stroke-width="1.5" stroke-dasharray="4 3"/>
 <text x="549.2" y="293" fill="#d29922" font-size="11" font-weight="700" text-anchor="start">&lt; 450 µs (projected)</text>
-<rect x="45" y="380" width="830" height="42" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
-<text x="65" y="406" fill="#3fb950" font-size="12" font-weight="700">✓ 11.1M Evaluations Cross-Check: 0.0000% Disagreement (4,132 / 4,132 hits vs sigma-rust)</text>
-<text x="855" y="406" fill="#58a6ff" font-size="12" font-weight="700" text-anchor="end">✓ 100.0% SigmaHQ Coverage (1,193 / 1,193 rules in 153 ms)</text>
+<rect x="45" y="378" width="830" height="54" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<line x1="460.0" y1="388" x2="460.0" y2="422" stroke="#30363d" stroke-width="1"/>
+<text x="252.5" y="401" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle">✓ 11.1M Evaluations Cross-Check</text>
+<text x="252.5" y="419" fill="#8b949e" font-size="11" font-weight="500" text-anchor="middle">0.0000% disagreement (4,132 / 4,132 hits vs sigma-rust)</text>
+<text x="667.5" y="401" fill="#58a6ff" font-size="12" font-weight="700" text-anchor="middle">✓ 100.0% SigmaHQ Coverage</text>
+<text x="667.5" y="419" fill="#8b949e" font-size="11" font-weight="500" text-anchor="middle">1,193 / 1,193 rules loaded in 153 ms (0 rejections)</text>
 </svg>

@@ -44,7 +44,7 @@ ORANGE = "#d29922"
 RED = "#f85149"
 FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 
-W, H = 920, 440
+W, H = 920, 446
 OUT = os.path.join(os.path.dirname(__file__), "..", "assets", "benchmarks.svg")
 
 
@@ -163,20 +163,41 @@ def main() -> None:
                 )
 
     # ── Bottom Summary Banner ────────────────────────────────────────────────
-    by = 380
-    bh = 42
+    by = 378
+    bh = 54
     s.append(
-        f'<rect x="{lx0}" y="{by}" width="{rx1 - lx0}" height="{bh}" rx="6" '
+        f'<rect x="{lx0}" y="{by}" width="{rx1 - lx0}" height="{bh}" rx="8" '
         f'fill="{CARD_BG}" stroke="{GRID}" stroke-width="1"/>'
     )
+    # Subtle central divider separating the two proofs
     s.append(
-        f'<text x="{lx0 + 20}" y="{by + 26}" fill="{GREEN}" font-size="12" font-weight="700">'
-        f'✓ 11.1M Evaluations Cross-Check: 0.0000% Disagreement (4,132 / 4,132 hits vs sigma-rust)'
+        f'<line x1="{W / 2}" y1="{by + 10}" x2="{W / 2}" y2="{by + bh - 10}" '
+        f'stroke="{GRID}" stroke-width="1"/>'
+    )
+
+    # Left proof: 11.1M Differential Cross-Check
+    left_cx = (lx0 + (W / 2)) / 2  # 252.5
+    s.append(
+        f'<text x="{left_cx}" y="{by + 23}" fill="{GREEN}" font-size="12" font-weight="700" text-anchor="middle">'
+        f'✓ 11.1M Evaluations Cross-Check'
         f'</text>'
     )
     s.append(
-        f'<text x="{rx1 - 20}" y="{by + 26}" fill="{BLUE}" font-size="12" font-weight="700" text-anchor="end">'
-        f'✓ 100.0% SigmaHQ Coverage (1,193 / 1,193 rules in 153 ms)'
+        f'<text x="{left_cx}" y="{by + 41}" fill="{TEXT_MUTED}" font-size="11" font-weight="500" text-anchor="middle">'
+        f'0.0000% disagreement (4,132 / 4,132 hits vs sigma-rust)'
+        f'</text>'
+    )
+
+    # Right proof: 100% SigmaHQ Specification Coverage
+    right_cx = ((W / 2) + rx1) / 2  # 667.5
+    s.append(
+        f'<text x="{right_cx}" y="{by + 23}" fill="{BLUE}" font-size="12" font-weight="700" text-anchor="middle">'
+        f'✓ 100.0% SigmaHQ Coverage'
+        f'</text>'
+    )
+    s.append(
+        f'<text x="{right_cx}" y="{by + 41}" fill="{TEXT_MUTED}" font-size="11" font-weight="500" text-anchor="middle">'
+        f'1,193 / 1,193 rules loaded in 153 ms (0 rejections)'
         f'</text>'
     )
 
