@@ -28,7 +28,7 @@
 <rect x="491" y="139" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
 <rect x="491" y="139" width="342.4" height="24" rx="4" fill="#8b949e"/>
 <text x="825.4" y="155" fill="#0d1117" font-size="11" font-weight="700" text-anchor="end">3,070 µs / event</text>
-<text x="491" y="180" fill="#f0f6fc" font-size="11" font-weight="500">Phase 5 (+ Bloom & Canonical Slots)</text>
+<text x="491" y="180" fill="#f0f6fc" font-size="11" font-weight="500">Phase 5 (+ Bloom &amp; Canonical Slots)</text>
 <rect x="491" y="185" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
 <rect x="491" y="185" width="130.1" height="24" rx="4" fill="#58a6ff"/>
 <text x="629.1" y="201" fill="#f0f6fc" font-size="11" font-weight="600" text-anchor="start">1,167 µs (-62.0%)</text>
@@ -39,7 +39,7 @@
 <text x="491" y="272" fill="#f0f6fc" font-size="11" font-weight="500">Step 3 Target (Flat Decision Tape)</text>
 <rect x="491" y="277" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
 <rect x="491" y="277" width="50.2" height="24" rx="4" fill="#d29922" fill-opacity="0.3" stroke="#d29922" stroke-width="1.5" stroke-dasharray="4 3"/>
-<text x="549.2" y="293" fill="#d29922" font-size="11" font-weight="700" text-anchor="start">< 450 µs (projected)</text>
+<text x="549.2" y="293" fill="#d29922" font-size="11" font-weight="700" text-anchor="start">&lt; 450 µs (projected)</text>
 <rect x="45" y="380" width="830" height="42" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
 <text x="65" y="406" fill="#3fb950" font-size="12" font-weight="700">✓ 11.1M Evaluations Cross-Check: 0.0000% Disagreement (4,132 / 4,132 hits vs sigma-rust)</text>
 <text x="855" y="406" fill="#58a6ff" font-size="12" font-weight="700" text-anchor="end">✓ 100.0% SigmaHQ Coverage (1,193 / 1,193 rules in 153 ms)</text>

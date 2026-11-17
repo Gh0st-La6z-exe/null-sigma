@@ -213,7 +213,7 @@ Extended Criterion benchmarks (250 samples, 5s warmup, 30s measurement window, 9
 
 Hyperfine measurement across 100,000 JSONL events comparing end-to-end ingest, parsing, evaluation, and reporting:
 
-![Tier B wall-clock chart: null-sigma beats Hayabusa on 100k events](assets/tier_b.svg)
+![Tier B CLI End-to-End Latency: 100,000 JSONL process_creation events](assets/tier_b.svg)
 
 | Tool | Wall Time | Events / sec |
 |---|:---:|:---:|

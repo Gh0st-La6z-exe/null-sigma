@@ -10,6 +10,7 @@ Reflects:
 
 from __future__ import annotations
 
+import html
 import os
 
 # ── Data (Verified Gold-Standard Baselines) ───────────────────────────────────
@@ -89,9 +90,11 @@ def main() -> None:
     start_y = ly0 + 64
 
     for i, (label, val_ms, col, note) in enumerate(HEAD_TO_HEAD):
+        label_esc = html.escape(label)
+        note_esc = html.escape(note)
         y = start_y + i * row_gap
         bw = max(24.0, (val_ms / h2h_max) * h2h_bw_max)
-        s.append(f'<text x="{h2h_bx}" y="{y - 5}" fill="{TEXT}" font-size="11" font-weight="500">{label}</text>')
+        s.append(f'<text x="{h2h_bx}" y="{y - 5}" fill="{TEXT}" font-size="11" font-weight="500">{label_esc}</text>')
         # Background bar
         s.append(f'<rect x="{h2h_bx}" y="{y}" width="{h2h_bw_max}" height="{bar_h}" rx="4" fill="{GRID}" opacity="0.35"/>')
         # Value bar
@@ -100,12 +103,12 @@ def main() -> None:
         if bw > 140:
             s.append(
                 f'<text x="{h2h_bx + bw - 8:.1f}" y="{y + 16}" fill="#0d1117" '
-                f'font-size="11" font-weight="700" text-anchor="end">{note}</text>'
+                f'font-size="11" font-weight="700" text-anchor="end">{note_esc}</text>'
             )
         else:
             s.append(
                 f'<text x="{h2h_bx + bw + 8:.1f}" y="{y + 16}" fill="{TEXT}" '
-                f'font-size="11" font-weight="600" text-anchor="start">{note}</text>'
+                f'font-size="11" font-weight="600" text-anchor="start">{note_esc}</text>'
             )
 
     # ── Right Panel: Optimization Progression ────────────────────────────────
@@ -129,9 +132,11 @@ def main() -> None:
     prog_bw_max = (rx1 - rx0) - 32
 
     for i, (label, val_us, col, note) in enumerate(PROGRESSION):
+        label_esc = html.escape(label)
+        note_esc = html.escape(note)
         y = start_y + i * row_gap
         bw = max(24.0, (val_us / prog_max) * prog_bw_max)
-        s.append(f'<text x="{prog_bx}" y="{y - 5}" fill="{TEXT}" font-size="11" font-weight="500">{label}</text>')
+        s.append(f'<text x="{prog_bx}" y="{y - 5}" fill="{TEXT}" font-size="11" font-weight="500">{label_esc}</text>')
         # Background bar
         s.append(f'<rect x="{prog_bx}" y="{y}" width="{prog_bw_max}" height="{bar_h}" rx="4" fill="{GRID}" opacity="0.35"/>')
         # Value bar
@@ -142,19 +147,19 @@ def main() -> None:
             )
             s.append(
                 f'<text x="{prog_bx + bw + 8:.1f}" y="{y + 16}" fill="{col}" '
-                f'font-size="11" font-weight="700" text-anchor="start">{note}</text>'
+                f'font-size="11" font-weight="700" text-anchor="start">{note_esc}</text>'
             )
         else:
             s.append(f'<rect x="{prog_bx}" y="{y}" width="{bw:.1f}" height="{bar_h}" rx="4" fill="{col}"/>')
             if bw > 140:
                 s.append(
                     f'<text x="{prog_bx + bw - 8:.1f}" y="{y + 16}" fill="#0d1117" '
-                    f'font-size="11" font-weight="700" text-anchor="end">{note}</text>'
+                    f'font-size="11" font-weight="700" text-anchor="end">{note_esc}</text>'
                 )
             else:
                 s.append(
                     f'<text x="{prog_bx + bw + 8:.1f}" y="{y + 16}" fill="{TEXT}" '
-                    f'font-size="11" font-weight="600" text-anchor="start">{note}</text>'
+                    f'font-size="11" font-weight="600" text-anchor="start">{note_esc}</text>'
                 )
 
     # ── Bottom Summary Banner ────────────────────────────────────────────────
