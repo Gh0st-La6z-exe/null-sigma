@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="400" viewBox="0 0 920 400" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect width="920" height="400" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+<text x="460.0" y="30" fill="#f0f6fc" font-size="16" font-weight="700" text-anchor="middle">null-sigma — Microbenchmark Scaling (Synthetic Uniform Rules)</text>
+<text x="255.0" y="58" fill="#f0f6fc" font-size="13" font-weight="600" text-anchor="middle">Per-event latency vs rule count</text>
+<line x1="80" y1="330.0" x2="430" y2="330.0" stroke="#30363d" stroke-width="1"/>
+<text x="72" y="334.0" fill="#8b949e" font-size="11" text-anchor="end">100 ns</text>
+<line x1="80" y1="278.0" x2="430" y2="278.0" stroke="#30363d" stroke-width="1"/>
+<text x="72" y="282.0" fill="#8b949e" font-size="11" text-anchor="end">1 µs</text>
+<line x1="80" y1="226.0" x2="430" y2="226.0" stroke="#30363d" stroke-width="1"/>
+<text x="72" y="230.0" fill="#8b949e" font-size="11" text-anchor="end">10 µs</text>
+<line x1="80" y1="174.0" x2="430" y2="174.0" stroke="#30363d" stroke-width="1"/>
+<text x="72" y="178.0" fill="#8b949e" font-size="11" text-anchor="end">100 µs</text>
+<line x1="80" y1="122.0" x2="430" y2="122.0" stroke="#30363d" stroke-width="1"/>
+<text x="72" y="126.0" fill="#8b949e" font-size="11" text-anchor="end">1 ms</text>
+<line x1="80" y1="70.0" x2="430" y2="70.0" stroke="#30363d" stroke-width="1"/>
+<text x="72" y="74.0" fill="#8b949e" font-size="11" text-anchor="end">10 ms</text>
+<line x1="80.0" y1="330" x2="80.0" y2="335" stroke="#30363d"/>
+<text x="80.0" y="350" fill="#8b949e" font-size="11" text-anchor="middle">1</text>
+<line x1="196.7" y1="330" x2="196.7" y2="335" stroke="#30363d"/>
+<text x="196.7" y="350" fill="#8b949e" font-size="11" text-anchor="middle">10</text>
+<line x1="313.3" y1="330" x2="313.3" y2="335" stroke="#30363d"/>
+<text x="313.3" y="350" fill="#8b949e" font-size="11" text-anchor="middle">100</text>
+<line x1="430.0" y1="330" x2="430.0" y2="335" stroke="#30363d"/>
+<text x="430.0" y="350" fill="#8b949e" font-size="11" text-anchor="middle">1000</text>
+<text x="255.0" y="370" fill="#8b949e" font-size="12" text-anchor="middle">rules loaded (log scale)</text>
+<line x1="80.0" y1="270.5" x2="430.0" y2="114.5" stroke="#d29922" stroke-width="2" stroke-dasharray="6 5"/>
+<text x="343.1" y="143.3" fill="#d29922" font-size="11" text-anchor="middle" transform="rotate(-24 343 143)">naive linear (1-rule cost × N)</text>
+<polyline points="80.0,270.5 313.3,269.5 430.0,251.6" fill="none" stroke="#58a6ff" stroke-width="2.5"/>
+<circle cx="80.0" cy="270.5" r="4.5" fill="#58a6ff"/>
+<text x="90.0" y="258.5" fill="#f0f6fc" font-size="11" text-anchor="start">1.39 µs</text>
+<circle cx="313.3" cy="269.5" r="4.5" fill="#58a6ff"/>
+<text x="313.3" y="257.5" fill="#f0f6fc" font-size="11" text-anchor="middle">1.46 µs</text>
+<circle cx="430.0" cy="251.6" r="4.5" fill="#58a6ff"/>
+<text x="430.0" y="239.6" fill="#f0f6fc" font-size="11" text-anchor="middle">3.22 µs</text>
+<text x="430.0" y="283.6" fill="#3fb950" font-size="12" font-weight="600" text-anchor="end">432× below naive linear at 1000 rules</text>
+<text x="710.0" y="58" fill="#f0f6fc" font-size="13" font-weight="600" text-anchor="middle">Throughput by scenario (events/sec)</text>
+<text x="540" y="85" fill="#f0f6fc" font-size="12">1000 rules · wrong logsource</text>
+<rect x="540" y="92" width="340" height="26" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="540" y="92" width="236.6" height="26" rx="4" fill="#58a6ff"/>
+<text x="768.6" y="109.0" fill="#0d1117" font-size="12" font-weight="600" text-anchor="end">835k</text>
+<text x="540" y="151" fill="#f0f6fc" font-size="12">100 rules · 100-event batch</text>
+<rect x="540" y="158" width="340" height="26" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="540" y="158" width="192.7" height="26" rx="4" fill="#58a6ff"/>
+<text x="724.7" y="175.0" fill="#0d1117" font-size="12" font-weight="600" text-anchor="end">680k</text>
+<text x="540" y="217" fill="#f0f6fc" font-size="12">1000 rules · prefilter zero-match</text>
+<rect x="540" y="224" width="340" height="26" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="540" y="224" width="143.9" height="26" rx="4" fill="#58a6ff"/>
+<text x="675.9" y="241.0" fill="#0d1117" font-size="12" font-weight="600" text-anchor="end">508k</text>
+<text x="540" y="283" fill="#f0f6fc" font-size="12">1000 rules · matching event</text>
+<rect x="540" y="290" width="340" height="26" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="540" y="290" width="88.1" height="26" rx="4" fill="#3fb950"/>
+<text x="620.1" y="307.0" fill="#0d1117" font-size="12" font-weight="600" text-anchor="end">311k</text>
+</svg>

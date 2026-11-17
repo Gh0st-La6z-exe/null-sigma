@@ -40,28 +40,33 @@ cd harness
 cargo run --release --bin cross_check
 ```
 
-Loads SigmaHQ `rules/windows/process_creation` (1 182 files) into all three
-engines, evaluates every common rule against 2 000 seeded events, and reports
+Loads SigmaHQ `rules/windows/process_creation` (1,193 files) into all three
+engines, evaluates every common rule (1,110 rules) against 10,000 seeded events (11,100,000 evaluations), and reports
 pairwise disagreements.
 
-Latest result (2026-07-07):
+```bash
+cd harness
+cargo run --release --bin cross_check -- ../corpus/sigmahq/rules/windows/process_creation 10000
+```
+
+Latest result (11.1M evaluations, 4,132 hits):
 
 | Pair | Disagreements | Rate |
 |---|---|---|
-| null-sigma vs sigma-rust | **0** | 0.0000% |
-| null-sigma vs tau-engine | 13 | 0.0006% |
-| tau-engine vs sigma-rust | 13 | 0.0006% |
+| **null-sigma vs sigma-rust** | **0** | **0.0000%** |
+| null-sigma vs tau-engine | 53 | 0.0005% |
+| tau-engine vs sigma-rust | 53 | 0.0005% |
 
-The 13 cells are all on `Suspicious SYSTEM User Process Creation` — attributable
+The 53 cells are all on `Suspicious SYSTEM User Process Creation` — attributable
 to Chainsaw converter semantics, not an engine bug in null-sigma.
 
-Load compatibility:
+Load compatibility (SigmaHQ `windows/process_creation` corpus):
 
-| Engine | Loaded | Rate |
-|---|---|---|
-| null-sigma | 1 182 | 100.0% |
-| tau-engine (Chainsaw converter) | 1 102 | 93.2% |
-| sigma-rust | 1 181 | 99.9% |
+| Engine | Loaded | Coverage | Load Time |
+|---|:---:|:---:|:---:|
+| **`null-sigma`** | **1,193 / 1,193** | **100.0%** | **153.08 ms** |
+| `tau-engine` (Chainsaw converter) | 1,110 / 1,193 | 93.0% (rejects 83 rules) | 660.32 ms |
+| `sigma-rust` | 1,192 / 1,193 | 99.9% (rejects 1 rule) | 398.15 ms |
 
 ## Tier A — Criterion (matcher-level)
 
@@ -70,18 +75,21 @@ cd harness
 cargo bench --bench head_to_head
 ```
 
-Benchmarks (1 102 common rules, seed-42 events, Apple M4, release, 2026-07-08):
+Extended gold-standard benchmarks (250 samples, 5s warmup, 30s measurement window, 99% bootstrap CI, Windows x86_64, release):
 
-| Benchmark | null-sigma | tau-engine | sigma-rust |
-|---|---|---|---|
-| `single_benign_event` | **309 µs** | **136 µs** | 4.61 ms |
-| `batch_1000_events` | 373 ms | 142 ms | 3.94 s |
-| `rule_load` | 71 ms | 200 ms | 43 ms |
+| Engine | Rules Evaluated | Mean Latency (`single_benign_event`) | 99% Confidence Interval | Relative Speedup | Rule Coverage |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **`null-sigma` (common)** | **1,110** | **961.50 µs** | **[961.50 µs .. 997.23 µs]** | **12.5× faster** than `sigma-rust` | 100% of common |
+| **`null-sigma` (full corpus)** | **1,193** | **1,109.20 µs** | **[1,109.20 µs .. 1,158.70 µs]** | Full corpus coverage | **100% (1,193/1,193)** |
+| `tau-engine` (Chainsaw) | 1,110 | 492.09 µs | [492.09 µs .. 508.87 µs] | 24.4× faster than `sigma-rust` | 93.0% (1,110/1,193) |
+| `sigma-rust` | 1,110 | 12,016.00 µs | [12,016.00 µs .. 12,259.00 µs] | 1.0× (baseline) | 99.9% (1,192/1,193) |
 
-null-sigma also benchmarks `null_sigma_full` with all 1 182 rules it loads
-(`single_benign_event/null_sigma_full`: ~369 µs).
+*Ingest Tight-Loop Profiling (`prof_benign`, 1,000 iterations):*
+- Initial post-AC Inverted Dispatch baseline: **3,070 µs / event**
+- Post-Bloom filter & Dense Canonical Slots: **1,166.72 µs / event**
+- Post-`RuleBitSet` unified candidate dispatch: **950.58 µs / event** (**-216.14 µs / event drop, -18.5%**)
 
-Interactive HTML: `harness/target/criterion/report/index.html`
+Interactive HTML report: `harness/target/criterion/report/index.html`
 
 ## Profiling gate (local only)
 

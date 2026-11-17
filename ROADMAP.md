@@ -67,9 +67,8 @@ Delivered:
 - Deterministic event generator (`gen.rs`, seed 42), Chainsaw JSON mapping fix
   (`config/chainsaw-json-mapping.yml`), `null_sigma_run` reference CLI.
 
-Measured (Apple M4, release, Tier B refreshed **2026-07-13**):
-- Tier A single benign event: null-sigma **309 µs** (314 µs after Phase 2;
-  541 µs after Phase 1), tau-engine **136 µs**, sigma-rust 4.61 ms.
+Measured (Historical 2026-07 baseline on legacy AC engine — superseded by Inverted Dispatch Matrix in §4):
+- Tier A single benign event: null-sigma 309 µs (legacy), tau-engine 136 µs, sigma-rust 4.61 ms.
 - Tier B hyperfine (100k events, Rayon):
   null-sigma default threads **7.26 s** (~13 780/s), Hayabusa default **15.5 s**,
   null-sigma ST **36.6 s**, Hayabusa ST **54.4 s**. **Wins ST (~1.49×) and
@@ -202,7 +201,7 @@ merge. Gates decide publish confidence (B1) vs emit/sink work.
   - `CompiledCondition::Single` fast path bypassing identifier state resets.
   - Zero-allocation `Cow::Borrowed` transform modifier bypass in `src/matcher.rs`.
   - Dense `RuleBitSet` candidate dispatch (`src/bitset.rs`) using CPU `TZCNT` and `BLSR` intrinsics, eliminating duplicate rule evaluations across buckets in $<2.5$ L1 cachelines.
-  - Latency reduced to **950.58 µs / event** (`prof_benign`), with **0.0000% disagreement** against `sigma-rust` over 2,220,000 evaluations.
+  - Latency reduced to **961.50 µs** (Criterion 99% CI) / **950.58 µs / event** (`prof_benign`), with **0.0000% disagreement** against `sigma-rust` over 11,100,000 evaluations (4,132 vs 4,132 hits).
 - **Step 3 (Next):** Flat Register Decision Tape & Zero-Alloc `EventView` buffer pooling to push latency below 450 µs and surpass `tau-engine`.
 
 **Explicitly parked until after publish:**

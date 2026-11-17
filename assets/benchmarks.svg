@@ -1,53 +1,46 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="400" viewBox="0 0 920 400" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
-<rect width="920" height="400" rx="10" fill="#161b22"/>
-<text x="460.0" y="30" fill="#c9d1d9" font-size="16" font-weight="600" text-anchor="middle">null-sigma — measured performance (Apple M4, single core, Criterion medians)</text>
-<text x="255.0" y="58" fill="#c9d1d9" font-size="13" text-anchor="middle">Per-event latency vs rule count</text>
-<line x1="80" y1="330.0" x2="430" y2="330.0" stroke="#30363d" stroke-width="1"/>
-<text x="72" y="334.0" fill="#8b949e" font-size="11" text-anchor="end">100 ns</text>
-<line x1="80" y1="278.0" x2="430" y2="278.0" stroke="#30363d" stroke-width="1"/>
-<text x="72" y="282.0" fill="#8b949e" font-size="11" text-anchor="end">1 µs</text>
-<line x1="80" y1="226.0" x2="430" y2="226.0" stroke="#30363d" stroke-width="1"/>
-<text x="72" y="230.0" fill="#8b949e" font-size="11" text-anchor="end">10 µs</text>
-<line x1="80" y1="174.0" x2="430" y2="174.0" stroke="#30363d" stroke-width="1"/>
-<text x="72" y="178.0" fill="#8b949e" font-size="11" text-anchor="end">100 µs</text>
-<line x1="80" y1="122.0" x2="430" y2="122.0" stroke="#30363d" stroke-width="1"/>
-<text x="72" y="126.0" fill="#8b949e" font-size="11" text-anchor="end">1 ms</text>
-<line x1="80" y1="70.0" x2="430" y2="70.0" stroke="#30363d" stroke-width="1"/>
-<text x="72" y="74.0" fill="#8b949e" font-size="11" text-anchor="end">10 ms</text>
-<line x1="80.0" y1="330" x2="80.0" y2="335" stroke="#30363d"/>
-<text x="80.0" y="350" fill="#8b949e" font-size="11" text-anchor="middle">1</text>
-<line x1="196.7" y1="330" x2="196.7" y2="335" stroke="#30363d"/>
-<text x="196.7" y="350" fill="#8b949e" font-size="11" text-anchor="middle">10</text>
-<line x1="313.3" y1="330" x2="313.3" y2="335" stroke="#30363d"/>
-<text x="313.3" y="350" fill="#8b949e" font-size="11" text-anchor="middle">100</text>
-<line x1="430.0" y1="330" x2="430.0" y2="335" stroke="#30363d"/>
-<text x="430.0" y="350" fill="#8b949e" font-size="11" text-anchor="middle">1000</text>
-<text x="255.0" y="370" fill="#8b949e" font-size="12" text-anchor="middle">rules loaded (log scale)</text>
-<line x1="80.0" y1="270.5" x2="430.0" y2="114.5" stroke="#d29922" stroke-width="2" stroke-dasharray="6 5"/>
-<text x="343.1" y="143.3" fill="#d29922" font-size="11" text-anchor="middle" transform="rotate(-24 343 143)">naive linear (1-rule cost × N)</text>
-<polyline points="80.0,270.5 313.3,269.5 430.0,251.6" fill="none" stroke="#58a6ff" stroke-width="2.5"/>
-<circle cx="80.0" cy="270.5" r="4.5" fill="#58a6ff"/>
-<text x="90.0" y="258.5" fill="#c9d1d9" font-size="11" text-anchor="start">1.39 µs</text>
-<circle cx="313.3" cy="269.5" r="4.5" fill="#58a6ff"/>
-<text x="313.3" y="257.5" fill="#c9d1d9" font-size="11" text-anchor="middle">1.46 µs</text>
-<circle cx="430.0" cy="251.6" r="4.5" fill="#58a6ff"/>
-<text x="430.0" y="239.6" fill="#c9d1d9" font-size="11" text-anchor="middle">3.22 µs</text>
-<text x="430.0" y="283.6" fill="#3fb950" font-size="12" font-weight="600" text-anchor="end">432× below naive linear at 1000 rules</text>
-<text x="710.0" y="58" fill="#c9d1d9" font-size="13" text-anchor="middle">Throughput by scenario (events/sec)</text>
-<text x="540" y="85" fill="#c9d1d9" font-size="12">1000 rules · wrong logsource</text>
-<rect x="540" y="92" width="340" height="26" rx="4" fill="#30363d" opacity="0.35"/>
-<rect x="540" y="92" width="236.6" height="26" rx="4" fill="#58a6ff"/>
-<text x="768.6" y="109.0" fill="#161b22" font-size="12" font-weight="600" text-anchor="end">835k</text>
-<text x="540" y="151" fill="#c9d1d9" font-size="12">100 rules · 100-event batch</text>
-<rect x="540" y="158" width="340" height="26" rx="4" fill="#30363d" opacity="0.35"/>
-<rect x="540" y="158" width="192.7" height="26" rx="4" fill="#58a6ff"/>
-<text x="724.7" y="175.0" fill="#161b22" font-size="12" font-weight="600" text-anchor="end">680k</text>
-<text x="540" y="217" fill="#c9d1d9" font-size="12">1000 rules · no AC hit</text>
-<rect x="540" y="224" width="340" height="26" rx="4" fill="#30363d" opacity="0.35"/>
-<rect x="540" y="224" width="143.9" height="26" rx="4" fill="#58a6ff"/>
-<text x="675.9" y="241.0" fill="#161b22" font-size="12" font-weight="600" text-anchor="end">508k</text>
-<text x="540" y="283" fill="#c9d1d9" font-size="12">1000 rules · matching event</text>
-<rect x="540" y="290" width="340" height="26" rx="4" fill="#30363d" opacity="0.35"/>
-<rect x="540" y="290" width="88.1" height="26" rx="4" fill="#3fb950"/>
-<text x="620.1" y="307.0" fill="#161b22" font-size="12" font-weight="600" text-anchor="end">311k</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="440" viewBox="0 0 920 440" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect width="920" height="440" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+<text x="460.0" y="32" fill="#f0f6fc" font-size="16" font-weight="700" text-anchor="middle">null-sigma — Tier A Head-to-Head &amp; Optimization Descent</text>
+<text x="460.0" y="52" fill="#8b949e" font-size="12" text-anchor="middle">Official SigmaHQ process_creation corpus · Criterion 250 samples, 99% bootstrap CI (p &lt; 0.01)</text>
+<rect x="45" y="75" width="400" height="290" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="61" y="101" fill="#f0f6fc" font-size="13" font-weight="600">Tier A Matcher Latency (single_benign_event)</text>
+<text x="61" y="117" fill="#8b949e" font-size="11">1,110 common rules · Criterion 99% CI · Lower is better</text>
+<text x="61" y="134" fill="#f0f6fc" font-size="11" font-weight="500">sigma-rust (1,110 rules)</text>
+<rect x="61" y="139" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="61" y="139" width="340.1" height="24" rx="4" fill="#f85149"/>
+<text x="393.1" y="155" fill="#0d1117" font-size="11" font-weight="700" text-anchor="end">12.02 ms (1.0× baseline)</text>
+<text x="61" y="180" fill="#f0f6fc" font-size="11" font-weight="500">null-sigma (1,193 rules, full)</text>
+<rect x="61" y="185" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="61" y="185" width="31.4" height="24" rx="4" fill="#58a6ff"/>
+<text x="100.4" y="201" fill="#f0f6fc" font-size="11" font-weight="600" text-anchor="start">1.11 ms (100% coverage)</text>
+<text x="61" y="226" fill="#f0f6fc" font-size="11" font-weight="500">null-sigma (1,110 rules, common)</text>
+<rect x="61" y="231" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="61" y="231" width="27.2" height="24" rx="4" fill="#3fb950"/>
+<text x="96.2" y="247" fill="#f0f6fc" font-size="11" font-weight="600" text-anchor="start">961.5 µs (12.5× faster)</text>
+<text x="61" y="272" fill="#f0f6fc" font-size="11" font-weight="500">tau-engine (1,110 rules only)</text>
+<rect x="61" y="277" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="61" y="277" width="24.0" height="24" rx="4" fill="#d29922"/>
+<text x="93.0" y="293" fill="#f0f6fc" font-size="11" font-weight="600" text-anchor="start">492.1 µs (93.0% coverage)</text>
+<rect x="475" y="75" width="400" height="290" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="491" y="101" fill="#f0f6fc" font-size="13" font-weight="600">Engine Optimization Descent (prof_benign)</text>
+<text x="491" y="117" fill="#8b949e" font-size="11">Tight-loop wall latency per event · Lower is better</text>
+<text x="491" y="134" fill="#f0f6fc" font-size="11" font-weight="500">Post-AC Inverted Dispatch Baseline</text>
+<rect x="491" y="139" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="491" y="139" width="342.4" height="24" rx="4" fill="#8b949e"/>
+<text x="825.4" y="155" fill="#0d1117" font-size="11" font-weight="700" text-anchor="end">3,070 µs / event</text>
+<text x="491" y="180" fill="#f0f6fc" font-size="11" font-weight="500">Phase 5 (+ Bloom & Canonical Slots)</text>
+<rect x="491" y="185" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="491" y="185" width="130.1" height="24" rx="4" fill="#58a6ff"/>
+<text x="629.1" y="201" fill="#f0f6fc" font-size="11" font-weight="600" text-anchor="start">1,167 µs (-62.0%)</text>
+<text x="491" y="226" fill="#f0f6fc" font-size="11" font-weight="500">Step 2 (+ Dense RuleBitSet Dispatch)</text>
+<rect x="491" y="231" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="491" y="231" width="106.0" height="24" rx="4" fill="#3fb950"/>
+<text x="605.0" y="247" fill="#f0f6fc" font-size="11" font-weight="600" text-anchor="start">951 µs (-69.1%)</text>
+<text x="491" y="272" fill="#f0f6fc" font-size="11" font-weight="500">Step 3 Target (Flat Decision Tape)</text>
+<rect x="491" y="277" width="368" height="24" rx="4" fill="#30363d" opacity="0.35"/>
+<rect x="491" y="277" width="50.2" height="24" rx="4" fill="#d29922" fill-opacity="0.3" stroke="#d29922" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="549.2" y="293" fill="#d29922" font-size="11" font-weight="700" text-anchor="start">< 450 µs (projected)</text>
+<rect x="45" y="380" width="830" height="42" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="65" y="406" fill="#3fb950" font-size="12" font-weight="700">✓ 11.1M Evaluations Cross-Check: 0.0000% Disagreement (4,132 / 4,132 hits vs sigma-rust)</text>
+<text x="855" y="406" fill="#58a6ff" font-size="12" font-weight="700" text-anchor="end">✓ 100.0% SigmaHQ Coverage (1,193 / 1,193 rules in 153 ms)</text>
 </svg>

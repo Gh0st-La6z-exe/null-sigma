@@ -282,23 +282,24 @@ representative of a full SigmaHQ corpus where most rules contain wildcards, `|ex
 
 ### 6b. Head-to-head harness — real SigmaHQ rules (Tier A)
 
-Same 1 102 rules (common subset all three library engines load), same 1 000 seeded
-events, matcher-level timing with pre-built native event representations.
-See §11 for methodology.
+Official SigmaHQ `windows/process_creation` rule corpus (1,110 common rules evaluated across all three engines; 1,193 total rules evaluated by `null-sigma`), matcher-level timing with pre-built native event representations. Extended Criterion benchmarks (250 samples, 5s warmup, 30s measurement window, 99% bootstrap confidence interval, $p < 0.01$). See §11.14 for full architecture and methodology.
 
-| Engine | Single benign event | 1 000-event batch | Notes |
-|---|---|---|---|
-| **null-sigma** | **309 µs** (~3 230/s) | 373 ms (~2 680/s) | 1 182/1 182 rules load |
-| **tau-engine** (Chainsaw core) | **136 µs** (~7 350/s) | 142 ms (~7 000/s) | 1 102/1 182 via Chainsaw converter |
-| **sigma-rust** | 4.61 ms (~217/s) | 3.94 s (~254/s) | 1 181/1 182 load |
+| Engine | Rules Evaluated | Mean Latency (`single_benign_event`) | 99% Confidence Interval | Relative Speedup | Rule Coverage |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **`null-sigma` (common)** | **1,110** | **961.50 µs** | **[961.50 µs .. 997.23 µs]** | **12.5× faster** than `sigma-rust` | 100% of common |
+| **`null-sigma` (full corpus)** | **1,193** | **1,109.20 µs** | **[1,109.20 µs .. 1,158.70 µs]** | Full corpus coverage | **100% (1,193/1,193)** |
+| `tau-engine` (Chainsaw) | 1,110 | 492.09 µs | [492.09 µs .. 508.87 µs] | 24.4× faster than `sigma-rust` | 93.0% (1,110/1,193) |
+| `sigma-rust` | 1,110 | 12,016.00 µs | [12,016.00 µs .. 12,259.00 µs] | 1.0× (baseline) | 99.9% (1,192/1,193) |
 
-On this realistic rule set, tau-engine is **~2.3× faster** than null-sigma per event.
-null-sigma is **~15× faster** than sigma-rust.
+*Ingest Tight-Loop Profiling (`prof_benign`, 1,000 iterations):*
+- Initial post-AC Inverted Dispatch baseline: **3,070 µs / event**
+- Post-Bloom filter & Dense Canonical Slots: **1,166.72 µs / event**
+- Post-`RuleBitSet` unified candidate dispatch: **950.58 µs / event** (**-216.14 µs / event drop, -18.5%**)
 
-Correctness cross-check (2 000 events × 1 102 rules = 2.2M cells): null-sigma vs
-sigma-rust **0 disagreements**; null-sigma vs tau-engine **13 cells (0.0006%)** —
-all on one rule (`Suspicious SYSTEM User Process Creation`), attributable to
-Chainsaw conversion semantics.
+**Differential Correctness Cross-Check (11.1M evaluations across 10,000 events × 1,110 rules):**
+- **`null-sigma` vs `sigma-rust`:** **0 disagreements (0.0000%)** — 4,132 hits vs 4,132 hits.
+- **`null-sigma` vs `tau-engine`:** 53 cells (0.0005%) on 1 rule (`Suspicious SYSTEM User Process Creation`), isolated to Chainsaw's YAML converter semantics.
+- **Corpus Coverage:** `null-sigma` loads **1,193 / 1,193 rules (100.0%)** in 153.08 ms; `tau-engine` converts **1,110 / 1,193 (93.0%)** in 660.32 ms (rejects 83 rules on unsupported modifiers); `sigma-rust` loads **1,192 / 1,193 (99.9%)**.
 
 ### 6c. CLI end-to-end — full tools (Tier B)
 
@@ -346,43 +347,29 @@ additive to data layout; correctness semantics are untouched.
 
 ## 8. Architecture Notes for Future Maintainers
 
-### RuleHotData must stay in sync with rules
+### Parallel Arrays & Engine Invariants
 
-`SigmaEngine::hot_data`, `SigmaEngine::flat_ac_indices`, `SigmaEngine::rule_regex_maps`,
-and `SigmaEngine::rules` are all parallel arrays — index `i` across all four must
-correspond to the same compiled rule. They are pushed in lockstep inside
-`add_compiled_rule()`. If you add a new rule-loading code path, ensure all four arrays
-receive their entry.
+`SigmaEngine::hot_data`, `SigmaEngine::rule_regex_maps`, and `SigmaEngine::rules` are parallel arrays — index `i` across all three corresponds to the same compiled rule. They are pushed in lockstep inside `add_compiled_rule()`.
 
-### Fully-AC-covered safety invariant
+Additionally, the engine maintains:
+- `image_discriminator_index: HashMap<String, Vec<u32>>`: maps lowercased binary basenames to rule indices.
+- `parent_image_discriminator_index: HashMap<String, Vec<u32>>`: maps parent process binary basenames to rule indices.
+- `unconstrained_mask: RuleBitSet`: dense bitset representing all rules not strictly constrained by process image or parent image discriminators.
 
-`RuleHotData::fully_ac_covered` (and its mirror `CompiledRule::fully_ac_covered`) must
-be `true` ONLY when **both** of the following hold:
+### Canonical Field-Presence Proof Invariant (Tier 1)
 
-1. Every field condition in every identifier of the rule is AC-eligible.
-   The definition of AC eligibility (`is_ac_eligible()`) explicitly excludes:
-   - Active wildcard patterns (`*`, `?`) — escaped literals `\*`/`\?` remain eligible
-   - Regex (`|re`)
-   - CIDR (`|cidr`)
-   - Numeric comparisons (`|gt`, `|gte`, `|lt`, `|lte`)
-   - Existence checks (`|exists`)
-   - Transform modifiers (`|base64`, `|base64offset`, `|wide`, `|windash`)
-2. The compiled condition cannot evaluate to `true` when every identifier is
-   false (`conditions_require_ac_hit()`). Negated conditions such as
-   `condition: not selection` can fire precisely when nothing matched — an AC
-   miss for those rules is NOT proof of a non-match, so they must never be
-   prefilter-skipped. (Fixed July 2026 — was a real false-negative bug.)
+`RuleHotData::required_fields_mask: u64` is computed at rule compile time via boolean AST proof (`compute_required_fields_mask`):
+1. **Conjunctions (`AND`):** Take bitwise OR (`mask_a | mask_b`) of all mandatory fields.
+2. **Disjunctions (`OR`):** Take bitwise AND (`mask_a & mask_b`) — a field is only required if present in *all* branches.
+3. **Negations (`NOT`):** Must **never** add required field bits (`0`). A rule like `condition: not selection` fires precisely when the selection does not match (including when the field is absent). Setting a bit for negated fields would cause false negatives.
+4. **Fast 1-Cycle Rejection:** Events encode present fields into a 64-bit mask `present_mask: u64`. A rule is rejected immediately if `(hot.required_fields_mask & present_mask) != hot.required_fields_mask`.
 
-Transform modifiers are excluded because they change the effective search value at
-match time (e.g., `|windash` on `-enc` also accepts `/enc`). The AC automaton only
-holds the original string, so an AC miss does NOT guarantee the condition fails.
-Note also that AC patterns are registered in **unescaped** form (`\*` → `*`, `\\` → `\`
-via `pattern_literal()`) because the matcher compares unescaped literals — the
-automaton must hold the same bytes.
+### Dense RuleBitSet Candidate Filtering (Tier 2)
 
-Violating either invariant would produce **false negatives** — matching rules silently
-skipped. Do not relax `is_ac_eligible()` or `conditions_require_ac_hit()` without
-re-running the full prefilter test module (`ac_prefilter_tests`).
+Candidate rule indices are unified in thread-local `scratch.candidate_mask: RuleBitSet` (152 bytes for 1,200 rules, fitting within 2.4 L1 cachelines):
+1. `scratch.candidate_mask.copy_from(&self.unconstrained_mask)` seeds the candidate set with unconstrained rules.
+2. Basename lookups on `Image` and `ParentImage` set bits in `candidate_mask`. Because bit-setting is idempotent, rules appearing in multiple discriminator buckets are evaluated exactly once.
+3. Iteration with `TZCNT` (`trailing_zeros`) and `BLSR` (`w &= w - 1`) directly jumps between set bits with zero wasted cycles.
 
 ### FNV-32 hash sentinel values
 
@@ -391,37 +378,19 @@ re-running the full prefilter test module (`ac_prefilter_tests`).
 - `event_hash == 0`: logsource field is absent from the event. An absent field fails
   any non-wildcard rule (`rule_hash != 0 && event_hash == 0 → false`).
 
-### flat_ac_indices uses u32
+### EvalScratch Reset Invariants
 
-Pattern indices are stored as `u32` (not `usize`) in `flat_ac_indices` to halve memory
-usage on 64-bit platforms. Cast to `usize` when indexing: `ac_hits[idx as usize]`.
-The maximum valid index is `ac_patterns.len() - 1`. For a single engine instance,
-`ac_patterns` is bounded by rules × patterns/rule; u32 overflow would require >4 billion
-patterns, which is not a realistic scenario.
+`EvalScratch` is thread-local and reused across event evaluations:
 
-### EvalScratch reset invariants (Phase 2)
+1. **`candidate_mask`** — reset per event via `copy_from(&self.unconstrained_mask)` before setting bits from discriminator buckets.
+2. **`id_results`** — `reset_id_results(n)` resizes to `n` and fills `false` per rule evaluation before identifier evaluation.
+3. **`id_state`** — tracks tri-state evaluation flags (`0` = unevaluated, `1` = true, `2` = false) to enable lazy short-circuiting without repeated allocations.
+4. **Single-Condition Bypass:** Rules with a single identifier condition bypass `EvalScratch` identifier state entirely via `CompiledCondition::Single`.
 
-`EvalScratch` is reused via thread-local storage in `evaluate_event` /
-`evaluate_event_count`. Stale state produces **false positives** — treat these as
-correctness bugs, not performance details:
+### ValueMatchCache & Sub-64 Bloom Filter
 
-1. **`ac_hits`** — `reset_ac_hits()` must `fill(false)` the full
-   `ac_patterns.len()` slice **once per event** before `run_ac_scan_into`.
-   Never `.clear()` (drops length). `run_ac_scan_into` only sets `true` bits.
-2. **`id_results`** — `reset_id_results(n)` must `resize(n, false)` then
-   `fill(false)` on `..n` **once per rule** before identifier evaluation.
-   Growing from a smaller rule reuses slots that may hold the previous rule's
-   results.
-3. **`ident_index`** — built at load time on `CompiledRule`; must stay in sync
-   with `identifiers` order. `ConditionNode::evaluate_vec` indexes into
-   `id_results` by name via this map.
-
-### ValueMatchCache case-folding (Phase 2)
-
-`values_match_cache` is populated in `finalize_identifiers()` from
-**already-folded** strings (`values_folded` / `fold_value`). Never tokenize the
-raw YAML casing — the runtime compares against `field_lower`. Transform
-modifiers skip cache population; `apply_transforms` still runs at eval time.
+- `values_match_cache` is populated at rule load from folded strings, classifying patterns as literals or wildcard token slices.
+- `EventView` lazily caches 64-bit rolling bigram Bloom filters (`src/bloom.rs`) per field value. Substring `contains` checks test `(filter & pattern_bloom) == pattern_bloom` in 1 CPU cycle before scanning bytes.
 
 ### EventView value cache (post–Phase 2)
 
@@ -616,7 +585,10 @@ Synthetic microbench (`1000_rules_single_event`) moved from 2.34 µs (§9) to
 **3.22 µs** — within noise of the AC correctness changes; the real-corpus win is
 the meaningful signal.
 
-### 11.4 Tier A results (2026-07-08, Apple M4, release)
+### 11.4 Tier A results (2026-07-08, Apple M4, release — Historical Archive)
+
+> [!NOTE]
+> Historical benchmark from 2026-07 on the legacy Aho-Corasick prefilter. Superseded by the Inverted Dispatch Matrix and gold-standard benchmarks in §6b and §11.14.
 
 Criterion medians, 1 102 common rules, seed-42 events:
 
@@ -1049,7 +1021,7 @@ summary here. Pilot (`EVENTS≠100000` or non-Linux) is `status: pilot_only`.
 
 | Track | Status | Notes |
 |---|---|---|
-| C — Inverted Dispatch Matrix | **Active (Steps 1–2 Done)** | Replaced monolithic AC with 2-Tier Inverted Dispatch Matrix + dense `RuleBitSet` dispatch. 2.22M cross-check: 0.0000% disagreement vs `sigma-rust`. Rule load 4.3× faster than `tau-engine` (153 ms vs 660 ms). |
+| C — Inverted Dispatch Matrix | **Active (Steps 1–2 Done)** | Replaced monolithic AC with 2-Tier Inverted Dispatch Matrix + dense `RuleBitSet` dispatch. 11.1M cross-check: 0.0000% disagreement vs `sigma-rust` (4,132 vs 4,132 hits). Rule load 4.3× faster than `tau-engine` (153 ms vs 660 ms). |
 | D — Py bindings / correlation | Parked | Dilution before installability |
 | A1 — dedicated metal supersession of §11.12 | Parked | GHA rank holds; metal is paper/v1 polish |
 
@@ -1060,23 +1032,24 @@ summary here. Pilot (`EVENTS≠100000` or non-Linux) is `status: pilot_only`.
 **Motivation:** The monolithic Aho-Corasick batch prefilter scanned every event field against all string patterns across all rules, causing field bleed and scanning dozens of unconstrained fields per event.
 
 **Delivered Architecture:**
-1. **Tier 1 (Canonical Field-Presence Bitmask):** 64 canonical Sigma fields mapped to dense unique bits. Rules compute `RuleHotData::required_fields_mask` using boolean AST proof. Absent-field events are rejected in 1 bitwise instruction (`(required & present) == required`).
-2. **Tier 2 (Primary & Secondary Basename Discriminators):** Rules constraining process binary basenames (`Image`, `OriginalFileName`, `ParentImage`) are indexed into inverted buckets. Candidate rules are unified into thread-local `RuleBitSet` registers.
+1. **Tier 1 (Canonical Field-Presence Bitmask):** 64 canonical Sigma fields mapped to dense unique bits (`src/field_mask.rs`). Rules compute `RuleHotData::required_fields_mask` using boolean AST proof. Absent-field events are rejected in 1 bitwise instruction (`(required & present) == required`).
+2. **Tier 2 (Primary & Secondary Basename Discriminators):** Rules constraining process binary basenames (`Image`, `OriginalFileName`, `ParentImage`) are indexed into inverted buckets (`src/discriminator.rs`). Candidate rules are unified into thread-local `RuleBitSet` registers.
 3. **Dense `RuleBitSet` Dispatch (`src/bitset.rs`):** Storing 1,200 rules across 19 words of `u64` (152 bytes, $<2.5$ L1 cachelines). Iteration with `TZCNT` (`trailing_zeros`) and `BLSR` (`w &= w - 1`) completely eliminates duplicate rule evaluations across candidate buckets.
 4. **Sub-64 Rolling Bigram Bloom Filter (`src/bloom.rs`):** Fast 64-bit word-level Bloom filter rejecting non-matching substrings in 1 CPU cycle before entering byte-level searches.
-5. **Cost-Ranked AST Reordering & Single-Condition Fast Path:** Cheap, selective conditions evaluate first; single-identifier conditions bypass identifier state allocation.
-6. **24-byte `RuleHotData`:** Shrunk hot prefilter struct to exactly 24 bytes (fits 2.66 rules per 64-byte L1 cache line).
-7. **Stripped `aho-corasick`:** Monolithic automaton dependency completely removed from the core crate.
+5. **Cost-Ranked AST Reordering & Single-Condition Fast Path:** Cheap, selective conditions evaluate first; single-identifier conditions bypass identifier state allocation and closure dispatch (`CompiledCondition::Single`).
+6. **Transform Modifier Bypass:** Zero-allocation `Cow::Borrowed` pass in `src/matcher.rs` when `!condition.has_transforms`.
+7. **24-byte `RuleHotData`:** Shrunk hot prefilter struct to exactly 24 bytes (fits 2.66 rules per 64-byte L1 cache line).
+8. **Stripped `aho-corasick`:** Monolithic automaton dependency completely removed from the core crate.
 
 **Verification & Benchmarks (Windows x86_64, 99% Bootstrap CI, $p < 0.01$, 250 samples):**
-- **Correctness Cross-Check:** 1,110 common rules evaluated across 2,000 generated events (**2,220,000 evaluations**):
-  - `null-sigma vs sigma-rust`: **0 disagreements (0.0000%)** — both produced identical 786 detections.
-  - `null-sigma vs tau-engine`: 13 cells (0.0006%), 100% isolated to Chainsaw's YAML converter treating empty list differently on `Suspicious SYSTEM User Process Creation`.
-- **Corpus Coverage:**
-  - `null-sigma`: **1,193 / 1,193 loaded (100.0%)** in **153.08 ms** (4.3× faster rule load than `tau-engine`).
+- **Differential Correctness Cross-Check:** 1,110 common rules evaluated across 10,000 generated events (**11,100,000 evaluations**):
+  - `null-sigma vs sigma-rust`: **0 disagreements (0.0000%)** — both produced identical 4,132 detections.
+  - `null-sigma vs tau-engine`: 53 cells (0.0005%), 100% isolated to Chainsaw's YAML converter treating empty list differently on `Suspicious SYSTEM User Process Creation`.
+- **Corpus Coverage & Load Speed:**
+  - `null-sigma`: **1,193 / 1,193 loaded (100.0%)** in **153.08 ms** (**4.3× faster** rule compilation than `tau-engine`).
   - `tau-engine`: **1,110 / 1,193 converted (93.0%)** in **660.32 ms** (fails 83 rules on unsupported modifiers).
   - `sigma-rust`: **1,192 / 1,193 loaded (99.9%)** (fails 1 rule on unknown modifier).
-- **Extended Gold-Standard Criterion Head-to-Head (`single_benign_event`, 250 samples, 30s window, 99% CI):**
+- **Extended Gold-Standard Criterion Head-to-Head (`single_benign_event`, 250 samples, 5s warmup, 30s measurement window, 99% CI):**
   - `null-sigma` (common 1,110 rules): **961.50 µs** [961.50 µs .. 997.23 µs]
   - `null-sigma` (full corpus 1,193 rules): **1,109.20 µs** [1,109.20 µs .. 1,158.70 µs]
   - `tau-engine` (1,110 rules only): **492.09 µs** [492.09 µs .. 508.87 µs]
@@ -1084,7 +1057,7 @@ summary here. Pilot (`EVENTS≠100000` or non-Linux) is `status: pilot_only`.
 - **Ingest Tight-Loop Profiling (`prof_benign`, 1,000 iterations):**
   - Initial post-AC Inverted Dispatch baseline: **3,070 µs / event**
   - Post-Bloom filter & Dense Canonical Slots: **1,166.72 µs / event**
-  - Post-`RuleBitSet` candidate dispatch: **950.58 µs / event** (**-216.14 µs / event drop, -18.5%**)
+  - Post-`RuleBitSet` unified candidate dispatch: **950.58 µs / event** (**-216.14 µs / event drop, -18.5%**)
 
 **Next Milestone:**
 - **Step 3 (Flat Register Decision Tape & Zero-Alloc Buffer Pooling):** Pool `EventView` buffers in `EvalScratch` and compile AST conditions into flat linear bytecode tapes to push latency below 450 µs and overtake `tau-engine`.

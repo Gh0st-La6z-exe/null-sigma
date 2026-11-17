@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="360" viewBox="0 0 920 360" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
-<rect width="920" height="360" rx="10" fill="#161b22"/>
-<text x="460.0" y="30" fill="#c9d1d9" font-size="16" font-weight="600" text-anchor="middle">Tier B wall-clock (100k events, Apple M4, hyperfine)</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="360" viewBox="0 0 920 360" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect width="920" height="360" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+<text x="460.0" y="32" fill="#f0f6fc" font-size="16" font-weight="700" text-anchor="middle">Tier B CLI Wall-Clock Throughput (100k events, hyperfine)</text>
 <text x="460.0" y="52" fill="#8b949e" font-size="12" text-anchor="middle">Lower is better · 2026-07-13 · Source: harness/data/tier_b_results.md</text>
 <line x1="357.6" y1="60" x2="357.6" y2="336" stroke="#30363d" stroke-width="1"/>
 <text x="357.6" y="352" fill="#8b949e" font-size="11" text-anchor="middle">10s</text>
@@ -14,22 +14,22 @@
 <text x="828.2" y="352" fill="#8b949e" font-size="11" text-anchor="middle">50s</text>
 <line x1="945.8" y1="60" x2="945.8" y2="336" stroke="#30363d" stroke-width="1"/>
 <text x="945.8" y="352" fill="#8b949e" font-size="11" text-anchor="middle">60s</text>
-<text x="228" y="88" fill="#c9d1d9" font-size="12" text-anchor="end">null-sigma (threads=0)</text>
+<text x="228" y="88" fill="#f0f6fc" font-size="12" text-anchor="end">null-sigma (threads=0)</text>
 <rect x="240" y="70" width="85.4" height="18" rx="6" fill="#3fb950"/>
-<text x="333.4" y="85" fill="#c9d1d9" font-size="12" text-anchor="start">7.257s</text>
-<text x="228" y="130" fill="#c9d1d9" font-size="12" text-anchor="end">null-sigma (threads=4)</text>
+<text x="333.4" y="85" fill="#f0f6fc" font-size="12" text-anchor="start">7.257s</text>
+<text x="228" y="130" fill="#f0f6fc" font-size="12" text-anchor="end">null-sigma (threads=4)</text>
 <rect x="240" y="112" width="135.3" height="18" rx="6" fill="#3fb950"/>
-<text x="383.3" y="127" fill="#c9d1d9" font-size="12" text-anchor="start">11.502s</text>
-<text x="228" y="172" fill="#c9d1d9" font-size="12" text-anchor="end">hayabusa (default)</text>
+<text x="383.3" y="127" fill="#f0f6fc" font-size="12" text-anchor="start">11.502s</text>
+<text x="228" y="172" fill="#f0f6fc" font-size="12" text-anchor="end">hayabusa (default)</text>
 <rect x="240" y="154" width="182.7" height="18" rx="6" fill="#58a6ff"/>
-<text x="430.7" y="169" fill="#c9d1d9" font-size="12" text-anchor="start">15.534s</text>
-<text x="228" y="214" fill="#c9d1d9" font-size="12" text-anchor="end">chainsaw (rosetta)</text>
+<text x="430.7" y="169" fill="#f0f6fc" font-size="12" text-anchor="start">15.534s</text>
+<text x="228" y="214" fill="#f0f6fc" font-size="12" text-anchor="end">chainsaw (rosetta)</text>
 <rect x="240" y="196" width="333.7" height="18" rx="6" fill="#d29922"/>
-<text x="581.7" y="211" fill="#c9d1d9" font-size="12" text-anchor="start">28.370s</text>
-<text x="228" y="256" fill="#c9d1d9" font-size="12" text-anchor="end">null-sigma (threads=1)</text>
+<text x="581.7" y="211" fill="#f0f6fc" font-size="12" text-anchor="start">28.370s</text>
+<text x="228" y="256" fill="#f0f6fc" font-size="12" text-anchor="end">null-sigma (threads=1)</text>
 <rect x="240" y="238" width="430.8" height="18" rx="6" fill="#3fb950"/>
-<text x="678.8" y="253" fill="#c9d1d9" font-size="12" text-anchor="start">36.616s</text>
-<text x="228" y="298" fill="#c9d1d9" font-size="12" text-anchor="end">hayabusa (threads=1)</text>
+<text x="678.8" y="253" fill="#f0f6fc" font-size="12" text-anchor="start">36.616s</text>
+<text x="228" y="298" fill="#f0f6fc" font-size="12" text-anchor="end">hayabusa (threads=1)</text>
 <rect x="240" y="280" width="640.0" height="18" rx="6" fill="#58a6ff"/>
-<text x="888.0" y="295" fill="#c9d1d9" font-size="12" text-anchor="start">54.403s</text>
+<text x="888.0" y="295" fill="#f0f6fc" font-size="12" text-anchor="start">54.403s</text>
 </svg>

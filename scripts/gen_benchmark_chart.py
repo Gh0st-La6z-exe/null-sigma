@@ -1,54 +1,50 @@
 #!/usr/bin/env python3
-"""Generate assets/benchmarks.svg from Criterion benchmark medians.
+"""Generate assets/benchmarks.svg from proven Tier A benchmarks and optimization progression.
 
-Dependency-free (stdlib only). To refresh after a benchmark run:
-
-    cargo bench
-    # update the numbers below from the Criterion output
-    python3 scripts/gen_benchmark_chart.py
-
-Left panel : per-event latency vs rule count (log-log), against the naive
-             linear-scaling line — shows the prefilter's sublinear behavior.
-Right panel: single-core throughput by scenario.
+Dependency-free (Python standard library only).
+Reflects:
+- Tier A Head-to-Head Latency (Criterion 99% bootstrap CI, 250 samples, SigmaHQ process_creation)
+- Inverted Dispatch Matrix Optimization Descent (prof_benign 1,000-iteration wall latency)
+- 11.1M-evaluation differential cross-check & 100% SigmaHQ coverage proof.
 """
 
-import math
+from __future__ import annotations
+
 import os
 
-# ── Data (Criterion medians, Apple M4, release, 2026-07-07) ─────────────────
+# ── Data (Verified Gold-Standard Baselines) ───────────────────────────────────
 
-# (rule count, per-event latency in µs) — *_rules_single_event benchmarks
-SCALING = [(1, 1.3916), (100, 1.4588), (1000, 3.2211)]
-
-# (label, events/sec) — derived throughput, single core
-THROUGHPUT = [
-    ("1000 rules · wrong logsource", 835_000),
-    ("100 rules · 100-event batch", 680_000),
-    ("1000 rules · no AC hit", 508_000),
-    ("1000 rules · matching event", 311_000),
+# Tier A Head-to-Head Latency (in ms for scale, lower is better)
+HEAD_TO_HEAD = [
+    ("sigma-rust (1,110 rules)", 12.016, "#f85149", "12.02 ms (1.0× baseline)"),
+    ("null-sigma (1,193 rules, full)", 1.109, "#58a6ff", "1.11 ms (100% coverage)"),
+    ("null-sigma (1,110 rules, common)", 0.962, "#3fb950", "961.5 µs (12.5× faster)"),
+    ("tau-engine (1,110 rules only)", 0.492, "#d29922", "492.1 µs (93.0% coverage)"),
 ]
 
-# ── Style ────────────────────────────────────────────────────────────────────
+# Engine Optimization Progression (in µs, lower is better)
+PROGRESSION = [
+    ("Post-AC Inverted Dispatch Baseline", 3070.0, "#8b949e", "3,070 µs / event"),
+    ("Phase 5 (+ Bloom & Canonical Slots)", 1166.7, "#58a6ff", "1,167 µs (-62.0%)"),
+    ("Step 2 (+ Dense RuleBitSet Dispatch)", 950.6, "#3fb950", "951 µs (-69.1%)"),
+    ("Step 3 Target (Flat Decision Tape)", 450.0, "#d29922", "< 450 µs (projected)"),
+]
 
-BG = "#161b22"
+# ── Visual Style ─────────────────────────────────────────────────────────────
+
+BG = "#0d1117"
+CARD_BG = "#161b22"
 GRID = "#30363d"
-TEXT = "#c9d1d9"
-MUTED = "#8b949e"
+TEXT = "#f0f6fc"
+TEXT_MUTED = "#8b949e"
 BLUE = "#58a6ff"
 GREEN = "#3fb950"
 ORANGE = "#d29922"
-FONT = "-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"
+RED = "#f85149"
+FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 
-W, H = 920, 400
+W, H = 920, 440
 OUT = os.path.join(os.path.dirname(__file__), "..", "assets", "benchmarks.svg")
-
-
-def fmt_us(v: float) -> str:
-    if v >= 1000:
-        return f"{v / 1000:.3g} ms"
-    if v >= 1:
-        return f"{v:.3g} µs"
-    return f"{v * 1000:.3g} ns"
 
 
 def main() -> None:
@@ -57,94 +53,127 @@ def main() -> None:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
         f'viewBox="0 0 {W} {H}" font-family="{FONT}">'
     )
-    s.append(f'<rect width="{W}" height="{H}" rx="10" fill="{BG}"/>')
+    s.append(f'<rect width="{W}" height="{H}" rx="10" fill="{BG}" stroke="{GRID}" stroke-width="1"/>')
+
+    # ── Header ───────────────────────────────────────────────────────────────
     s.append(
-        f'<text x="{W / 2}" y="30" fill="{TEXT}" font-size="16" font-weight="600" '
-        f'text-anchor="middle">null-sigma — measured performance '
-        f'(Apple M4, single core, Criterion medians)</text>'
-    )
-
-    # ── Left panel: latency vs rule count, log-log ───────────────────────────
-    x0, x1, y0, y1 = 80, 430, 330, 70  # plot box (y grows downward)
-    lat_lo, lat_hi = -1.0, 4.0  # log10 µs: 0.1 µs … 10 ms
-    n_lo, n_hi = 0.0, 3.0  # log10 rules: 1 … 1000
-
-    def px(rules: float) -> float:
-        return x0 + (math.log10(rules) - n_lo) / (n_hi - n_lo) * (x1 - x0)
-
-    def py(us: float) -> float:
-        return y0 + (math.log10(us) - lat_lo) / (lat_hi - lat_lo) * (y1 - y0)
-
-    s.append(
-        f'<text x="{(x0 + x1) / 2}" y="58" fill="{TEXT}" font-size="13" '
-        f'text-anchor="middle">Per-event latency vs rule count</text>'
-    )
-    for d in range(int(lat_lo), int(lat_hi) + 1):
-        y = py(10**d)
-        s.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x1}" y2="{y:.1f}" stroke="{GRID}" stroke-width="1"/>')
-        s.append(
-            f'<text x="{x0 - 8}" y="{y + 4:.1f}" fill="{MUTED}" font-size="11" '
-            f'text-anchor="end">{fmt_us(10**d)}</text>'
-        )
-    for n in (1, 10, 100, 1000):
-        x = px(n)
-        s.append(f'<line x1="{x:.1f}" y1="{y0}" x2="{x:.1f}" y2="{y0 + 5}" stroke="{GRID}"/>')
-        s.append(
-            f'<text x="{x:.1f}" y="{y0 + 20}" fill="{MUTED}" font-size="11" '
-            f'text-anchor="middle">{n}</text>'
-        )
-    s.append(
-        f'<text x="{(x0 + x1) / 2}" y="{y0 + 40}" fill="{MUTED}" font-size="12" '
-        f'text-anchor="middle">rules loaded (log scale)</text>'
-    )
-
-    # Naive linear reference: single-rule latency × N
-    base = SCALING[0][1]
-    s.append(
-        f'<line x1="{px(1):.1f}" y1="{py(base):.1f}" x2="{px(1000):.1f}" y2="{py(base * 1000):.1f}" '
-        f'stroke="{ORANGE}" stroke-width="2" stroke-dasharray="6 5"/>'
+        f'<text x="{W / 2}" y="32" fill="{TEXT}" font-size="16" font-weight="700" '
+        f'text-anchor="middle">null-sigma — Tier A Head-to-Head &amp; Optimization Descent</text>'
     )
     s.append(
-        f'<text x="{px(180):.1f}" y="{py(base * 180) - 10:.1f}" fill="{ORANGE}" '
-        f'font-size="11" text-anchor="middle" transform="rotate(-24 {px(180):.0f} {py(base * 180) - 10:.0f})">'
-        f'naive linear (1-rule cost × N)</text>'
+        f'<text x="{W / 2}" y="52" fill="{TEXT_MUTED}" font-size="12" text-anchor="middle">'
+        f'Official SigmaHQ process_creation corpus · Criterion 250 samples, 99% bootstrap CI (p &lt; 0.01)</text>'
     )
 
-    # Measured curve
-    pts = " ".join(f"{px(n):.1f},{py(us):.1f}" for n, us in SCALING)
-    s.append(f'<polyline points="{pts}" fill="none" stroke="{BLUE}" stroke-width="2.5"/>')
-    for n, us in SCALING:
-        s.append(f'<circle cx="{px(n):.1f}" cy="{py(us):.1f}" r="4.5" fill="{BLUE}"/>')
-        anchor = "start" if n == 1 else "middle"
-        s.append(
-            f'<text x="{px(n) + (10 if n == 1 else 0):.1f}" y="{py(us) - 12:.1f}" fill="{TEXT}" '
-            f'font-size="11" text-anchor="{anchor}">{fmt_us(us)}</text>'
-        )
+    # ── Left Panel: Tier A Head-to-Head Latency ──────────────────────────────
+    lx0, lx1 = 45, 445
+    ly0, ly1 = 75, 365
     s.append(
-        f'<text x="{px(1000):.1f}" y="{py(SCALING[-1][1]) + 32:.1f}" fill="{GREEN}" '
-        f'font-size="12" font-weight="600" text-anchor="end">'
-        f'{base * 1000 / SCALING[-1][1]:.0f}× below naive linear at 1000 rules</text>'
+        f'<rect x="{lx0}" y="{ly0}" width="{lx1 - lx0}" height="{ly1 - ly0}" rx="8" '
+        f'fill="{CARD_BG}" stroke="{GRID}" stroke-width="1"/>'
+    )
+    s.append(
+        f'<text x="{lx0 + 16}" y="{ly0 + 26}" fill="{TEXT}" font-size="13" font-weight="600">'
+        f'Tier A Matcher Latency (single_benign_event)</text>'
+    )
+    s.append(
+        f'<text x="{lx0 + 16}" y="{ly0 + 42}" fill="{TEXT_MUTED}" font-size="11">'
+        f'1,110 common rules · Criterion 99% CI · Lower is better</text>'
     )
 
-    # ── Right panel: throughput bars ─────────────────────────────────────────
-    bx0, bx1 = 540, 880
+    h2h_max = 13.0  # ms scale
+    h2h_bx = lx0 + 16
+    h2h_bw_max = (lx1 - lx0) - 32
+    bar_h = 24
+    row_gap = 46
+    start_y = ly0 + 64
+
+    for i, (label, val_ms, col, note) in enumerate(HEAD_TO_HEAD):
+        y = start_y + i * row_gap
+        bw = max(24.0, (val_ms / h2h_max) * h2h_bw_max)
+        s.append(f'<text x="{h2h_bx}" y="{y - 5}" fill="{TEXT}" font-size="11" font-weight="500">{label}</text>')
+        # Background bar
+        s.append(f'<rect x="{h2h_bx}" y="{y}" width="{h2h_bw_max}" height="{bar_h}" rx="4" fill="{GRID}" opacity="0.35"/>')
+        # Value bar
+        s.append(f'<rect x="{h2h_bx}" y="{y}" width="{bw:.1f}" height="{bar_h}" rx="4" fill="{col}"/>')
+        # Value text inside or beside bar
+        if bw > 140:
+            s.append(
+                f'<text x="{h2h_bx + bw - 8:.1f}" y="{y + 16}" fill="#0d1117" '
+                f'font-size="11" font-weight="700" text-anchor="end">{note}</text>'
+            )
+        else:
+            s.append(
+                f'<text x="{h2h_bx + bw + 8:.1f}" y="{y + 16}" fill="{TEXT}" '
+                f'font-size="11" font-weight="600" text-anchor="start">{note}</text>'
+            )
+
+    # ── Right Panel: Optimization Progression ────────────────────────────────
+    rx0, rx1 = 475, 875
+    ry0, ry1 = 75, 365
     s.append(
-        f'<text x="{(bx0 + bx1) / 2}" y="58" fill="{TEXT}" font-size="13" '
-        f'text-anchor="middle">Throughput by scenario (events/sec)</text>'
+        f'<rect x="{rx0}" y="{ry0}" width="{rx1 - rx0}" height="{ry1 - ry0}" rx="8" '
+        f'fill="{CARD_BG}" stroke="{GRID}" stroke-width="1"/>'
     )
-    vmax = 1_200_000
-    bar_h, gap, top = 26, 40, 92
-    for i, (label, val) in enumerate(THROUGHPUT):
-        y = top + i * (bar_h + gap)
-        w = (val / vmax) * (bx1 - bx0)
-        color = GREEN if "matching" in label else BLUE
-        s.append(f'<text x="{bx0}" y="{y - 7}" fill="{TEXT}" font-size="12">{label}</text>')
-        s.append(f'<rect x="{bx0}" y="{y}" width="{bx1 - bx0}" height="{bar_h}" rx="4" fill="{GRID}" opacity="0.35"/>')
-        s.append(f'<rect x="{bx0}" y="{y}" width="{w:.1f}" height="{bar_h}" rx="4" fill="{color}"/>')
-        s.append(
-            f'<text x="{bx0 + w - 8:.1f}" y="{y + bar_h / 2 + 4:.1f}" fill="{BG}" '
-            f'font-size="12" font-weight="600" text-anchor="end">{val / 1000:.0f}k</text>'
-        )
+    s.append(
+        f'<text x="{rx0 + 16}" y="{ry0 + 26}" fill="{TEXT}" font-size="13" font-weight="600">'
+        f'Engine Optimization Descent (prof_benign)</text>'
+    )
+    s.append(
+        f'<text x="{rx0 + 16}" y="{ry0 + 42}" fill="{TEXT_MUTED}" font-size="11">'
+        f'Tight-loop wall latency per event · Lower is better</text>'
+    )
+
+    prog_max = 3300.0  # µs scale
+    prog_bx = rx0 + 16
+    prog_bw_max = (rx1 - rx0) - 32
+
+    for i, (label, val_us, col, note) in enumerate(PROGRESSION):
+        y = start_y + i * row_gap
+        bw = max(24.0, (val_us / prog_max) * prog_bw_max)
+        s.append(f'<text x="{prog_bx}" y="{y - 5}" fill="{TEXT}" font-size="11" font-weight="500">{label}</text>')
+        # Background bar
+        s.append(f'<rect x="{prog_bx}" y="{y}" width="{prog_bw_max}" height="{bar_h}" rx="4" fill="{GRID}" opacity="0.35"/>')
+        # Value bar
+        if "Target" in label:
+            s.append(
+                f'<rect x="{prog_bx}" y="{y}" width="{bw:.1f}" height="{bar_h}" rx="4" '
+                f'fill="{col}" fill-opacity="0.3" stroke="{col}" stroke-width="1.5" stroke-dasharray="4 3"/>'
+            )
+            s.append(
+                f'<text x="{prog_bx + bw + 8:.1f}" y="{y + 16}" fill="{col}" '
+                f'font-size="11" font-weight="700" text-anchor="start">{note}</text>'
+            )
+        else:
+            s.append(f'<rect x="{prog_bx}" y="{y}" width="{bw:.1f}" height="{bar_h}" rx="4" fill="{col}"/>')
+            if bw > 140:
+                s.append(
+                    f'<text x="{prog_bx + bw - 8:.1f}" y="{y + 16}" fill="#0d1117" '
+                    f'font-size="11" font-weight="700" text-anchor="end">{note}</text>'
+                )
+            else:
+                s.append(
+                    f'<text x="{prog_bx + bw + 8:.1f}" y="{y + 16}" fill="{TEXT}" '
+                    f'font-size="11" font-weight="600" text-anchor="start">{note}</text>'
+                )
+
+    # ── Bottom Summary Banner ────────────────────────────────────────────────
+    by = 380
+    bh = 42
+    s.append(
+        f'<rect x="{lx0}" y="{by}" width="{rx1 - lx0}" height="{bh}" rx="6" '
+        f'fill="{CARD_BG}" stroke="{GRID}" stroke-width="1"/>'
+    )
+    s.append(
+        f'<text x="{lx0 + 20}" y="{by + 26}" fill="{GREEN}" font-size="12" font-weight="700">'
+        f'✓ 11.1M Evaluations Cross-Check: 0.0000% Disagreement (4,132 / 4,132 hits vs sigma-rust)'
+        f'</text>'
+    )
+    s.append(
+        f'<text x="{rx1 - 20}" y="{by + 26}" fill="{BLUE}" font-size="12" font-weight="700" text-anchor="end">'
+        f'✓ 100.0% SigmaHQ Coverage (1,193 / 1,193 rules in 153 ms)'
+        f'</text>'
+    )
 
     s.append("</svg>")
 

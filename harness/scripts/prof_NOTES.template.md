@@ -1,8 +1,8 @@
 # Flamegraph notes — prof_benign (local only, do not commit)
 
 **Date:**  
-**Machine:** Apple M4, macOS  
-**Workload:** Tier A `single_benign_event` — 1 102 common SigmaHQ `process_creation` rules, seed-42 benign (`chrome.exe`)  
+**Machine:**  
+**Workload:** Tier A `single_benign_event` — 1,110 common SigmaHQ `process_creation` rules, seed-42 benign (`chrome.exe`)  
 **API:** `evaluate_event_count`  
 **Profile file:** `harness/prof/samply_YYYYMMDD_HHMMSS.json.gz`
 
@@ -10,10 +10,10 @@
 
 | Metric | Value |
 |---|---|
-| µs/event (100k loop) | |
-| Tier A Criterion reference (post–value cache) | ~309 µs |
-| Tier A Criterion reference (Phase 2) | ~314 µs |
-| Tier A Criterion reference (Phase 1 baseline) | ~541 µs |
+| µs/event (1,000 loop) | |
+| Step 2 baseline (`RuleBitSet` candidate dispatch) | ~950 µs |
+| Phase 5 reference (Bloom + Canonical slots) | ~1,166 µs |
+| Post-AC Inverted Dispatch reference | ~3,070 µs |
 
 ## Top frames (self time / total time)
 
@@ -27,20 +27,13 @@ Fill from Firefox Profiler after `prof_benign.sh`:
 | 4 | | | | |
 | 5 | | | | |
 
-## Hypothesis checklist
+## Optimization checklist
 
-| Area | Pre–value-cache | Post–value-cache | Next action |
-|---|---|---|---|
-| `tokenize_pattern` / `pattern_literal` | dropped (Phase 2) | | — |
-| malloc/free (`EvalScratch`) | dropped (Phase 2) | | — |
-| `to_lowercase` on event fields | present | should drop | value cache shipped |
-| `wildcard_match_impl` `Vec<char>` | per-call | should reuse cache | value cache shipped |
-| `apply_transforms` | medium | | Pre-expand at load |
-| AC scan | <1% | | No action |
-| tau-engine structural gap | ~2.3× | | Architecture / Phase 3 |
-
-## Decision (fill after review)
-
-- [ ] Transform pre-expansion at load
-- [ ] Phase 3 ingest (Tier B)
-- [ ] Defer; structural gap vs tau-engine needs architecture work
+| Area | Status | Next action |
+|---|---|---|
+| Field-presence bitmask rejection | Shipped | 1-cycle bitwise rejection |
+| Discriminator basename indexing | Shipped | Inverted image/parent_image dispatch |
+| Candidate bitset iteration | Shipped | `RuleBitSet` with TZCNT/BLSR |
+| Rolling bigram Bloom filter | Shipped | 1-cycle `contains` reject |
+| Decision tape / flat interpreter | In Progress | Step 3: eliminate AST recursion |
+| EventView buffer pooling | In Progress | Step 3: zero allocations per event |

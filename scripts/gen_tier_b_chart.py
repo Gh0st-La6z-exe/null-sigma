@@ -29,14 +29,15 @@ TIER_B = [
 ]
 
 # ── Style ────────────────────────────────────────────────────────────────────
-BG = "#161b22"
+BG = "#0d1117"
+CARD_BG = "#161b22"
 GRID = "#30363d"
-TEXT = "#c9d1d9"
+TEXT = "#f0f6fc"
 MUTED = "#8b949e"
 BLUE = "#58a6ff"
 GREEN = "#3fb950"
 ORANGE = "#d29922"
-FONT = "-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"
+FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 
 W, H = 920, 360
 OUT = os.path.join(os.path.dirname(__file__), "..", "assets", "tier_b.svg")
@@ -79,10 +80,10 @@ def main() -> None:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
         f'viewBox="0 0 {W} {H}" font-family="{FONT}">'
     )
-    s.append(f'<rect width="{W}" height="{H}" rx="10" fill="{BG}"/>')
+    s.append(f'<rect width="{W}" height="{H}" rx="10" fill="{BG}" stroke="{GRID}" stroke-width="1"/>')
     s.append(
-        f'<text x="{W/2}" y="30" fill="{TEXT}" font-size="16" font-weight="600" '
-        f'text-anchor="middle">Tier B wall-clock (100k events, Apple M4, hyperfine)</text>'
+        f'<text x="{W/2}" y="32" fill="{TEXT}" font-size="16" font-weight="700" '
+        f'text-anchor="middle">Tier B CLI Wall-Clock Throughput (100k events, hyperfine)</text>'
     )
     s.append(
         f'<text x="{W/2}" y="52" fill="{MUTED}" font-size="12" text-anchor="middle">'
