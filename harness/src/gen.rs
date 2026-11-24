@@ -87,7 +87,9 @@ const BENIGN: &[Profile] = &[
         company: "Microsoft Corporation",
         parent: r"C:\Windows\explorer.exe",
         parent_cmd: r"C:\Windows\Explorer.EXE",
-        cmdlines: &[r#""C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" /n "C:\Users\alice\report.docx""#],
+        cmdlines: &[
+            r#""C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" /n "C:\Users\alice\report.docx""#,
+        ],
     },
     Profile {
         image: r"C:\Windows\System32\conhost.exe",
@@ -192,7 +194,12 @@ const SUSPICIOUS: &[Profile] = &[
     },
 ];
 
-const USERS: &[&str] = &["CORP\\alice", "CORP\\bob", "NT AUTHORITY\\SYSTEM", "CORP\\svc-deploy"];
+const USERS: &[&str] = &[
+    "CORP\\alice",
+    "CORP\\bob",
+    "NT AUTHORITY\\SYSTEM",
+    "CORP\\svc-deploy",
+];
 const INTEGRITY: &[&str] = &["Medium", "High", "System"];
 
 fn build_event(rng: &mut SplitMix64, n: u64) -> Map<String, Value> {
@@ -241,7 +248,9 @@ fn build_event(rng: &mut SplitMix64, n: u64) -> Map<String, Value> {
 /// Generate `count` deterministic flat process-creation events.
 pub fn generate(seed: u64, count: usize) -> Vec<Map<String, Value>> {
     let mut rng = SplitMix64::new(seed);
-    (0..count).map(|n| build_event(&mut rng, n as u64)).collect()
+    (0..count)
+        .map(|n| build_event(&mut rng, n as u64))
+        .collect()
 }
 
 /// Basis points out of 10_000 for A4 controlled event-hit rate.
@@ -290,11 +299,17 @@ pub fn to_evtx_json(flat: &Map<String, Value>, record_id: u64) -> Value {
         }
         rec.insert(k.clone(), v.clone());
     }
-    rec.insert("Channel".into(), json!("Microsoft-Windows-Sysmon/Operational"));
+    rec.insert(
+        "Channel".into(),
+        json!("Microsoft-Windows-Sysmon/Operational"),
+    );
     rec.insert("EventID".into(), json!(1));
     rec.insert("SourceName".into(), json!("Microsoft-Windows-Sysmon"));
     rec.insert("Provider".into(), json!("Microsoft-Windows-Sysmon"));
-    rec.insert("ProviderGuid".into(), json!("{5770385F-C22A-43E0-BF4C-06F5698FFBD9}"));
+    rec.insert(
+        "ProviderGuid".into(),
+        json!("{5770385F-C22A-43E0-BF4C-06F5698FFBD9}"),
+    );
     rec.insert("Hostname".into(), json!("WKSTN-01.corp.local"));
     rec.insert("Computer".into(), json!("WKSTN-01.corp.local"));
     rec.insert("UtcTime".into(), json!("2026-07-04 12:00:00.000"));
@@ -328,7 +343,12 @@ mod tests {
         let events = generate(42, 2000);
         let suspicious = events
             .iter()
-            .filter(|e| e["CommandLine"].as_str().unwrap().contains("-EncodedCommand"))
+            .filter(|e| {
+                e["CommandLine"]
+                    .as_str()
+                    .unwrap()
+                    .contains("-EncodedCommand")
+            })
             .count();
         let benign = events
             .iter()

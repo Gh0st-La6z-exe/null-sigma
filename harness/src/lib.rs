@@ -50,6 +50,60 @@ impl LoadReport {
     }
 }
 
+/// Recursively find all `.yml` or `.yaml` files in `dir`.
+pub fn find_all_yaml_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+    if dir.is_dir() {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                find_all_yaml_files(&path, out)?;
+            } else if path.extension().is_some_and(|e| e == "yml" || e == "yaml") {
+                out.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Recursively read every `.yml` rule under `dir` and try to load each into all three engines.
+pub fn load_rule_tree(dir: &Path) -> std::io::Result<LoadReport> {
+    let mut paths = Vec::new();
+    find_all_yaml_files(dir, &mut paths)?;
+    paths.sort();
+    let mut rules = Vec::with_capacity(paths.len());
+
+    for path in paths {
+        let yaml = match std::fs::read_to_string(&path) {
+            Ok(y) => y,
+            Err(_) => continue,
+        };
+
+        let null_sigma = {
+            let mut probe = null_sigma::SigmaEngine::new();
+            probe
+                .load_rule(&yaml)
+                .map(|_| ())
+                .map_err(|e| format!("{e:?}"))
+        };
+        let tau = convert::sigma_to_tau(&yaml)
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        let sigma_rust = sigma_rust::rule_from_yaml(&yaml)
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+
+        rules.push(RuleCompat {
+            path: path.display().to_string(),
+            yaml,
+            null_sigma,
+            tau,
+            sigma_rust,
+        });
+    }
+    Ok(LoadReport { rules })
+}
+
 /// Read every `.yml` rule under `dir` (non-recursive subdirs skipped —
 /// SigmaHQ's process_creation directory is flat) and try to load each into
 /// all three engines.
@@ -67,11 +121,17 @@ pub fn load_rule_dir(dir: &Path) -> std::io::Result<LoadReport> {
 
         let null_sigma = {
             let mut probe = null_sigma::SigmaEngine::new();
-            probe.load_rule(&yaml).map(|_| ()).map_err(|e| format!("{e:?}"))
+            probe
+                .load_rule(&yaml)
+                .map(|_| ())
+                .map_err(|e| format!("{e:?}"))
         };
-        let tau = convert::sigma_to_tau(&yaml).map(|_| ()).map_err(|e| e.to_string());
-        let sigma_rust =
-            sigma_rust::rule_from_yaml(&yaml).map(|_| ()).map_err(|e| e.to_string());
+        let tau = convert::sigma_to_tau(&yaml)
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        let sigma_rust = sigma_rust::rule_from_yaml(&yaml)
+            .map(|_| ())
+            .map_err(|e| e.to_string());
 
         rules.push(RuleCompat {
             path: path.display().to_string(),
@@ -178,11 +238,17 @@ impl SigmaRustBench {
     }
 
     pub fn count_matches(&self, event: &sigma_rust::Event) -> usize {
-        self.rules.iter().filter(|r| sigma_rust::check_rule(r, event)).count()
+        self.rules
+            .iter()
+            .filter(|r| sigma_rust::check_rule(r, event))
+            .count()
     }
 
     pub fn hits(&self, event: &sigma_rust::Event) -> Vec<bool> {
-        self.rules.iter().map(|r| sigma_rust::check_rule(r, event)).collect()
+        self.rules
+            .iter()
+            .map(|r| sigma_rust::check_rule(r, event))
+            .collect()
     }
 }
 
@@ -194,8 +260,7 @@ pub fn null_sigma_hits(
     event: &HashMap<String, String>,
 ) -> Vec<bool> {
     let matches = engine.evaluate_event(event);
-    let matched: std::collections::HashSet<&str> =
-        matches.iter().map(|m| m.rule_id.as_str()).collect();
+    let matched: std::collections::HashSet<&str> = matches.iter().map(|m| m.rule_id).collect();
     ids.iter().map(|id| matched.contains(id.as_str())).collect()
 }
 

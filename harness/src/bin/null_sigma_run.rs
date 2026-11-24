@@ -57,10 +57,7 @@ impl ErrorCounters {
     }
 
     fn total(&self) -> u64 {
-        self.err_io_read
-            + self.err_line_too_large
-            + self.err_json_parse
-            + self.flatten_total()
+        self.err_io_read + self.err_line_too_large + self.err_json_parse + self.flatten_total()
     }
 }
 
@@ -375,14 +372,19 @@ fn evaluate_events(
     }))
 }
 
-fn load_rules_from_dir(rule_dir: &std::path::Path) -> Result<(null_sigma::SigmaEngine, usize, usize, u128), String> {
+fn load_rules_from_dir(
+    rule_dir: &std::path::Path,
+) -> Result<(null_sigma::SigmaEngine, usize, usize, u128), String> {
     let start = std::time::Instant::now();
     let mut engine = null_sigma::SigmaEngine::new();
     let entries = std::fs::read_dir(rule_dir)
         .map_err(|e| format!("cannot read rule dir '{}': {e}", rule_dir.display()))?;
     let mut paths: Vec<_> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|ext| ext == "yml" || ext == "yaml"))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|ext| ext == "yml" || ext == "yaml")
+        })
         .collect();
     paths.sort();
 

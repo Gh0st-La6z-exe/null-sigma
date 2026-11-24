@@ -40,7 +40,11 @@ fn setup() -> Setup {
     );
     let report = load_rule_dir(&rule_dir).expect("failed to read rules");
     let common = report.common();
-    assert!(common.len() >= 500, "expected >= 500 common rules, got {}", common.len());
+    assert!(
+        common.len() >= 500,
+        "expected >= 500 common rules, got {}",
+        common.len()
+    );
 
     let yamls: Vec<String> = common.iter().map(|r| r.yaml.clone()).collect();
     let refs: Vec<&str> = yamls.iter().map(String::as_str).collect();
@@ -65,7 +69,12 @@ fn setup() -> Setup {
 
     let suspicious_idx = events
         .iter()
-        .position(|e| e["CommandLine"].as_str().unwrap().contains("-EncodedCommand"))
+        .position(|e| {
+            e["CommandLine"]
+                .as_str()
+                .unwrap()
+                .contains("-EncodedCommand")
+        })
         .expect("no suspicious event in stream");
     let benign_idx = events
         .iter()

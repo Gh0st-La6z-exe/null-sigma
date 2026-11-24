@@ -117,6 +117,33 @@ pub fn flatten_value(value: &serde_json::Value) -> Result<HashMap<String, String
     flatten_value_with(value, FlattenOptions::default())
 }
 
+/// Thread-local scratch buffers for zero-allocation JSON flattening and evaluation.
+#[derive(Debug, Default)]
+pub struct JsonScratch {
+    /// Reusable map for flattened fields
+    pub map: HashMap<String, String>,
+    /// Reusable path buffer
+    pub path_buf: String,
+}
+
+impl JsonScratch {
+    /// Create a new empty scratch buffer.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reset scratch buffers, preserving heap capacity.
+    pub fn reset(&mut self) {
+        self.map.clear();
+        self.path_buf.clear();
+    }
+}
+
+thread_local! {
+    pub(crate) static JSON_SCRATCH: std::cell::RefCell<JsonScratch> = std::cell::RefCell::new(JsonScratch::new());
+}
+
 /// Flatten a parsed JSON value with explicit guard configuration.
 ///
 /// # Errors
@@ -131,8 +158,11 @@ pub fn flatten_value_with(
     };
 
     let mut out = HashMap::new();
+    let mut path_buf = String::new();
     for (key, val) in map {
-        flatten_into(key, val, &mut out, 1, options)?;
+        path_buf.push_str(key);
+        flatten_into_buf(&mut path_buf, val, &mut out, 1, options)?;
+        path_buf.clear();
     }
     Ok(out)
 }
@@ -200,13 +230,13 @@ fn scalar_to_string(value: &serde_json::Value) -> String {
     }
 }
 
-/// Recursively flatten one JSON value under `path`.
+/// Recursively flatten one JSON value under `path_buf`.
 ///
 /// `depth` counts nesting levels (top-level fields are depth 1); both objects
 /// and arrays consume a level, so the recursion depth is bounded by
 /// `options.max_depth` regardless of input shape.
-fn flatten_into(
-    path: &str,
+fn flatten_into_buf(
+    path_buf: &mut String,
     value: &serde_json::Value,
     out: &mut HashMap<String, String>,
     depth: usize,
@@ -220,28 +250,35 @@ fn flatten_into(
 
     match value {
         serde_json::Value::Object(map) => {
+            let base_len = path_buf.len();
             for (key, val) in map {
-                let child_path = format!("{path}.{key}");
-                flatten_into(&child_path, val, out, depth + 1, options)?;
+                path_buf.push('.');
+                path_buf.push_str(key);
+                flatten_into_buf(path_buf, val, out, depth + 1, options)?;
+                path_buf.truncate(base_len);
             }
         }
 
         serde_json::Value::Array(items) => match items.as_slice() {
             // Empty array: field carries no matchable value → empty string,
             // consistent with the null convention.
-            [] => insert_field(out, path.to_string(), String::new(), options)?,
+            [] => insert_field(out, path_buf.clone(), String::new(), options)?,
 
             // Single element collapses to the base key — the dominant real
             // case (e.g. one hash, one IP) should look like a plain field.
             [only] if !only.is_object() && !only.is_array() => {
-                insert_field(out, path.to_string(), scalar_to_string(only), options)?;
+                insert_field(out, path_buf.clone(), scalar_to_string(only), options)?;
             }
 
             _ => {
+                let base_len = path_buf.len();
                 // Indexed keys for exact per-element access…
                 for (i, item) in items.iter().enumerate() {
-                    let child_path = format!("{path}.{i}");
-                    flatten_into(&child_path, item, out, depth + 1, options)?;
+                    path_buf.push('.');
+                    use std::fmt::Write;
+                    let _ = write!(path_buf, "{i}");
+                    flatten_into_buf(path_buf, item, out, depth + 1, options)?;
+                    path_buf.truncate(base_len);
                 }
                 // …plus a newline-joined base key over the SCALAR elements so
                 // `Field|contains` emulates "any element matches" (multi-value
@@ -256,15 +293,41 @@ fn flatten_into(
                     .map(scalar_to_string)
                     .collect();
                 if !scalars.is_empty() {
-                    insert_field(out, path.to_string(), scalars.join("\n"), options)?;
+                    insert_field(out, path_buf.clone(), scalars.join("\n"), options)?;
                 }
             }
         },
 
-        scalar => insert_field(out, path.to_string(), scalar_to_string(scalar), options)?,
+        scalar => insert_field(out, path_buf.clone(), scalar_to_string(scalar), options)?,
     }
 
     Ok(())
+}
+
+/// Helper to parse and flatten JSON using thread-local scratch buffers to eliminate heap allocations.
+pub fn with_flattened_str<R>(
+    json: &str,
+    options: FlattenOptions,
+    f: impl FnOnce(&HashMap<String, String>) -> R,
+) -> Result<R, FlattenError> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| FlattenError::Parse(e.to_string()))?;
+    let serde_json::Value::Object(map) = value else {
+        return Err(FlattenError::NotAnObject);
+    };
+
+    JSON_SCRATCH.with(|cell| {
+        let scratch = &mut *cell.borrow_mut();
+        scratch.reset();
+        for (key, val) in map {
+            scratch.path_buf.push_str(&key);
+            flatten_into_buf(&mut scratch.path_buf, &val, &mut scratch.map, 1, options)?;
+            scratch.path_buf.clear();
+        }
+        let res = f(&scratch.map);
+        scratch.reset();
+        Ok(res)
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -273,8 +336,7 @@ fn flatten_into(
 
 impl SigmaEngine {
     /// Parse a JSON event string, flatten it, and evaluate it against all
-    /// loaded rules. Convenience wrapper over [`flatten_str`] +
-    /// [`SigmaEngine::evaluate_event`] using default [`FlattenOptions`].
+    /// loaded rules using thread-local pooled buffers.
     ///
     /// ```
     /// # use null_sigma::SigmaEngine;
@@ -298,12 +360,13 @@ impl SigmaEngine {
     ///
     /// Returns [`FlattenError`] for invalid JSON, non-object documents, or
     /// guard violations. Evaluation itself cannot fail.
-    pub fn evaluate_json(&self, json: &str) -> Result<Vec<RuleMatch>, FlattenError> {
-        let event = flatten_str(json)?;
-        Ok(self.evaluate_event(&event))
+    pub fn evaluate_json<'a>(&'a self, json: &str) -> Result<Vec<RuleMatch<'a>>, FlattenError> {
+        with_flattened_str(json, FlattenOptions::default(), |event| {
+            self.evaluate_event(event)
+        })
     }
 
-    /// Parse JSON and count matching rules without building [`RuleMatch`] payloads.
+    /// Parse JSON and count matching rules without building [`RuleMatch`] payloads or allocating maps.
     ///
     /// Same semantics as [`Self::evaluate_json`], but skips result metadata
     /// allocation — use for throughput-sensitive JSONL ingestion paths.
@@ -313,7 +376,24 @@ impl SigmaEngine {
     /// Returns [`FlattenError`] for invalid JSON, non-object documents, or
     /// guard violations. Evaluation itself cannot fail.
     pub fn evaluate_json_count(&self, json: &str) -> Result<usize, FlattenError> {
-        let event = flatten_str(json)?;
-        Ok(self.evaluate_event_count(&event))
+        with_flattened_str(json, FlattenOptions::default(), |event| {
+            self.evaluate_event_count(event)
+        })
+    }
+
+    /// Parse JSON and evaluate into a reusable matches buffer without map allocations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlattenError`] for invalid JSON, non-object documents, or
+    /// guard violations. Evaluation itself cannot fail.
+    pub fn evaluate_json_into<'a>(
+        &'a self,
+        json: &str,
+        matches_buf: &mut Vec<RuleMatch<'a>>,
+    ) -> Result<(), FlattenError> {
+        with_flattened_str(json, FlattenOptions::default(), |event| {
+            self.evaluate_event_into(event, matches_buf);
+        })
     }
 }

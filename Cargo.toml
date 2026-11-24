@@ -4,7 +4,7 @@
 
 [package]
 name = "null-sigma"
-version = "0.1.3"
+version = "0.1.5"
 edition = "2021"
 authors = ["Gh0st-La6z-exe"]
 license = "Apache-2.0"
@@ -25,6 +25,7 @@ serde_norway = "0.9"
 # Regex for wildcard and regex modifiers in Sigma conditions.
 # Sigma supports `|re` (regex) and `*` glob wildcards in values.
 regex = "1.11"
+regex-syntax = "0.8"
 
 # JSON parsing for the optional `json` ingestion feature - flattens nested
 # telemetry (ECS, Sysmon, CloudTrail) into the engine's flat event format.

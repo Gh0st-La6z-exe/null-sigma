@@ -1,7 +1,6 @@
 # null-sigma head-to-head benchmark harness
 
-Roadmap item 3. Compares **null-sigma**, **tau-engine** (Chainsaw's matching
-core), and **sigma-rust** on the same SigmaHQ rules and seeded event stream.
+Roadmap item 3. Compares **null-sigma**, **rsigma-eval** (double-array indexed multi-rule engine), **tau-engine** (Chainsaw's matching core), and **sigma-rust** on the same SigmaHQ rules and seeded event stream.
 Also measures CLI end-to-end wall-clock vs Hayabusa and Chainsaw.
 
 The harness is a standalone crate — it does not modify the core library except
@@ -84,12 +83,35 @@ Extended gold-standard benchmarks (250 samples, 5s warmup, 30s measurement windo
 | `tau-engine` (Chainsaw) | 1,110 | 492.09 µs | [492.09 µs .. 508.87 µs] | 24.4× faster than `sigma-rust` | 93.0% (1,110/1,193) |
 | `sigma-rust` | 1,110 | 12,016.00 µs | [12,016.00 µs .. 12,259.00 µs] | 1.0× (baseline) | 99.9% (1,192/1,193) |
 
-*Ingest Tight-Loop Profiling (`prof_benign`, 1,000 iterations):*
+*Ingest Tight-Loop Profiling Progression (`prof_benign`, 1,110 common rules):*
 - Initial post-AC Inverted Dispatch baseline: **3,070 µs / event**
 - Post-Bloom filter & Dense Canonical Slots: **1,166.72 µs / event**
-- Post-`RuleBitSet` unified candidate dispatch: **950.58 µs / event** (**-216.14 µs / event drop, -18.5%**)
+- Post-`RuleBitSet` unified candidate dispatch: **950.58 µs / event**
+- Post-`Bloom256` vectorized rolling bigram filter: **309.24 µs / event**
+- Post-Conjunction Verification (`SingleCheck::All`): **19.22 µs / event** (52,029 EPS) on benign telemetry, **31.93 µs / event** (31,318 EPS) on single-core common rules
 
 Interactive HTML report: `harness/target/criterion/report/index.html`
+
+## Active Benchmark & Diagnostic Binaries (`src/bin/`)
+
+| Binary | Target / Scenario | Key Metric |
+|---|---|---|
+| `titan_gauntlet` | 50M-event multi-core gauntlet | 102,027 sustained EPS across 8 SMT threads |
+| `test_rsigma` | Head-to-head vs `rsigma-eval` | 31,318 EPS vs 30,000 EPS single-core |
+| `audit_payloads` | Megabyte-scale linear byte scan | 195–255 MiB/s active scan; 1.02 µs fast prune |
+| `stress_concurrency` | SMP thread scaling sweep | 138,665 EPS on 8 SMT threads |
+| `stress_soak` | 10M-event sequential soak | Bounded memory, 0 MB drift |
+| `stress_gauntlet` | Adversarial stress gauntlet | ReDoS immunity, attack storms, 2k cache-thrashing |
+| `cross_category` | Multi-category coverage | Registry, File, Network, PowerShell rules |
+| `cross_check` | 11.1M-evaluation differential gate | Exact 0.0000% disagreement vs `sigma-rust` |
+| `prof_benign` | Tight-loop matcher profiling | 19.22 µs benign, 35.35 µs mixed stream |
+| `audit_front1` | Discriminator & unconstrained accounting | Hard Logsource Partition validation |
+| `audit_categories` | Category distribution & compilation | Ingestion across all SigmaHQ categories |
+| `inspect_net` | Diagnostic inspect runner | Windows Network & DNS rules |
+| `inspect_storm` | Diagnostic inspect runner | High-saturation attack storms |
+| `inspect_tau` | Diagnostic inspect runner | Chainsaw converter AST analysis |
+| `null_sigma_run` | Reference bench runner | Count-only CLI benchmark runner |
+| `gen_dataset` | Deterministic synthetic generator | Reproducible event streams |
 
 ## Profiling gate (local only)
 

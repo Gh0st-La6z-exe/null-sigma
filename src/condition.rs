@@ -217,6 +217,7 @@ impl ResolvedConditionNode {
     ///
     /// Identifiers are evaluated via `eval_ident` only when reached by boolean
     /// short-circuiting.
+    #[cfg(test)]
     #[inline]
     pub(crate) fn evaluate_lazy<F>(&self, eval_ident: &mut F) -> bool
     where
@@ -252,6 +253,265 @@ impl ResolvedConditionNode {
                     }
                     false
                 }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Flat Register Decision Tape — Linear Bytecode Condition Representation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Single instruction in a flat linear decision tape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecisionOp {
+    /// If `eval_ident(ident_idx)` is false, jump to `target`.
+    /// Otherwise fall through to `pc + 1`.
+    JumpIfFalse { ident_idx: u16, target: u16 },
+
+    /// Quantifier: evaluate identifiers in `quantifier_lists[list_idx]`.
+    /// If quantifier condition failed, jump to `target`.
+    /// Otherwise fall through to `pc + 1`.
+    Quantifier {
+        list_idx: u16,
+        min_matches: u16,
+        target: u16,
+    },
+
+    /// Unconditional jump to `target`.
+    Jump(u16),
+
+    /// Return match result immediately.
+    Return(bool),
+}
+
+/// Contiguous linear decision bytecode for rule condition evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecisionTape {
+    pub(crate) ops: Box<[DecisionOp]>,
+    pub(crate) quantifier_lists: Box<[Box<[u16]>]>,
+}
+
+impl DecisionTape {
+    /// Evaluate the decision tape.
+    ///
+    /// Identifiers are evaluated lazily via `eval_ident` only when reached.
+    /// Returns `true` if condition evaluates to true, `false` otherwise.
+    #[inline(always)]
+    pub(crate) fn evaluate<F>(&self, mut eval_ident: F) -> bool
+    where
+        F: FnMut(usize) -> bool,
+    {
+        let ops = &self.ops;
+        let mut pc = 0usize;
+
+        while pc < ops.len() {
+            match ops[pc] {
+                DecisionOp::JumpIfFalse { ident_idx, target } => {
+                    if !eval_ident(ident_idx as usize) {
+                        pc = target as usize;
+                    } else {
+                        pc += 1;
+                    }
+                }
+                DecisionOp::Quantifier {
+                    list_idx,
+                    min_matches,
+                    target,
+                } => {
+                    if !Self::eval_quantifier(
+                        &self.quantifier_lists,
+                        list_idx,
+                        min_matches,
+                        &mut eval_ident,
+                    ) {
+                        pc = target as usize;
+                    } else {
+                        pc += 1;
+                    }
+                }
+                DecisionOp::Jump(target) => {
+                    pc = target as usize;
+                }
+                DecisionOp::Return(result) => return result,
+            }
+        }
+
+        false
+    }
+
+    #[inline(always)]
+    fn eval_quantifier<F>(
+        quantifier_lists: &[Box<[u16]>],
+        list_idx: u16,
+        min_matches: u16,
+        eval_ident: &mut F,
+    ) -> bool
+    where
+        F: FnMut(usize) -> bool,
+    {
+        let list = &quantifier_lists[list_idx as usize];
+        if min_matches == 0 {
+            if list.is_empty() {
+                return false;
+            }
+            for &id in list.iter() {
+                if !eval_ident(id as usize) {
+                    return false;
+                }
+            }
+            true
+        } else {
+            let mut hits = 0u16;
+            let total = list.len();
+            for (i, &id) in list.iter().enumerate() {
+                if eval_ident(id as usize) {
+                    hits += 1;
+                    if hits >= min_matches {
+                        return true;
+                    }
+                }
+                let remaining = (total - 1 - i) as u16;
+                if hits + remaining < min_matches {
+                    return false;
+                }
+            }
+            false
+        }
+    }
+
+    /// Compile a resolved condition AST into a flat decision tape.
+    #[must_use]
+    pub(crate) fn compile(node: &ResolvedConditionNode) -> Self {
+        let mut builder = TapeBuilder::new();
+        let (truelist, falselist) = builder.compile_node(node);
+
+        let ret_true = builder.emit(DecisionOp::Return(true));
+        for jmp in truelist {
+            builder.patch(jmp, ret_true);
+        }
+
+        let ret_false = builder.emit(DecisionOp::Return(false));
+        for jmp in falselist {
+            builder.patch(jmp, ret_false);
+        }
+
+        builder.optimize();
+
+        Self {
+            ops: builder.ops.into_boxed_slice(),
+            quantifier_lists: builder.quantifier_lists.into_boxed_slice(),
+        }
+    }
+}
+
+struct TapeBuilder {
+    ops: Vec<DecisionOp>,
+    quantifier_lists: Vec<Box<[u16]>>,
+}
+
+impl TapeBuilder {
+    fn new() -> Self {
+        Self {
+            ops: Vec::new(),
+            quantifier_lists: Vec::new(),
+        }
+    }
+
+    fn emit(&mut self, op: DecisionOp) -> usize {
+        let idx = self.ops.len();
+        self.ops.push(op);
+        idx
+    }
+
+    fn patch(&mut self, op_idx: usize, target_idx: usize) {
+        let target = target_idx as u16;
+        match &mut self.ops[op_idx] {
+            DecisionOp::JumpIfFalse { target: t, .. }
+            | DecisionOp::Quantifier { target: t, .. }
+            | DecisionOp::Jump(t) => *t = target,
+            DecisionOp::Return(_) => panic!("Cannot patch return instruction"),
+        }
+    }
+
+    fn compile_node(&mut self, node: &ResolvedConditionNode) -> (Vec<usize>, Vec<usize>) {
+        match node {
+            ResolvedConditionNode::Identifier(idx) => {
+                let op = self.emit(DecisionOp::JumpIfFalse {
+                    ident_idx: *idx as u16,
+                    target: 0,
+                });
+                let jmp = self.emit(DecisionOp::Jump(0));
+                (vec![jmp], vec![op])
+            }
+            ResolvedConditionNode::Not(inner) => {
+                let (inner_t, inner_f) = self.compile_node(inner);
+                // Swapping truelist and falselist implements boolean NOT
+                (inner_f, inner_t)
+            }
+            ResolvedConditionNode::And(left, right) => {
+                let (left_t, mut left_f) = self.compile_node(left);
+                let right_start = self.ops.len();
+                for jmp in left_t {
+                    self.patch(jmp, right_start);
+                }
+                let (right_t, right_f) = self.compile_node(right);
+                left_f.extend(right_f);
+                (right_t, left_f)
+            }
+            ResolvedConditionNode::Or(left, right) => {
+                let (mut left_t, left_f) = self.compile_node(left);
+                let right_start = self.ops.len();
+                for jmp in left_f {
+                    self.patch(jmp, right_start);
+                }
+                let (right_t, right_f) = self.compile_node(right);
+                left_t.extend(right_t);
+                (left_t, right_f)
+            }
+            ResolvedConditionNode::OneOf { count, identifiers } => {
+                let list: Box<[u16]> = identifiers.iter().map(|&id| id as u16).collect();
+                self.quantifier_lists.push(list);
+                let list_idx = (self.quantifier_lists.len() - 1) as u16;
+                let op = self.emit(DecisionOp::Quantifier {
+                    list_idx,
+                    min_matches: *count as u16,
+                    target: 0,
+                });
+                let jmp = self.emit(DecisionOp::Jump(0));
+                (vec![jmp], vec![op])
+            }
+        }
+    }
+
+    fn optimize(&mut self) {
+        // Jump threading: eliminate jumps to jumps and jumps to returns
+        let n = self.ops.len();
+        for i in 0..n {
+            let initial_target = match self.ops[i] {
+                DecisionOp::JumpIfFalse { target, .. }
+                | DecisionOp::Quantifier { target, .. }
+                | DecisionOp::Jump(target) => target,
+                DecisionOp::Return(_) => continue,
+            };
+
+            let mut dest = initial_target as usize;
+            let mut visited = 0;
+            while dest < n && visited < n {
+                if let DecisionOp::Jump(next_dest) = self.ops[dest] {
+                    dest = next_dest as usize;
+                    visited += 1;
+                } else {
+                    break;
+                }
+            }
+
+            let new_target = dest as u16;
+            match &mut self.ops[i] {
+                DecisionOp::JumpIfFalse { target, .. }
+                | DecisionOp::Quantifier { target, .. }
+                | DecisionOp::Jump(target) => *target = new_target,
+                DecisionOp::Return(_) => {}
             }
         }
     }
@@ -371,10 +631,14 @@ fn tokenize(input: &str) -> Vec<Token> {
 // Parser — Recursive descent with operator precedence
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Maximum nesting depth for condition expressions before rejection.
+pub const MAX_CONDITION_DEPTH: usize = 128;
+
 /// Parser state for recursive descent parsing.
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    depth: usize,
     /// All known identifier names (for resolving "them" and wildcard patterns).
     known_identifiers: Vec<String>,
 }
@@ -384,6 +648,7 @@ impl Parser {
         Parser {
             tokens,
             pos: 0,
+            depth: 0,
             known_identifiers,
         }
     }
@@ -449,7 +714,15 @@ impl Parser {
     fn parse_not(&mut self) -> Result<ConditionNode, CompileError> {
         if *self.peek() == Token::Not {
             self.advance(); // consume 'not'
-            let inner = self.parse_not()?;
+            self.depth += 1;
+            if self.depth > MAX_CONDITION_DEPTH {
+                return Err(CompileError::ConditionDepthExceeded {
+                    max_depth: MAX_CONDITION_DEPTH,
+                });
+            }
+            let inner = self.parse_not();
+            self.depth -= 1;
+            let inner = inner?;
             Ok(ConditionNode::Not(Box::new(inner)))
         } else {
             self.parse_primary()
@@ -462,7 +735,15 @@ impl Parser {
         match self.peek().clone() {
             Token::LParen => {
                 self.advance(); // consume '('
-                let expr = self.parse_expr()?;
+                self.depth += 1;
+                if self.depth > MAX_CONDITION_DEPTH {
+                    return Err(CompileError::ConditionDepthExceeded {
+                        max_depth: MAX_CONDITION_DEPTH,
+                    });
+                }
+                let expr = self.parse_expr();
+                self.depth -= 1;
+                let expr = expr?;
                 self.expect(&Token::RParen)?;
                 Ok(expr)
             }
@@ -609,7 +890,7 @@ impl Parser {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Errors that can occur when compiling a Sigma condition string into an AST.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompileError {
     /// The condition parser encountered a token it didn't expect at this position.
     UnexpectedToken {
@@ -625,6 +906,11 @@ pub enum CompileError {
         /// The duplicated identifier name.
         name: String,
     },
+    /// The condition nesting depth exceeded [`MAX_CONDITION_DEPTH`].
+    ConditionDepthExceeded {
+        /// The maximum allowed nesting depth.
+        max_depth: usize,
+    },
 }
 
 impl std::fmt::Display for CompileError {
@@ -636,6 +922,9 @@ impl std::fmt::Display for CompileError {
             CompileError::EmptyCondition => write!(f, "Empty condition expression"),
             CompileError::DuplicateQuantifierIdentifier { name } => {
                 write!(f, "Duplicate identifier in quantifier list: {name}")
+            }
+            CompileError::ConditionDepthExceeded { max_depth } => {
+                write!(f, "Condition nesting exceeds maximum depth of {max_depth}")
             }
         }
     }
@@ -679,4 +968,251 @@ pub fn compile_condition(
         });
     }
     Ok(node)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decision_tape_single_identifier() {
+        let node = ResolvedConditionNode::Identifier(0);
+        let tape = DecisionTape::compile(&node);
+
+        assert!(tape.evaluate(|idx| idx == 0));
+        assert!(!tape.evaluate(|_| false));
+    }
+
+    #[test]
+    fn test_decision_tape_and() {
+        let node = ResolvedConditionNode::And(
+            Box::new(ResolvedConditionNode::Identifier(0)),
+            Box::new(ResolvedConditionNode::Identifier(1)),
+        );
+        let tape = DecisionTape::compile(&node);
+
+        // Truth table for A and B:
+        for a in [false, true] {
+            for b in [false, true] {
+                let expected = a && b;
+                let actual = tape.evaluate(|idx| if idx == 0 { a } else { b });
+                assert_eq!(actual, expected, "Failed for A={a}, B={b}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_decision_tape_or() {
+        let node = ResolvedConditionNode::Or(
+            Box::new(ResolvedConditionNode::Identifier(0)),
+            Box::new(ResolvedConditionNode::Identifier(1)),
+        );
+        let tape = DecisionTape::compile(&node);
+
+        // Truth table for A or B:
+        for a in [false, true] {
+            for b in [false, true] {
+                let expected = a || b;
+                let actual = tape.evaluate(|idx| if idx == 0 { a } else { b });
+                assert_eq!(actual, expected, "Failed for A={a}, B={b}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_decision_tape_not() {
+        let node = ResolvedConditionNode::Not(Box::new(ResolvedConditionNode::Identifier(0)));
+        let tape = DecisionTape::compile(&node);
+
+        assert!(!tape.evaluate(|idx| idx == 0));
+        assert!(tape.evaluate(|_| false));
+    }
+
+    #[test]
+    fn test_decision_tape_and_not() {
+        // selection and not filter
+        let node = ResolvedConditionNode::And(
+            Box::new(ResolvedConditionNode::Identifier(0)),
+            Box::new(ResolvedConditionNode::Not(Box::new(
+                ResolvedConditionNode::Identifier(1),
+            ))),
+        );
+        let tape = DecisionTape::compile(&node);
+
+        for a in [false, true] {
+            for b in [false, true] {
+                let expected = a && !b;
+                let actual = tape.evaluate(|idx| if idx == 0 { a } else { b });
+                assert_eq!(actual, expected, "Failed for A={a}, B={b}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_decision_tape_compound() {
+        // (A or B) and not C
+        let node = ResolvedConditionNode::And(
+            Box::new(ResolvedConditionNode::Or(
+                Box::new(ResolvedConditionNode::Identifier(0)),
+                Box::new(ResolvedConditionNode::Identifier(1)),
+            )),
+            Box::new(ResolvedConditionNode::Not(Box::new(
+                ResolvedConditionNode::Identifier(2),
+            ))),
+        );
+        let tape = DecisionTape::compile(&node);
+
+        for a in [false, true] {
+            for b in [false, true] {
+                for c in [false, true] {
+                    let expected = (a || b) && !c;
+                    let actual = tape.evaluate(|idx| match idx {
+                        0 => a,
+                        1 => b,
+                        2 => c,
+                        _ => false,
+                    });
+                    assert_eq!(actual, expected, "Failed for A={a}, B={b}, C={c}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_decision_tape_quantifiers() {
+        // 1 of [0, 1, 2]
+        let one_of = ResolvedConditionNode::OneOf {
+            count: 1,
+            identifiers: vec![0, 1, 2],
+        };
+        let tape_one = DecisionTape::compile(&one_of);
+
+        assert!(!tape_one.evaluate(|_| false));
+        assert!(tape_one.evaluate(|idx| idx == 1));
+        assert!(tape_one.evaluate(|idx| idx == 0 || idx == 2));
+
+        // all of [0, 1, 2] (count == 0)
+        let all_of = ResolvedConditionNode::OneOf {
+            count: 0,
+            identifiers: vec![0, 1, 2],
+        };
+        let tape_all = DecisionTape::compile(&all_of);
+
+        assert!(!tape_all.evaluate(|idx| idx == 0 || idx == 1));
+        assert!(tape_all.evaluate(|idx| idx < 3));
+
+        // 2 of [0, 1, 2]
+        let two_of = ResolvedConditionNode::OneOf {
+            count: 2,
+            identifiers: vec![0, 1, 2],
+        };
+        let tape_two = DecisionTape::compile(&two_of);
+
+        assert!(!tape_two.evaluate(|idx| idx == 0));
+        assert!(tape_two.evaluate(|idx| idx == 0 || idx == 2));
+    }
+
+    #[test]
+    fn test_decision_tape_short_circuit() {
+        // A and B: if A is false, B MUST NOT be evaluated
+        let node = ResolvedConditionNode::And(
+            Box::new(ResolvedConditionNode::Identifier(0)),
+            Box::new(ResolvedConditionNode::Identifier(1)),
+        );
+        let tape = DecisionTape::compile(&node);
+
+        let mut b_evaluated = false;
+        let res = tape.evaluate(|idx| {
+            if idx == 0 {
+                false
+            } else {
+                b_evaluated = true;
+                true
+            }
+        });
+        assert!(!res);
+        assert!(!b_evaluated, "B was evaluated despite A being false!");
+
+        // A or B: if A is true, B MUST NOT be evaluated
+        let node_or = ResolvedConditionNode::Or(
+            Box::new(ResolvedConditionNode::Identifier(0)),
+            Box::new(ResolvedConditionNode::Identifier(1)),
+        );
+        let tape_or = DecisionTape::compile(&node_or);
+
+        let mut b_or_evaluated = false;
+        let res_or = tape_or.evaluate(|idx| {
+            if idx == 0 {
+                true
+            } else {
+                b_or_evaluated = true;
+                false
+            }
+        });
+        assert!(res_or);
+        assert!(!b_or_or_evaluated(&mut b_or_evaluated));
+    }
+
+    fn b_or_or_evaluated(b: &mut bool) -> bool {
+        *b
+    }
+
+    #[test]
+    fn test_decision_tape_matches_ast_lazy() {
+        // (A and B) or (C and not D)
+        let node = ResolvedConditionNode::Or(
+            Box::new(ResolvedConditionNode::And(
+                Box::new(ResolvedConditionNode::Identifier(0)),
+                Box::new(ResolvedConditionNode::Identifier(1)),
+            )),
+            Box::new(ResolvedConditionNode::And(
+                Box::new(ResolvedConditionNode::Identifier(2)),
+                Box::new(ResolvedConditionNode::Not(Box::new(
+                    ResolvedConditionNode::Identifier(3),
+                ))),
+            )),
+        );
+        let tape = DecisionTape::compile(&node);
+
+        for a in [false, true] {
+            for b in [false, true] {
+                for c in [false, true] {
+                    for d in [false, true] {
+                        let eval_fn = |idx: usize| match idx {
+                            0 => a,
+                            1 => b,
+                            2 => c,
+                            3 => d,
+                            _ => false,
+                        };
+                        let ast_res = node.evaluate_lazy(&mut eval_fn.clone());
+                        let tape_res = tape.evaluate(eval_fn);
+                        assert_eq!(
+                            tape_res, ast_res,
+                            "Disagreement for A={a},B={b},C={c},D={d}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_condition_depth_guard() {
+        let mut deep_cond = String::from("a");
+        for _ in 0..150 {
+            deep_cond = format!("({deep_cond})");
+        }
+        let idents = vec![SearchIdentifier {
+            name: "a".to_string(),
+            groups: vec![],
+        }];
+        let res = compile_condition(&deep_cond, &idents);
+        assert_eq!(
+            res.unwrap_err(),
+            CompileError::ConditionDepthExceeded {
+                max_depth: MAX_CONDITION_DEPTH
+            }
+        );
+    }
 }

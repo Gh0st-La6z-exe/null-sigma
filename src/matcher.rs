@@ -54,7 +54,7 @@ pub fn match_identifier<S: BuildHasher>(
 
 /// Check if a field condition group matches against an event.
 /// ALL conditions in the group must match (AND logic within a group).
-fn match_group_on_view(group: &FieldConditionGroup, view: &mut EventView<'_>) -> bool {
+fn match_group_on_view(group: &FieldConditionGroup, view: &mut EventView<'_, '_>) -> bool {
     group
         .conditions
         .iter()
@@ -81,7 +81,7 @@ pub fn match_field_condition<S: BuildHasher>(
 #[must_use]
 pub(crate) fn match_identifier_on_view(
     identifier: &SearchIdentifier,
-    view: &mut EventView<'_>,
+    view: &mut EventView<'_, '_>,
 ) -> bool {
     identifier
         .groups
@@ -94,11 +94,11 @@ pub(crate) fn match_identifier_on_view(
 #[must_use]
 pub(crate) fn match_field_condition_on_view(
     condition: &FieldCondition,
-    view: &mut EventView<'_>,
+    view: &mut EventView<'_, '_>,
 ) -> bool {
-    let field_folded = condition_field_folded(condition);
     // Special case: `exists` modifier checks field presence
     if condition.modifiers.contains(&ValueModifier::Exists) {
+        let field_folded = condition_field_folded(condition);
         return handle_exists_on_view(condition, &field_folded, view);
     }
 
@@ -150,7 +150,23 @@ pub(crate) fn match_field_condition_on_view(
         if slot_idx != u32::MAX {
             single_slot = [slot_idx as usize];
             &single_slot
-        } else if let Some(stored) = view.field_indices(&field_folded) {
+        } else {
+            let field_folded = condition_field_folded(condition);
+            if let Some(stored) = view.field_indices(&field_folded) {
+                if stored.len() <= 8 {
+                    stack_indices[..stored.len()].copy_from_slice(stored);
+                    &stack_indices[..stored.len()]
+                } else {
+                    heap_indices = stored.to_vec();
+                    &heap_indices
+                }
+            } else {
+                return false;
+            }
+        }
+    } else {
+        let field_folded = condition_field_folded(condition);
+        if let Some(stored) = view.field_indices(&field_folded) {
             if stored.len() <= 8 {
                 stack_indices[..stored.len()].copy_from_slice(stored);
                 &stack_indices[..stored.len()]
@@ -161,20 +177,12 @@ pub(crate) fn match_field_condition_on_view(
         } else {
             return false;
         }
-    } else if let Some(stored) = view.field_indices(&field_folded) {
-        if stored.len() <= 8 {
-            stack_indices[..stored.len()].copy_from_slice(stored);
-            &stack_indices[..stored.len()]
-        } else {
-            heap_indices = stored.to_vec();
-            &heap_indices
-        }
-    } else {
-        return false;
     };
     if indices.is_empty() {
         return false;
     }
+
+    let match_mode = compute_match_mode(&condition.modifiers);
 
     for &idx in indices {
         prepare_view_value(view, idx, needs_chars);
@@ -196,7 +204,14 @@ pub(crate) fn match_field_condition_on_view(
                 } else {
                     (None, None)
                 };
-                value_matches(val, sigma_folded, match_cache, field, &condition.modifiers)
+                value_matches(
+                    val,
+                    sigma_folded,
+                    match_cache,
+                    field,
+                    match_mode,
+                    &condition.modifiers,
+                )
             })
         } else {
             values_slice.iter().enumerate().any(|(v_idx, val)| {
@@ -214,7 +229,14 @@ pub(crate) fn match_field_condition_on_view(
                 } else {
                     (None, None)
                 };
-                value_matches(val, sigma_folded, match_cache, field, &condition.modifiers)
+                value_matches(
+                    val,
+                    sigma_folded,
+                    match_cache,
+                    field,
+                    match_mode,
+                    &condition.modifiers,
+                )
             })
         };
         if matched {
@@ -269,7 +291,7 @@ fn condition_needs_char_cache(condition: &FieldCondition, transformed: &[SigmaVa
     })
 }
 
-fn prepare_view_value(view: &mut EventView<'_>, idx: usize, needs_chars: bool) {
+fn prepare_view_value(view: &mut EventView<'_, '_>, idx: usize, needs_chars: bool) {
     if needs_chars {
         view.ensure_chars(idx);
     } else {
@@ -295,7 +317,7 @@ fn handle_exists<S: BuildHasher>(
 fn handle_exists_on_view(
     condition: &FieldCondition,
     field_folded: &str,
-    view: &mut EventView<'_>,
+    view: &mut EventView<'_, '_>,
 ) -> bool {
     let field_present = view.has_field_folded(field_folded);
 
@@ -339,7 +361,7 @@ fn handle_fieldref<S: BuildHasher>(
     handle_fieldref_on_view(condition, &mut view)
 }
 
-fn handle_fieldref_on_view(condition: &FieldCondition, view: &mut EventView<'_>) -> bool {
+fn handle_fieldref_on_view(condition: &FieldCondition, view: &mut EventView<'_, '_>) -> bool {
     let subject_field = condition_field_folded(condition);
     let Some(subject_idx) = view.first_index_for_folded_field(subject_field.as_ref()) else {
         return false;
@@ -397,7 +419,7 @@ fn handle_fieldref_on_view(condition: &FieldCondition, view: &mut EventView<'_>)
 /// we're searching for, not the event data itself.
 ///
 /// Transform order matters (Sigma spec): base64offset → base64 → wide → windash
-fn apply_transforms<'a>(
+pub(crate) fn apply_transforms<'a>(
     values: &'a [SigmaValue],
     modifiers: &[ValueModifier],
 ) -> Cow<'a, [SigmaValue]> {
@@ -573,21 +595,52 @@ fn base64_encode(input: &str) -> String {
 #[must_use]
 pub(crate) fn build_value_match_cache(folded: &str) -> ValueMatchCache {
     if let Some(literal) = pattern_literal(folded) {
-        let bloom_mask = crate::bloom::compute_bloom64(&literal);
+        let bloom_mask = crate::bloom::compute_bloom256(&literal);
         ValueMatchCache {
             literal: Some(literal),
             tokens: None,
             bloom_mask,
+            regex: None,
         }
     } else {
         let tokens = tokenize_pattern(folded);
-        let bloom_mask = crate::bloom::compute_tokens_bloom64(&tokens);
+        let bloom_mask = crate::bloom::compute_tokens_bloom256(&tokens);
         ValueMatchCache {
             literal: None,
             tokens: Some(tokens),
             bloom_mask,
+            regex: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchMode {
+    WildcardOrExact,
+    Contains,
+    StartsWith,
+    EndsWith,
+    Regex,
+    Cidr,
+    Numeric,
+}
+
+#[inline(always)]
+fn compute_match_mode(modifiers: &[ValueModifier]) -> MatchMode {
+    for m in modifiers {
+        match m {
+            ValueModifier::Contains => return MatchMode::Contains,
+            ValueModifier::StartsWith => return MatchMode::StartsWith,
+            ValueModifier::EndsWith => return MatchMode::EndsWith,
+            ValueModifier::Regex => return MatchMode::Regex,
+            ValueModifier::Cidr => return MatchMode::Cidr,
+            ValueModifier::Gt | ValueModifier::Gte | ValueModifier::Lt | ValueModifier::Lte => {
+                return MatchMode::Numeric;
+            }
+            _ => {}
+        }
+    }
+    MatchMode::WildcardOrExact
 }
 
 /// Does a single Sigma value match an event field value, given the modifiers?
@@ -605,6 +658,7 @@ fn value_matches(
     sigma_folded: Option<&str>,
     match_cache: Option<&ValueMatchCache>,
     field: FieldInputs<'_>,
+    match_mode: MatchMode,
     modifiers: &[ValueModifier],
 ) -> bool {
     // Null matches empty/missing fields only
@@ -612,65 +666,60 @@ fn value_matches(
         return field.raw.is_empty();
     }
 
-    let sigma_str = sigma_value.as_str_lossy();
-
-    // Determine the matching mode from modifiers
-    let has_contains = modifiers.contains(&ValueModifier::Contains);
-    let has_startswith = modifiers.contains(&ValueModifier::StartsWith);
-    let has_endswith = modifiers.contains(&ValueModifier::EndsWith);
-    let has_regex = modifiers.contains(&ValueModifier::Regex);
-    let has_cidr = modifiers.contains(&ValueModifier::Cidr);
-
-    // Numeric comparisons
-    if let Some(result) = try_numeric_comparison(sigma_value, field.raw, modifiers) {
-        return result;
-    }
-
-    // CIDR match — IP address must fall within the network range
-    if has_cidr {
-        return cidr_matches(&sigma_str, field.raw);
-    }
-
-    // Regex match — value is a regex pattern
-    if has_regex {
-        return regex_matches(&sigma_str, field.raw, modifiers);
+    match match_mode {
+        MatchMode::Numeric => {
+            if let Some(result) = try_numeric_comparison(sigma_value, field.raw, modifiers) {
+                return result;
+            }
+        }
+        MatchMode::Cidr => {
+            let sigma_str = sigma_value.as_str_lossy();
+            return cidr_matches(&sigma_str, field.raw);
+        }
+        MatchMode::Regex => {
+            let sigma_str = sigma_value.as_str_lossy();
+            return regex_matches(&sigma_str, field.raw, modifiers);
+        }
+        MatchMode::Contains
+        | MatchMode::StartsWith
+        | MatchMode::EndsWith
+        | MatchMode::WildcardOrExact => {}
     }
 
     // Case-insensitive fields for string matching (Sigma default behavior)
     let sigma_lower_owned;
     let sigma_lower = if let Some(folded) = sigma_folded {
         folded
+    } else if let Some(s) = sigma_value.as_str() {
+        sigma_lower_owned = s.to_lowercase();
+        sigma_lower_owned.as_str()
     } else {
-        sigma_lower_owned = sigma_str.to_lowercase();
+        sigma_lower_owned = sigma_value.as_str_lossy().to_lowercase();
         sigma_lower_owned.as_str()
     };
 
     // String matching with modifier-determined mode
-    if has_contains {
-        return value_matches_contains(sigma_lower, match_cache, field);
-    }
-
-    if has_startswith {
-        return value_matches_startswith(sigma_lower, match_cache, field);
-    }
-
-    if has_endswith {
-        return value_matches_endswith(sigma_lower, match_cache, field);
-    }
-
-    // Default: full match with wildcard support.
-    // Route through the tokenizer whenever the value contains wildcard or
-    // escape characters so `\*` / `\\` sequences compare by their unescaped
-    // literal form, per the Sigma escaping rules.
-    if sigma_value.has_wildcards() || sigma_lower.contains('\\') {
-        value_matches_wildcard(sigma_lower, match_cache, field)
-    } else {
-        if let Some(cache) = match_cache {
-            if cache.bloom_mask != 0 && (cache.bloom_mask & field.bloom) != cache.bloom_mask {
-                return false;
+    match match_mode {
+        MatchMode::Contains => value_matches_contains(sigma_lower, match_cache, field),
+        MatchMode::StartsWith => value_matches_startswith(sigma_lower, match_cache, field),
+        MatchMode::EndsWith => value_matches_endswith(sigma_lower, match_cache, field),
+        _ => {
+            // Default: full match with wildcard support.
+            // Route through the tokenizer whenever the value contains wildcard or
+            // escape characters so `\*` / `\\` sequences compare by their unescaped
+            // literal form, per the Sigma escaping rules.
+            if sigma_value.has_wildcards() || sigma_lower.contains('\\') {
+                value_matches_wildcard(sigma_lower, match_cache, field)
+            } else {
+                if let Some(cache) = match_cache {
+                    if !cache.bloom_mask.is_empty() && !cache.bloom_mask.is_subset_of(&field.bloom)
+                    {
+                        return false;
+                    }
+                }
+                sigma_lower == field.folded
             }
         }
-        sigma_lower == field.folded
     }
 }
 
@@ -680,8 +729,8 @@ fn value_matches_contains(
     field: FieldInputs<'_>,
 ) -> bool {
     if let Some(cache) = match_cache {
-        // Sub-64 bigram bloom filter pre-rejection: 1-cycle bitwise test.
-        if cache.bloom_mask != 0 && (cache.bloom_mask & field.bloom) != cache.bloom_mask {
+        // Sub-256 bigram bloom filter pre-rejection: 1-cycle bitwise test.
+        if !cache.bloom_mask.is_empty() && !cache.bloom_mask.is_subset_of(&field.bloom) {
             return false;
         }
         if let Some(literal) = &cache.literal {
@@ -700,7 +749,7 @@ fn value_matches_startswith(
     field: FieldInputs<'_>,
 ) -> bool {
     if let Some(cache) = match_cache {
-        if cache.bloom_mask != 0 && (cache.bloom_mask & field.bloom) != cache.bloom_mask {
+        if !cache.bloom_mask.is_empty() && !cache.bloom_mask.is_subset_of(&field.bloom) {
             return false;
         }
         if let Some(literal) = &cache.literal {
@@ -719,7 +768,7 @@ fn value_matches_endswith(
     field: FieldInputs<'_>,
 ) -> bool {
     if let Some(cache) = match_cache {
-        if cache.bloom_mask != 0 && (cache.bloom_mask & field.bloom) != cache.bloom_mask {
+        if !cache.bloom_mask.is_empty() && !cache.bloom_mask.is_subset_of(&field.bloom) {
             return false;
         }
         if let Some(literal) = &cache.literal {
@@ -738,7 +787,7 @@ fn value_matches_wildcard(
     field: FieldInputs<'_>,
 ) -> bool {
     if let Some(cache) = match_cache {
-        if cache.bloom_mask != 0 && (cache.bloom_mask & field.bloom) != cache.bloom_mask {
+        if !cache.bloom_mask.is_empty() && !cache.bloom_mask.is_subset_of(&field.bloom) {
             return false;
         }
         if let Some(literal) = &cache.literal {
@@ -800,7 +849,8 @@ fn tokenize_pattern(pattern: &str) -> Vec<PatToken> {
 /// form (`\*` → `*`, `\\` → `\`). Returns `None` when the pattern has a real
 /// `*` or `?` wildcard. Used by the engine to decide Aho-Corasick eligibility
 /// and to register the correct literal bytes in the automaton.
-pub(crate) fn pattern_literal(pattern: &str) -> Option<String> {
+#[doc(hidden)]
+pub fn pattern_literal(pattern: &str) -> Option<String> {
     let tokens = tokenize_pattern(pattern);
     let mut literal = String::with_capacity(pattern.len());
     for token in tokens {
@@ -884,15 +934,8 @@ fn wildcard_match_wrapped(
         };
     }
 
-    let mut tokens = Vec::new();
-    if star_before {
-        tokens.push(PatToken::Star);
-    }
-    tokens.extend(tokenize_pattern(pattern));
-    if star_after {
-        tokens.push(PatToken::Star);
-    }
-    wildcard_match_tokens(&tokens, text, text_chars)
+    let parsed = tokenize_pattern(pattern);
+    wildcard_match_wrapped_tokens(&parsed, text, text_chars, star_before, star_after)
 }
 
 fn wildcard_match_wrapped_tokens(
@@ -902,15 +945,32 @@ fn wildcard_match_wrapped_tokens(
     star_before: bool,
     star_after: bool,
 ) -> bool {
-    let mut wrapped = Vec::with_capacity(tokens.len() + 2);
-    if star_before {
-        wrapped.push(PatToken::Star);
+    let mut stack_tokens = [PatToken::Star; 64];
+    let total_len = tokens.len() + (star_before as usize) + (star_after as usize);
+    if total_len <= 64 {
+        let mut idx = 0;
+        if star_before {
+            stack_tokens[idx] = PatToken::Star;
+            idx += 1;
+        }
+        stack_tokens[idx..idx + tokens.len()].copy_from_slice(tokens);
+        idx += tokens.len();
+        if star_after {
+            stack_tokens[idx] = PatToken::Star;
+            idx += 1;
+        }
+        wildcard_match_tokens(&stack_tokens[..idx], text, text_chars)
+    } else {
+        let mut wrapped = Vec::with_capacity(total_len);
+        if star_before {
+            wrapped.push(PatToken::Star);
+        }
+        wrapped.extend_from_slice(tokens);
+        if star_after {
+            wrapped.push(PatToken::Star);
+        }
+        wildcard_match_tokens(&wrapped, text, text_chars)
     }
-    wrapped.extend_from_slice(tokens);
-    if star_after {
-        wrapped.push(PatToken::Star);
-    }
-    wildcard_match_tokens(&wrapped, text, text_chars)
 }
 
 /// Contains with wildcard support in the pattern.
@@ -1122,7 +1182,7 @@ pub fn match_identifier_with_cache<S1: BuildHasher, S2: BuildHasher>(
 #[must_use]
 pub(crate) fn match_identifier_with_cache_on_view<S2: BuildHasher>(
     identifier: &SearchIdentifier,
-    view: &mut EventView<'_>,
+    view: &mut EventView<'_, '_>,
     regex_cache: &HashMap<String, Regex, S2>,
 ) -> bool {
     identifier.groups.iter().any(|group| {
@@ -1147,7 +1207,7 @@ fn match_field_condition_with_cache<S1: BuildHasher, S2: BuildHasher>(
 
 fn match_field_condition_with_cache_on_view<S2: BuildHasher>(
     condition: &FieldCondition,
-    view: &mut EventView<'_>,
+    view: &mut EventView<'_, '_>,
     regex_cache: &HashMap<String, Regex, S2>,
 ) -> bool {
     let field_folded = condition_field_folded(condition);
@@ -1159,24 +1219,70 @@ fn match_field_condition_with_cache_on_view<S2: BuildHasher>(
         return handle_fieldref_on_view(condition, view);
     }
 
-    let transformed_values = apply_transforms(&condition.values, &condition.modifiers);
+    let (values_slice, use_precomputed_folds): (Cow<'_, [SigmaValue]>, bool) =
+        if condition.has_transforms {
+            let transformed = apply_transforms(&condition.values, &condition.modifiers);
+            (transformed, false)
+        } else {
+            (Cow::Borrowed(&condition.values), true)
+        };
     let require_all = condition.modifiers.contains(&ValueModifier::All);
     let has_regex = condition.modifiers.contains(&ValueModifier::Regex);
-    let use_precomputed_folds = !condition.modifiers.iter().any(ValueModifier::is_transform)
-        && transformed_values.len() == condition.values_folded.len();
-    let needs_chars = !has_regex && condition_needs_char_cache(condition, &transformed_values);
+    let needs_chars = !has_regex && condition_needs_char_cache(condition, &values_slice);
 
-    let mut indices: Vec<usize> = Vec::with_capacity(4);
-    if condition.field.is_empty() {
-        view.collect_indices_all(&mut indices);
+    let single_slot: [usize; 1];
+    let mut stack_indices = [0usize; 8];
+    let heap_indices: Vec<usize>;
+
+    let indices: &[usize] = if condition.field.is_empty() {
+        let total = view.total_values();
+        if total <= 8 {
+            for (i, slot) in stack_indices.iter_mut().enumerate().take(total) {
+                *slot = i;
+            }
+            &stack_indices[..total]
+        } else {
+            heap_indices = (0..total).collect();
+            &heap_indices
+        }
+    } else if let Some(bit) = condition.field_bit {
+        let slot_idx = view.canonical_slot(bit);
+        if slot_idx != u32::MAX {
+            single_slot = [slot_idx as usize];
+            &single_slot
+        } else {
+            let field_folded = condition_field_folded(condition);
+            if let Some(stored) = view.field_indices(&field_folded) {
+                if stored.len() <= 8 {
+                    stack_indices[..stored.len()].copy_from_slice(stored);
+                    &stack_indices[..stored.len()]
+                } else {
+                    heap_indices = stored.to_vec();
+                    &heap_indices
+                }
+            } else {
+                return false;
+            }
+        }
     } else {
-        view.collect_indices_for_field(&field_folded, &mut indices);
-    }
+        let field_folded = condition_field_folded(condition);
+        if let Some(stored) = view.field_indices(&field_folded) {
+            if stored.len() <= 8 {
+                stack_indices[..stored.len()].copy_from_slice(stored);
+                &stack_indices[..stored.len()]
+            } else {
+                heap_indices = stored.to_vec();
+                &heap_indices
+            }
+        } else {
+            return false;
+        }
+    };
     if indices.is_empty() {
         return false;
     }
 
-    for idx in indices {
+    for &idx in indices {
         // Regex paths compare the raw field; still fold when non-regex matching
         // shares this view (chars/fold only when needed).
         if has_regex {
@@ -1187,25 +1293,34 @@ fn match_field_condition_with_cache_on_view<S2: BuildHasher>(
         let field_value = view.raw_at(idx);
 
         let matched = if has_regex {
-            let check = |val: &SigmaValue| -> bool {
-                let pattern = val.as_str_lossy();
-                let cached = if has_regex_flag_modifiers(&condition.modifiers) {
-                    regex_cache.get(&regex_pattern_with_flags(&pattern, &condition.modifiers))
+            let check = |(v_idx, val): (usize, &SigmaValue)| -> bool {
+                if let Some(re) = condition
+                    .values_match_cache
+                    .get(v_idx)
+                    .and_then(|c| c.regex.as_ref())
+                {
+                    re.is_match(field_value)
                 } else {
-                    regex_cache.get(&pattern)
-                };
-                match cached {
-                    Some(re) => re.is_match(field_value),
-                    None => regex_matches(&pattern, field_value, &condition.modifiers),
+                    let pattern = val.as_str_lossy();
+                    let cached = if has_regex_flag_modifiers(&condition.modifiers) {
+                        regex_cache.get(&regex_pattern_with_flags(&pattern, &condition.modifiers))
+                    } else {
+                        regex_cache.get(&pattern)
+                    };
+                    match cached {
+                        Some(re) => re.is_match(field_value),
+                        None => regex_matches(&pattern, field_value, &condition.modifiers),
+                    }
                 }
             };
             if require_all {
-                transformed_values.iter().all(check)
+                values_slice.iter().enumerate().all(check)
             } else {
-                transformed_values.iter().any(check)
+                values_slice.iter().enumerate().any(check)
             }
         } else {
             let field = view.match_inputs(idx, needs_chars);
+            let match_mode = compute_match_mode(&condition.modifiers);
             let check = |val: &SigmaValue| -> bool {
                 let value_idx = condition
                     .values
@@ -1221,12 +1336,19 @@ fn match_field_condition_with_cache_on_view<S2: BuildHasher>(
                 let match_cache = value_idx
                     .and_then(|i| condition.values_match_cache.get(i))
                     .filter(|c| c.is_populated());
-                value_matches(val, sigma_folded, match_cache, field, &condition.modifiers)
+                value_matches(
+                    val,
+                    sigma_folded,
+                    match_cache,
+                    field,
+                    match_mode,
+                    &condition.modifiers,
+                )
             };
             if require_all {
-                transformed_values.iter().all(check)
+                values_slice.iter().all(check)
             } else {
-                transformed_values.iter().any(check)
+                values_slice.iter().any(check)
             }
         };
         if matched {

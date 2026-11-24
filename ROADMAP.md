@@ -202,7 +202,30 @@ merge. Gates decide publish confidence (B1) vs emit/sink work.
   - Zero-allocation `Cow::Borrowed` transform modifier bypass in `src/matcher.rs`.
   - Dense `RuleBitSet` candidate dispatch (`src/bitset.rs`) using CPU `TZCNT` and `BLSR` intrinsics, eliminating duplicate rule evaluations across buckets in $<2.5$ L1 cachelines.
   - Latency reduced to **961.50 µs** (Criterion 99% CI) / **950.58 µs / event** (`prof_benign`), with **0.0000% disagreement** against `sigma-rust` over 11,100,000 evaluations (4,132 vs 4,132 hits).
-- **Step 3 (Next):** Flat Register Decision Tape & Zero-Alloc `EventView` buffer pooling to push latency below 450 µs and surpass `tau-engine`.
+- **Step 3 (DONE — 2026-11):**
+  - Zero-Allocation `EventView` buffer pooling with `EventScratch` thread-local object pools (`key_pool`, `vec_pool`, `value_string_pool`, `char_vec_pool`) and inline `stack_values` (capacity 48).
+  - In-place ASCII basename normalization buffer, eliminating per-event heap allocations.
+  - Flat Register Decision Tape (`src/condition.rs`) linear bytecode engine (`JumpIfFalse`, `Quantifier`, `Jump`, `Return`), replacing recursive AST tree-walking with single-cacheline bytecode evaluation.
+  - Single-cycle `MatchMode` jump table dispatch in `src/matcher.rs`, eliminating 6 linear modifier slice scans per value.
+  - Verified 100% green: 279 tests passing, 0 clippy warnings, 0.0000% disagreement across 11,100,000 evaluations against reference `sigma-rust` (4,132 vs 4,132 hits). Detailed security engineering documentation added for Chainsaw's 83 rejected rules and 53-cell discrepancy on `proc_creation_win_susp_system_user_anomaly.yml`.
+- **Step 4 (DONE — 2026-11): Sub-256 Vectorized Bloom & Zero-Allocation Value Matcher:**
+  - Sub-256 vectorized rolling bigram bloom filter in `src/bloom.rs`, expanding bitset to 256-bit (`[u64; 4]`), cutting bit saturation to 22–46% and false positives to $<4.6\%$.
+  - Zero-allocation string value comparison path in `src/matcher.rs`, replacing eager `as_str_lossy()` allocations with borrowed slices (`as_str()`) and precomputed folded slices (`sigma_folded`).
+  - Ingest latency reduced to **309.24 µs / event** (3,234 vs 2,181 events/sec on `prof_benign`).
+  - Absolute soundness: 100.0000% agreement over 11,100,000 evaluations vs reference `sigma-rust` (4,132 vs 4,132 alert fires). All 279 tests green, 0 clippy warnings, clean rustfmt.
+- **Step 5 (DONE — 2026-11): Conjunction Verification, AST Mandatory Bloom & Titan Gauntlet:**
+  - `SingleCheck::All` conjunction verification with bitmask deduplication (`covered_slots: u64`), cutting candidate evaluations for benign process telemetry to 6 rules.
+  - Regex AST mandatory literal extraction (`regex-syntax`), populating 256-bit Bloom filters and rejecting non-matching strings in ~2 ns.
+  - Evaluated **50,000,000 events** across 8 SMT threads against 1,110 rules (**55,500,000,000 rule checks**) in 490.07 s at **102,027 sustained EPS** with 0 bytes memory leaked.
+  - Reduced single-core benign latency to **19.22 µs / event** (52,029 EPS) and mixed stream to **35.35 µs / event** (28,285 EPS).
+- **Step 6 (DONE — 2026-11): Hard Logsource Partitioning (Vector 1) & `rsigma-eval` Peer Benchmarking:**
+  - Partitioned unconstrained rules into dedicated `category_unconstrained`, `service_unconstrained`, `product_unconstrained`, and `wildcard_unconstrained` bitsets in `src/engine.rs`, eliminating cross-category evaluation waste.
+  - Benchmarked against state-of-the-art double-array indexed peer `rsigma-eval` v0.27.0 across 1,110 common rules and 2,427 Windows rules: 1.04× to 2.01× faster on single-core process/attack telemetry, 5.15× faster on linear payload scans (255.60 µs vs 1,317.20 µs at 64 KiB), and 626× faster on bypassed telemetry (1.02 µs vs 640.24 µs via $O(1)$ fast prune).
+  - SMP concurrency scaling reached **138,665 EPS** on 8 SMT threads (4.88× speedup).
+  - All 308 tests across 9 workspace targets pass with zero failures and zero warnings under `#![forbid(unsafe_code)]`.
+- **v0.2.0 Engineering Roadmap (Active Frontiers):**
+  - **Category Witness-Key Early Pruning:** Check partition's 64-bit `present_fields_mask` against required rule field bits *before* invoking the Bloom hasher to exit non-matching events in $<50$ nanoseconds (closing the sub-microsecond margin in Windows Network & DNS).
+  - **SIMD-Accelerated Bitset Operations:** Vectorized `RuleBitSet` operations for multi-pattern candidate generation.
 
 **Explicitly parked until after publish:**
 

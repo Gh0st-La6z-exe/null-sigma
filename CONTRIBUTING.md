@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust stable (≥ 1.82, matching `rust-version` in `Cargo.toml`)
+- Rust stable (≥ 1.85, matching `rust-version` in `Cargo.toml`)
 - `cargo` with `rustfmt` and `clippy` components
 - Windows: Rustup with the MSVC Rust host and Visual Studio Build Tools with the
   **Desktop development with C++** workload, including the MSVC toolset and
@@ -47,9 +47,9 @@ PR description.
 All four CI checks must pass:
 
 ```bash
-cargo fmt -- --check      # formatting
-cargo clippy -- -W clippy::all -W clippy::pedantic   # lint
-cargo test                # tests
+cargo fmt -- --check                                  # formatting
+cargo clippy --all-targets --features json -- -D warnings # lint (zero warnings)
+cargo test --all-targets --features json              # tests (308 tests pass)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps        # docs
 ```
 

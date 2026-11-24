@@ -334,14 +334,16 @@ pub struct ValueMatchCache {
     pub literal: Option<String>,
     /// Pre-tokenized pattern when active wildcards require the wildcard matcher.
     pub tokens: Option<Vec<PatToken>>,
-    /// 64-bit bigram bloom filter mask for substring/literal pre-rejection (Sub-64).
-    pub bloom_mask: u64,
+    /// 256-bit bigram bloom filter mask for substring/literal pre-rejection (Sub-256).
+    pub bloom_mask: crate::bloom::Bloom256,
+    /// Pre-compiled regex when the condition uses the `re` modifier.
+    pub regex: Option<regex::Regex>,
 }
 
 impl ValueMatchCache {
     #[must_use]
     pub(crate) fn is_populated(&self) -> bool {
-        self.literal.is_some() || self.tokens.is_some()
+        self.literal.is_some() || self.tokens.is_some() || self.regex.is_some()
     }
 }
 
@@ -370,6 +372,16 @@ pub enum SigmaValue {
 }
 
 impl SigmaValue {
+    /// Return the underlying string slice if this is a `SigmaValue::String`.
+    #[inline]
+    #[must_use]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            SigmaValue::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
     /// Convert to a string representation for pattern matching.
     #[must_use]
     pub fn as_str_lossy(&self) -> String {
@@ -662,36 +674,32 @@ impl fmt::Display for RuleStatus {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of evaluating a single event against a single rule.
+///
+/// Borrows strings and slices directly from the compiled rule in the engine,
+/// guaranteeing zero heap allocations during event evaluation when results
+/// are collected into a pre-allocated vector via [`SigmaEngine::evaluate_event_into`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct RuleMatch {
+pub struct RuleMatch<'a> {
     /// The rule that matched.
-    pub rule_id: String,
+    pub rule_id: &'a str,
     /// Human-readable title of the matched rule.
-    pub rule_title: String,
+    pub rule_title: &'a str,
     /// Severity level of the matched rule.
     pub rule_level: SeverityLevel,
-
-    /// Which condition(s) matched (index into `ConditionExpr::Multiple`).
-    pub matched_conditions: Vec<usize>,
-
-    /// Which search identifiers evaluated to true.
-    pub matched_identifiers: Vec<String>,
-
     /// MITRE ATT&CK tags from the rule.
-    pub tags: Vec<String>,
-
+    pub tags: &'a [String],
     /// Numeric threat score derived from rule level.
     pub score: f64,
 }
 
 /// Result of evaluating a single event against the full rule set.
 #[derive(Debug, Clone, PartialEq)]
-pub struct EvalResult {
+pub struct EvalResult<'a> {
     /// Index of the event in the input batch.
     pub event_index: usize,
 
     /// All rules that matched this event.
-    pub matches: Vec<RuleMatch>,
+    pub matches: Vec<RuleMatch<'a>>,
 
     /// Total number of rules evaluated (for stats).
     pub rules_evaluated: usize,

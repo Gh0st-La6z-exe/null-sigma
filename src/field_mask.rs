@@ -80,6 +80,60 @@ pub(crate) fn field_bit(s: &str) -> Option<u8> {
     }
 }
 
+/// Return the canonical folded field name for a given bit (0..63).
+#[inline]
+pub(crate) fn bit_field(bit: u8) -> Option<&'static str> {
+    match bit {
+        0 => Some("commandline"),
+        1 => Some("image"),
+        2 => Some("parentimage"),
+        3 => Some("parentcommandline"),
+        4 => Some("originalfilename"),
+        5 => Some("currentdirectory"),
+        6 => Some("user"),
+        7 => Some("logonid"),
+        8 => Some("integritylevel"),
+        9 => Some("hashes"),
+        10 => Some("processid"),
+        11 => Some("parentprocessid"),
+        12 => Some("processguid"),
+        13 => Some("parentprocessguid"),
+        14 => Some("company"),
+        15 => Some("product"),
+        16 => Some("description"),
+        17 => Some("fileversion"),
+        18 => Some("targetfilename"),
+        19 => Some("targetobject"),
+        20 => Some("details"),
+        21 => Some("destinationip"),
+        22 => Some("destinationport"),
+        23 => Some("destinationhostname"),
+        24 => Some("sourceip"),
+        25 => Some("sourceport"),
+        26 => Some("protocol"),
+        27 => Some("queryname"),
+        28 => Some("pipename"),
+        29 => Some("scriptblocktext"),
+        30 => Some("scriptblockid"),
+        31 => Some("targetusername"),
+        32 => Some("targetdomainname"),
+        33 => Some("subjectusername"),
+        34 => Some("subjectdomainname"),
+        35 => Some("servicename"),
+        36 => Some("servicefilename"),
+        37 => Some("taskname"),
+        38 => Some("eventtype"),
+        39 => Some("imageloaded"),
+        40 => Some("sourceimage"),
+        41 => Some("targetimage"),
+        42 => Some("calltrace"),
+        43 => Some("grantedaccess"),
+        44 => Some("hostapplication"),
+        45 => Some("hostname"),
+        _ => None,
+    }
+}
+
 /// Compute the 64-bit mask for a single folded field name.
 /// Returns 0 if the field is not in the canonical bit dictionary.
 #[cfg(test)]

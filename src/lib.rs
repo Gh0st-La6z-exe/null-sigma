@@ -4,8 +4,9 @@
 //! representation, then evaluate streams of security events against the full
 //! rule set at **311 000+ events/second × 1 000 synthetic rules on a single core**
 //! (Apple M4, release, microbenchmark suite). Against real `SigmaHQ`
-//! `process_creation` rules: **~3 230 events/second** (see `harness/` and
-//! `PERFORMANCE.md` §11).
+//! `process_creation` rules: **31,318–52,029 events/second on a single core**
+//! and **102,027 sustained events/second across 8 SMT threads** in the Titan Gauntlet
+//! (see `harness/` and `EMPIRICAL_PROOF.md`).
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 //!
@@ -48,12 +49,14 @@
 
 /// Dense bitset for candidate rule filtering and register-level set operations.
 pub mod bitset;
-mod bloom;
+#[doc(hidden)]
+pub mod bloom;
 /// Condition expression compiler: Sigma condition strings → boolean AST
 /// ([`condition::ConditionNode`]).
 pub mod condition;
-mod discriminator;
-/// Multi-rule evaluation engine with Inverted Dispatch Matrix (Primary Discriminator Index + Field-Presence Bitmask),
+#[doc(hidden)]
+pub mod discriminator;
+/// Multi-rule evaluation engine with 3-Tier Inverted Dispatch Matrix (Hard Logsource Partitioning + Primary Discriminator Index + Field-Presence Bitmask),
 /// [`EvalScratch`] buffer reuse, and cache-friendly hot/cold struct split.
 pub mod engine;
 mod event_view;

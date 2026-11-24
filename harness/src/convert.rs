@@ -122,8 +122,23 @@ fn regex_escape(s: &str) -> String {
     for c in s.chars() {
         if matches!(
             c,
-            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
-                | '#' | '&' | '-' | '~'
+            '\\' | '.'
+                | '+'
+                | '*'
+                | '?'
+                | '('
+                | ')'
+                | '|'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '^'
+                | '$'
+                | '#'
+                | '&'
+                | '-'
+                | '~'
         ) {
             out.push('\\');
         }
@@ -136,16 +151,26 @@ fn supported_modifiers() -> &'static HashSet<String> {
     use std::sync::OnceLock;
     static SET: OnceLock<HashSet<String>> = OnceLock::new();
     SET.get_or_init(|| {
-        ["all", "base64", "base64offset", "contains", "endswith", "startswith", "re"]
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect()
+        [
+            "all",
+            "base64",
+            "base64offset",
+            "contains",
+            "endswith",
+            "startswith",
+            "re",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
     })
 }
 
 fn parse_identifier(value: &Yaml, modifiers: &HashSet<String>) -> Result<Yaml> {
-    let mut unsupported: Vec<String> =
-        modifiers.difference(supported_modifiers()).cloned().collect();
+    let mut unsupported: Vec<String> = modifiers
+        .difference(supported_modifiers())
+        .cloned()
+        .collect();
     if !unsupported.is_empty() {
         unsupported.sort();
         return err(format!("unsupported modifiers: {}", unsupported.join(", ")));
@@ -303,7 +328,12 @@ fn detections_to_tau(detection: Detection) -> Result<Mapping> {
                     k,
                     format!(
                         "({})",
-                        blocks.iter().map(|(k, _)| k).cloned().collect::<Vec<_>>().join(" or "),
+                        blocks
+                            .iter()
+                            .map(|(k, _)| k)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" or "),
                     ),
                 );
                 for (k, v) in blocks {
@@ -471,8 +501,14 @@ fn detections_to_tau(detection: Detection) -> Result<Mapping> {
     det.insert(Yaml::String("condition".into()), Yaml::String(condition));
 
     tau.insert(Yaml::String("detection".into()), Yaml::Mapping(det));
-    tau.insert(Yaml::String("true_positives".into()), Yaml::Sequence(Sequence::new()));
-    tau.insert(Yaml::String("true_negatives".into()), Yaml::Sequence(Sequence::new()));
+    tau.insert(
+        Yaml::String("true_positives".into()),
+        Yaml::Sequence(Sequence::new()),
+    );
+    tau.insert(
+        Yaml::String("true_negatives".into()),
+        Yaml::Sequence(Sequence::new()),
+    );
 
     Ok(tau)
 }
@@ -537,7 +573,10 @@ detection:
         let tau = sigma_to_tau(rule).expect("conversion failed");
         let hit = json!({ "CommandLine": "powershell -encodedcommand abc" });
         let miss = json!({ "CommandLine": "notepad.exe" });
-        assert!(tau.matches(&hit), "converted rule should match (case-insensitive)");
+        assert!(
+            tau.matches(&hit),
+            "converted rule should match (case-insensitive)"
+        );
         assert!(!tau.matches(&miss));
     }
 

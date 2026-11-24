@@ -8,11 +8,11 @@
 
 [package]
 name = "null-sigma-harness"
-version = "0.1.0"
+version = "0.1.5"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
-description = "Measures null-sigma against tau-engine (Chainsaw's matcher) and sigma-rust on identical rules and events"
+description = "Measures null-sigma against rsigma-eval, tau-engine (Chainsaw's matcher), and sigma-rust on identical rules and events"
 
 # Standalone workspace root — keeps this crate out of any parent workspace.
 [workspace]
@@ -25,6 +25,9 @@ null-sigma = { path = "..", features = ["json"] }
 tau-engine = { version = "1.15", features = ["core", "json", "sync"] }
 # Direct Sigma-evaluation library peer (MIT OR Apache-2.0).
 sigma-rust = "0.7"
+# Double-array indexed multi-rule Sigma engine peer.
+rsigma-eval = "0.27.0"
+rsigma-parser = "0.27.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # Same YAML stack as the core crate — used to build converted tau rules.
@@ -46,6 +49,66 @@ harness = false
 [[bin]]
 name = "prof_benign"
 path = "src/bin/prof_benign.rs"
+
+[[bin]]
+name = "cross_check"
+path = "src/bin/cross_check.rs"
+
+[[bin]]
+name = "stress_gauntlet"
+path = "src/bin/stress_gauntlet.rs"
+
+[[bin]]
+name = "stress_concurrency"
+path = "src/bin/stress_concurrency.rs"
+
+[[bin]]
+name = "stress_soak"
+path = "src/bin/stress_soak.rs"
+
+[[bin]]
+name = "cross_category"
+path = "src/bin/cross_category.rs"
+
+[[bin]]
+name = "titan_gauntlet"
+path = "src/bin/titan_gauntlet.rs"
+
+[[bin]]
+name = "audit_front1"
+path = "src/bin/audit_front1.rs"
+
+[[bin]]
+name = "test_rsigma"
+path = "src/bin/test_rsigma.rs"
+
+[[bin]]
+name = "audit_payloads"
+path = "src/bin/audit_payloads.rs"
+
+[[bin]]
+name = "audit_categories"
+path = "src/bin/audit_categories.rs"
+
+[[bin]]
+name = "inspect_net"
+path = "src/bin/inspect_net.rs"
+
+[[bin]]
+name = "inspect_storm"
+path = "src/bin/inspect_storm.rs"
+
+[[bin]]
+name = "inspect_tau"
+path = "src/bin/inspect_tau.rs"
+
+[[bin]]
+name = "null_sigma_run"
+path = "src/bin/null_sigma_run.rs"
+
+[[bin]]
+name = "gen_dataset"
+path = "src/bin/gen_dataset.rs"
 
 [profile.release]
 debug = false

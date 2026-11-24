@@ -14,9 +14,10 @@ use null_sigma_harness::{gen, load_rule_dir, null_sigma_hits, rule_title};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let rule_dir = args
-        .get(1)
-        .map_or_else(null_sigma_harness::default_rule_dir, std::path::PathBuf::from);
+    let rule_dir = args.get(1).map_or_else(
+        null_sigma_harness::default_rule_dir,
+        std::path::PathBuf::from,
+    );
     let event_count: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2000);
 
     println!("rule dir : {}", rule_dir.display());
@@ -25,7 +26,10 @@ fn main() {
     println!("\n== Load compatibility ==");
     println!("total rule files     : {total}");
     println!("null-sigma loaded    : {ns} ({:.1}%)", pct(ns, total));
-    println!("tau-engine converted : {tau} ({:.1}%)  [Chainsaw conversion path]", pct(tau, total));
+    println!(
+        "tau-engine converted : {tau} ({:.1}%)  [Chainsaw conversion path]",
+        pct(tau, total)
+    );
     println!("sigma-rust loaded    : {sr} ({:.1}%)", pct(sr, total));
 
     // Top tau-engine conversion failure reasons.
@@ -83,8 +87,23 @@ fn main() {
     let mut sr_total = 0u64;
     // rule index -> (ns_vs_tau, ns_vs_sr, tau_vs_sr) disagreement counts
     let mut disagree: HashMap<usize, [u64; 3]> = HashMap::new();
+    let start_eval = std::time::Instant::now();
 
-    for event in &events {
+    for (event_idx, event) in events.iter().enumerate() {
+        if (event_idx + 1) % 10_000 == 0 || (event_idx + 1) == event_count {
+            let elapsed = start_eval.elapsed().as_secs_f64();
+            let evals_so_far = (event_idx + 1) as f64 * yamls.len() as f64;
+            let m_evals = evals_so_far / 1_000_000.0;
+            let rate = (event_idx + 1) as f64 / elapsed;
+            println!(
+                "  progress: {:6}/{} events ({:.2}M rule×event evals, {:.1}s elapsed, {:.0} events/s)",
+                event_idx + 1,
+                event_count,
+                m_evals,
+                elapsed,
+                rate
+            );
+        }
         let ns_event = null_sigma_harness::NullSigmaBench::prepare_event(event);
         let tau_event = null_sigma_harness::TauBench::prepare_event(event);
         let sr_event = null_sigma_harness::SigmaRustBench::prepare_event(event);
@@ -111,15 +130,26 @@ fn main() {
     }
 
     println!("rule×event evaluations : {cells}");
-    println!("total hits — null-sigma: {ns_total}, tau-engine: {tau_total}, sigma-rust: {sr_total}");
+    println!(
+        "total hits — null-sigma: {ns_total}, tau-engine: {tau_total}, sigma-rust: {sr_total}"
+    );
 
     let ns_tau: u64 = disagree.values().map(|d| d[0]).sum();
     let ns_sr: u64 = disagree.values().map(|d| d[1]).sum();
     let tau_sr: u64 = disagree.values().map(|d| d[2]).sum();
     println!("\npairwise disagreement (rule×event cells):");
-    println!("  null-sigma vs tau-engine : {ns_tau} ({:.4}%)", pct64(ns_tau, cells));
-    println!("  null-sigma vs sigma-rust : {ns_sr} ({:.4}%)", pct64(ns_sr, cells));
-    println!("  tau-engine vs sigma-rust : {tau_sr} ({:.4}%)", pct64(tau_sr, cells));
+    println!(
+        "  null-sigma vs tau-engine : {ns_tau} ({:.4}%)",
+        pct64(ns_tau, cells)
+    );
+    println!(
+        "  null-sigma vs sigma-rust : {ns_sr} ({:.4}%)",
+        pct64(ns_sr, cells)
+    );
+    println!(
+        "  tau-engine vs sigma-rust : {tau_sr} ({:.4}%)",
+        pct64(tau_sr, cells)
+    );
 
     let mut rows: Vec<(usize, [u64; 3])> = disagree.into_iter().collect();
     rows.sort_by(|a, b| (b.1[0] + b.1[1] + b.1[2]).cmp(&(a.1[0] + a.1[1] + a.1[2])));

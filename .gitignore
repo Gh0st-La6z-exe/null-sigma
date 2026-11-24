@@ -20,3 +20,6 @@ Cargo.lock
 # Product CLI (§4) — build output (lockfile ignored while publish=false)
 /cli/target/
 /cli/Cargo.lock
+
+# Temporary scratch scripts
+/scratch/

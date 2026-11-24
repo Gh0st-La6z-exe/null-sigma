@@ -32,7 +32,7 @@ pub fn write_alert(
     out: &mut impl Write,
     format: OutputFormat,
     include_event: bool,
-    m: &RuleMatch,
+    m: &RuleMatch<'_>,
     event: &HashMap<String, String>,
 ) -> io::Result<()> {
     match format {
@@ -52,12 +52,12 @@ pub fn write_alert(
 fn write_ndjson(
     out: &mut impl Write,
     include_event: bool,
-    m: &RuleMatch,
+    m: &RuleMatch<'_>,
     event: &HashMap<String, String>,
 ) -> io::Result<()> {
     let mut obj = Map::new();
-    obj.insert("rule_id".into(), Value::String(m.rule_id.clone()));
-    obj.insert("rule_title".into(), Value::String(m.rule_title.clone()));
+    obj.insert("rule_id".into(), Value::String(m.rule_id.to_string()));
+    obj.insert("rule_title".into(), Value::String(m.rule_title.to_string()));
     obj.insert(
         "rule_level".into(),
         Value::String(m.rule_level.as_str().to_string()),
@@ -67,16 +67,6 @@ fn write_ndjson(
         Value::Array(m.tags.iter().cloned().map(Value::String).collect()),
     );
     obj.insert("score".into(), json!(m.score));
-    obj.insert(
-        "matched_identifiers".into(),
-        Value::Array(
-            m.matched_identifiers
-                .iter()
-                .cloned()
-                .map(Value::String)
-                .collect(),
-        ),
-    );
     if include_event {
         let mut ev = Map::new();
         for (k, v) in event {

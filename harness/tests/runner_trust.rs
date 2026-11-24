@@ -116,7 +116,10 @@ fn max_error_samples_emits_bounded_debug_lines() {
         .lines()
         .filter(|line| line.starts_with("ingest_error_sample:"))
         .count();
-    assert_eq!(sample_count, 1, "expected exactly one sample line: {stderr}");
+    assert_eq!(
+        sample_count, 1,
+        "expected exactly one sample line: {stderr}"
+    );
     assert!(
         stderr.contains(r#"ingest_error_sample: line=3 kind=json_parse msg="bad event JSON""#),
         "first sample should be json_parse on line 3: {stderr}"
@@ -179,5 +182,8 @@ fn ingest_accounting_is_deterministic_across_runs() {
     let stderr2 = stderr_utf8(&run2);
     let lines1 = accounting_lines(&stderr1);
     let lines2 = accounting_lines(&stderr2);
-    assert_eq!(lines1, lines2, "accounting stderr must be identical across runs");
+    assert_eq!(
+        lines1, lines2,
+        "accounting stderr must be identical across runs"
+    );
 }

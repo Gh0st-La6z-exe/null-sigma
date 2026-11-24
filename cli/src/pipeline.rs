@@ -103,8 +103,7 @@ fn process_item(
         }
         ChunkItem::LineTooLarge { id, line_number } => {
             let mut trust = ChunkTrustMetrics::default();
-            let fatal =
-                record_line_too_large(&mut trust, params, line_number, samples).err();
+            let fatal = record_line_too_large(&mut trust, params, line_number, samples).err();
             ChunkResult {
                 id,
                 alerts: Vec::new(),

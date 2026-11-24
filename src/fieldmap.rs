@@ -259,13 +259,37 @@ impl FieldMapping {
     ) -> std::borrow::Cow<'a, std::collections::HashMap<String, String>> {
         // Collect only the aliases that are actually needed.
         // Iterates the event entries (typically 10-30) — not all ~120 mapping pairs.
+        let mut stack_buf = [0u8; 64];
         let mut aliases: Vec<(String, String)> = Vec::new();
         for (key, value) in event {
-            let key_lower = key.to_lowercase();
-            if let Some(sigma_lower) = self.reverse.get(&key_lower) {
-                // Only add the alias if the event doesn't already have the Sigma name.
-                if !event.contains_key(sigma_lower.as_str()) {
-                    aliases.push((sigma_lower.clone(), value.clone()));
+            let (sigma_lower, is_same) = if key.len() <= 64 && key.is_ascii() {
+                for (dst, &src) in stack_buf[..key.len()].iter_mut().zip(key.as_bytes()) {
+                    *dst = src.to_ascii_lowercase();
+                }
+                if let Ok(lower_str) = std::str::from_utf8(&stack_buf[..key.len()]) {
+                    if let Some(target) = self.reverse.get(lower_str) {
+                        (Some(target.as_str()), lower_str == target.as_str())
+                    } else {
+                        (None, false)
+                    }
+                } else {
+                    (None, false)
+                }
+            } else {
+                let key_lower = key.to_lowercase();
+                if let Some(target) = self.reverse.get(&key_lower) {
+                    (Some(target.as_str()), key_lower == target.as_str())
+                } else {
+                    (None, false)
+                }
+            };
+
+            if let Some(target_lower) = sigma_lower {
+                if is_same {
+                    continue;
+                }
+                if !event.contains_key(target_lower) {
+                    aliases.push((target_lower.to_string(), value.clone()));
                 }
             }
         }
